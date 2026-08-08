@@ -1,0 +1,385 @@
+#!/bin/bash
+set -Eeuo pipefail
+SEED_ID="${1:-}"
+[[ "$SEED_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid seed id' >&2; exit 2; }
+BASE=/boot/config/plugins/unmotion
+DIR="$BASE/seeds/$SEED_ID"
+REQUEST="$DIR/request.cfg"
+SEED_JSON="$DIR/seed.json"
+LOG="$DIR/seed.log"
+SETTINGS="$BASE/settings.cfg"
+[[ -f "$REQUEST" && -f "$SETTINGS" ]] || { echo 'Missing seed request/settings' >&2; exit 3; }
+# shellcheck disable=SC1090
+source "$SETTINGS"
+# shellcheck disable=SC1090
+source "$REQUEST"
+PEERCFG="$BASE/peers/$PEER_ID.cfg"
+[[ -f "$PEERCFG" ]] || { echo 'Peer configuration missing' >&2; exit 4; }
+# shellcheck disable=SC1090
+source "$PEERCFG"
+mkdir -p "$DIR"; touch "$LOG"; chmod 600 "$LOG"
+exec 9>/var/run/unmotion-seed.lock
+flock -n 9 || { /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'Another seed operation is active'; exit 5; }
+SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+REMOTE="${PEER_USER}@${PEER_HOST}"
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+state(){ /usr/local/sbin/unmotion-seed-state "$SEED_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
+sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
+remote(){ ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+json_get(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(explode(".",$argv[2]) as $k){if(!is_array($d)||!array_key_exists($k,$d))exit(3);$d=$d[$k];}if(is_bool($d))echo $d?"1":"0";elseif(is_array($d))echo json_encode($d);elseif($d!==null)echo $d;' "$1" "$2"; }
+DEBUG_LOGGING="${DEBUG_LOGGING:-0}"
+sanitize_command(){
+  local text="${1:-}"
+  [[ -n "${PEER_KEY:-}" ]] && text="${text//${PEER_KEY}/<peer-key>}"
+  [[ -n "${PEER_KNOWN_HOSTS:-}" ]] && text="${text//${PEER_KNOWN_HOSTS}/<known-hosts>}"
+  text="$(printf '%s' "$text" | sed -E 's/[A-Za-z0-9+\/=]{200,}/<redacted-payload>/g')"
+  if ((${#text}>1600)); then text="${text:0:1600}… [truncated]"; fi
+  printf '%s' "$text"
+}
+debug(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; printf '%s DEBUG %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
+debug_cmd(){
+  [[ "$DEBUG_LOGGING" == 1 ]] || return 0
+  local q='' a
+  for a in "$@"; do printf -v a '%q' "$a"; q+="${q:+ }$a"; done
+  debug "CMD local: $(sanitize_command "$q")"
+}
+debug_remote(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; debug "CMD remote [$REMOTE]: $(sanitize_command "$1")"; }
+FAIL_RECORDED=0
+fail(){ FAIL_RECORDED=1; state FAILED 0 "$1"; exit "${2:-1}"; }
+on_seed_error(){
+  local rc=$? line="${BASH_LINENO[0]:-${LINENO:-unknown}}" cmd="${BASH_COMMAND:-unknown}"
+  trap - ERR
+  FAIL_RECORDED=1
+  log "ERROR at line $line (exit $rc): $(sanitize_command "$cmd")" || true
+  /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 "Seed operation failed at line $line (exit $rc); see log" || true
+  return "$rc"
+}
+trap on_seed_error ERR
+THAW_NEEDED=0
+json_return_count(){ php -r '$d=json_decode(stream_get_contents(STDIN),true);if(is_array($d)&&isset($d["return"])&&is_numeric($d["return"]))echo (int)$d["return"];' 2>/dev/null || true; }
+thaw(){
+  local out count
+  if ((THAW_NEEDED)); then
+    debug_cmd virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-thaw"}'
+    if out="$(virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-thaw"}' 2>&1)"; then
+      count="$(printf '%s' "$out" | json_return_count)"
+      log "Guest filesystems thawed${count:+: $count}."
+    else
+      log "WARNING: guest filesystem thaw command failed: $out"
+    fi
+    THAW_NEEDED=0
+  fi
+}
+trap 'rc=$?; thaw; if ((rc!=0&&FAIL_RECORDED==0)); then /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 "Seed operation failed; see log" || true; fi' EXIT
+debug "Worker start: seed=$SEED_ID action=${ACTION:-prepare} vm=${VM_UUID:-unknown} peer=$REMOTE debug=$DEBUG_LOGGING"
+debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes $REMOTE"
+
+CAPS="$DIR/remote-capabilities.json"
+VM_JSON="$DIR/vm.json"
+MAP_TSV="$DIR/storage.tsv"
+: > "$MAP_TSV"
+
+if [[ "${ACTION:-prepare}" == remove ]]; then
+  state REMOVING 5 'Removing prepared copy and releasing replication holds'
+  : > "$MAP_TSV"
+  if [[ -f "$SEED_JSON" ]]; then
+    php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)echo ($x["kind"]??""),"\t",($x["source"]??""),"\t",($x["destination"]??""),"\t",($x["snapshot"]??""),"\n";' "$SEED_JSON" > "$MAP_TSV"
+  fi
+  [[ -s "$DIR/storage-new.tsv" ]] && cat "$DIR/storage-new.tsv" >> "$MAP_TSV"
+  [[ -s "$DIR/held-snapshots.tsv" ]] && cat "$DIR/held-snapshots.tsv" >> "$MAP_TSV"
+
+  # Recover source snapshots from the VM's current ZFS storage when an earlier
+  # failure occurred before the bookkeeping files were committed. This is
+  # deliberately scoped to this VM, so identically named backup snapshots in
+  # other pools are never touched.
+  SOURCE_CANDIDATES="$DIR/remove-source-candidates.txt"; : > "$SOURCE_CANDIDATES"
+  awk -F '\t' '$2!=""{print $2}' "$MAP_TSV" >> "$SOURCE_CANDIDATES" 2>/dev/null || true
+  if virsh dominfo "$VM_UUID" >/dev/null 2>&1; then
+    php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";foreach(unmVmReplicationSources(unmParseVm($argv[1])) as $x)echo $x,"\n";' "$VM_UUID" >> "$SOURCE_CANDIDATES" 2>>"$LOG" || true
+  fi
+  sort -u "$SOURCE_CANDIDATES" -o "$SOURCE_CANDIDATES"
+  while IFS= read -r src; do
+    [[ -n "$src" ]] || continue
+    zfs list -H -o name "$src" >/dev/null 2>&1 || continue
+    while IFS= read -r full; do
+      [[ -n "$full" ]] || continue
+      snap="${full#*@}"
+      if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then kind=dataset; else kind=zvol; fi
+      printf '%s\t%s\t\t%s\t\t\n' "$kind" "$src" "$snap" >> "$MAP_TSV"
+    done < <(zfs list -H -r -t snapshot -o name "$src" 2>/dev/null | grep -F "$src@unmotion-seed-${SEED_ID}-g" || true)
+  done < "$SOURCE_CANDIDATES"
+  sort -u "$MAP_TSV" -o "$MAP_TSV"
+
+  if [[ ! -s "$MAP_TSV" ]]; then
+    fail 'No prepared, partial or orphaned seed storage could be identified safely.' 15
+  fi
+
+  REMOVE_ERRORS=0
+  while IFS=$'\t' read -r kind src dst snap _; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == zvol || "$kind" == dataset ]]; then
+      if [[ -n "$dst" ]]; then
+        if [[ -n "$snap" ]]; then remote "zfs release $(sq "unmotion:$SEED_ID") $(sq "$dst@$snap") >/dev/null 2>&1 || true" >>"$LOG" 2>&1 || true; fi
+        if ! remote "zfs receive -A $(sq "$dst") >/dev/null 2>&1 || true; if zfs list $(sq "$dst") >/dev/null 2>&1; then zfs destroy -r $(sq "$dst"); fi" >>"$LOG" 2>&1; then
+          log "ERROR: unable to remove destination ZFS object $dst."
+          REMOVE_ERRORS=1
+        fi
+      fi
+      if [[ -n "$snap" && -n "$src" ]] && zfs list -H -t snapshot "$src@$snap" >/dev/null 2>&1; then
+        zfs release "unmotion:$SEED_ID" "$src@$snap" >>"$LOG" 2>&1 || true
+        if zfs holds -H "$src@$snap" 2>/dev/null | awk -v t="unmotion:$SEED_ID" '$2==t{found=1}END{exit found?0:1}'; then
+          log "ERROR: unMotion hold remains on $src@$snap."
+          REMOVE_ERRORS=1
+        elif ! zfs destroy "$src@$snap" >>"$LOG" 2>&1; then
+          log "ERROR: unable to destroy $src@$snap; check for foreign holds or dependent clones."
+          REMOVE_ERRORS=1
+        fi
+      fi
+    elif [[ "$kind" == image && "$dst" == /mnt/* ]]; then
+      remote "rm -f -- $(sq "$dst")" >>"$LOG" 2>&1 || { log "ERROR: unable to remove destination image $dst."; REMOVE_ERRORS=1; }
+    fi
+  done < "$MAP_TSV"
+  remote "rm -f -- $(sq "$BASE/incoming/seeds/$SEED_ID.json")" >>"$LOG" 2>&1 || true
+  if ((REMOVE_ERRORS)); then fail 'Prepared-copy cleanup was incomplete; see the log. The seed record was retained.' 16; fi
+  state REMOVED 100 'Prepared copy removed'
+  trap - EXIT
+  rm -rf -- "$DIR"
+  exit 0
+fi
+state PREFLIGHT 2 'Inspecting VM storage and destination capabilities'
+debug_remote '/usr/local/sbin/unmotion-agent capabilities'
+remote '/usr/local/sbin/unmotion-agent capabilities' > "$CAPS"
+debug 'Remote capabilities received successfully.'
+[[ "$(json_get "$CAPS" protocolVersion)" == 5 ]] || fail 'Peer protocol is incompatible; upgrade both hosts.' 10
+[[ "$(json_get "$CAPS" hostId)" == "$PEER_HOST_ID" ]] || fail 'Peer identity changed; re-pair the hosts.' 11
+DEST_IMAGE_DIR="$(json_get "$CAPS" storage.imageDirectory)"
+DEST_IMAGE_ZFS_DATASET="$(json_get "$CAPS" storage.imageZfsDataset || true)"
+DEST_ZVOL_DATASET="$(json_get "$CAPS" storage.zvolDataset || true)"
+DEST_ZVOL_READY="$(json_get "$CAPS" features.zvol || echo 0)"
+DEST_DEDUP_REMOTE="$(json_get "$CAPS" storage.dedup)"
+DEST_COMPRESSION_REMOTE="$(json_get "$CAPS" storage.compression || echo inherit)"
+VM_NAME="$(virsh domname "$VM_UUID" 2>/dev/null || true)"
+[[ -n "$VM_NAME" ]] || fail 'Source VM is no longer defined.' 12
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";echo json_encode(unmParseVm($argv[1]),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";' "$VM_UUID" > "$VM_JSON"
+PCI_COUNT="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo count($d["pci"]??[]);' "$VM_JSON")"
+((PCI_COUNT==0)) || fail 'PCIe passthrough is unsupported for Warm Move.' 13
+mapfile -t ZFS_SOURCES < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);$seen=[];foreach($d["disks"]??[] as $x){$c=$x["transferClass"]??"";if($c==="zvol")$v=substr($x["source"],strlen("/dev/zvol/"));elseif($c==="zfs-dataset-image")$v=$x["zfsDataset"]??"";else continue;if($v!==""&&!isset($seen[$v])){$seen[$v]=1;echo $v,"\n";}}' "$VM_JSON")
+mapfile -t RSYNC_FILES < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["disks"]??[] as $x){if(in_array($x["transferClass"]??"",["shared-zfs-image","encrypted-zfs-image","non-zfs-image"],true))echo $x["source"],"\n";}' "$VM_JSON")
+(( ${#ZFS_SOURCES[@]} + ${#RSYNC_FILES[@]} > 0 )) || fail 'No Warm Move-compatible VM disks were found.' 14
+for src in "${ZFS_SOURCES[@]}"; do
+  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || fail "Native ZFS encryption is not supported in 0.3 beta1: $src" 17
+done
+
+ACTION="${ACTION:-prepare}"
+OLD_GENERATION=0; OLD_SNAPSHOT=''; PENDING_GENERATION=0; PENDING_SNAPSHOT=''
+if [[ -f "$SEED_JSON" ]]; then
+  OLD_GENERATION="$(json_get "$SEED_JSON" generation || echo 0)"
+  OLD_SNAPSHOT="$(json_get "$SEED_JSON" baseSnapshot || true)"
+  PENDING_GENERATION="$(json_get "$SEED_JSON" pendingGeneration || echo 0)"
+  PENDING_SNAPSHOT="$(json_get "$SEED_JSON" pendingSnapshot || true)"
+fi
+if [[ "$ACTION" == update && ( "$OLD_GENERATION" == 0 || -z "$OLD_SNAPSHOT" ) ]]; then fail 'No prepared copy exists to update.' 16; fi
+if [[ "$ACTION" == resume ]]; then
+  [[ "$PENDING_GENERATION" =~ ^[0-9]+$ && "$PENDING_GENERATION" -gt 0 && -n "$PENDING_SNAPSHOT" ]] || fail 'No resumable prepared-copy generation was recorded.' 16
+  GENERATION="$PENDING_GENERATION"
+  NEW_SNAPSHOT="$PENDING_SNAPSHOT"
+else
+  GENERATION=$((OLD_GENERATION+1))
+  NEW_SNAPSHOT="unmotion-seed-${SEED_ID}-g${GENERATION}"
+fi
+VM_STATE="$(virsh domstate "$VM_UUID" | tr -d '\r')"
+QGA_CONNECTED="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo !empty($d["guestAgent"]["connected"])?1:0;' "$VM_JSON")"
+QUIESCED="$(json_get "$SEED_JSON" pendingQuiesced 2>/dev/null || echo 0)"
+if (( ${#ZFS_SOURCES[@]} > 0 )); then
+  if [[ "$ACTION" == resume ]]; then
+    state SNAPSHOTTING 8 'Reusing the retained ZFS snapshot for resume'
+    for src in "${ZFS_SOURCES[@]}"; do
+      zfs list -H -t snapshot "$src@$NEW_SNAPSHOT" >/dev/null 2>&1 || fail "Required resume snapshot is missing: $src@$NEW_SNAPSHOT" 18
+    done
+  else
+    state SNAPSHOTTING 8 'Creating consistency-group ZFS snapshot'
+    if [[ "$VM_STATE" != 'shut off' && "${QUIESCE_SNAPSHOTS:-1}" == 1 && "$QGA_CONNECTED" == 1 ]]; then
+      log 'Freezing guest filesystems through QEMU Guest Agent.'
+      debug_cmd timeout 8 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-freeze"}'
+      THAW_NEEDED=1
+      if freeze_out="$(timeout 8 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-freeze"}' 2>&1)"; then
+        freeze_count="$(printf '%s' "$freeze_out" | json_return_count)"
+        log "Guest filesystems frozen${freeze_count:+: $freeze_count}."
+        QUIESCED=1
+      else
+        log "WARNING: guest filesystem freeze failed or timed out; attempting thaw and using a crash-consistent snapshot: $freeze_out"
+        thaw
+      fi
+    fi
+    snaps=(); for src in "${ZFS_SOURCES[@]}"; do snaps+=("$src@$NEW_SNAPSHOT"); done
+    debug_cmd zfs snapshot "${snaps[@]}"
+    zfs snapshot "${snaps[@]}"
+    debug "ZFS snapshot command completed successfully (${#snaps[@]} object(s))."
+    thaw
+    HELD_TSV="$DIR/held-snapshots.tsv"; : > "$HELD_TSV"
+    for src in "${ZFS_SOURCES[@]}"; do
+      if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then kind=dataset; else kind=zvol; fi
+      printf '%s\t%s\t\t%s\t\t\n' "$kind" "$src" "$NEW_SNAPSHOT" >> "$HELD_TSV"
+      debug_cmd zfs hold "unmotion:$SEED_ID" "$src@$NEW_SNAPSHOT"
+      zfs hold "unmotion:$SEED_ID" "$src@$NEW_SNAPSHOT"
+      debug "ZFS hold applied: unmotion:$SEED_ID -> $src@$NEW_SNAPSHOT"
+    done
+  fi
+fi
+debug "Recording pending generation=$GENERATION snapshot=$NEW_SNAPSHOT action=$ACTION quiesced=$QUIESCED"
+php -r '$p=$argv[1];$d=json_decode(file_get_contents($p),true);if(!is_array($d))$d=[];$d["pendingGeneration"]=(int)$argv[2];$d["pendingSnapshot"]=$argv[3];$d["pendingAction"]=$argv[4];$d["pendingQuiesced"]=$argv[5]==="1";$d["updatedAt"]=date(DATE_ATOM);$t=$p.".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$p);' "$SEED_JSON" "$GENERATION" "$NEW_SNAPSHOT" "$ACTION" "$QUIESCED"
+
+receive_props(){ local type="$1" mount="${2:-}" p="-o readonly=on -o dedup=$(sq "$DEST_DEDUP_REMOTE")"; [[ "$DEST_COMPRESSION_REMOTE" == inherit ]] || p+=" -o compression=$(sq "$DEST_COMPRESSION_REMOTE")"; [[ "$type" == dataset ]] && p+=" -o mountpoint=$(sq "$mount")"; printf '%s' "$p"; }
+zfs_size(){
+  local src="$1" old="$2" new="$3" out
+  local -a args=(-nP -cp)
+  if [[ -n "$old" ]]; then debug_cmd zfs send "${args[@]}" -i "$src@$old" "$src@$new"; out="$(zfs send "${args[@]}" -i "$src@$old" "$src@$new" 2>/dev/null || true)"; else debug_cmd zfs send "${args[@]}" "$src@$new"; out="$(zfs send "${args[@]}" "$src@$new" 2>/dev/null || true)"; fi
+  awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"
+}
+resume_size(){ local token="$1" out; debug "CMD local: zfs send -nP -t <receive-resume-token>"; out="$(zfs send -nP -t "$token" 2>/dev/null || true)"; awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"; }
+seed_progress_parser(){
+  local base="$1" span="$2" label="$3" line pct last=-5 overall
+  while IFS= read -r line; do
+    [[ "$line" =~ ^[0-9]+$ ]] || continue
+    pct="$line"; ((pct>100))&&pct=100; overall=$((base+span*pct/100))
+    /usr/local/sbin/unmotion-seed-state "$SEED_ID" TRANSFERRING "$overall" "$label: ${pct}%" >/dev/null 2>&1 || true
+    if ((pct==100||pct>=last+5)); then
+      printf '%s %s: %s%%\n' "$(date '+%F %T')" "$label" "$pct" >>"$LOG"
+      last=$pct
+    fi
+  done
+  return 0
+}
+run_zfs_attempt(){
+  local src="$1" dst="$2" old="$3" new="$4" props="$5" token="$6" size="$7" base="$8" span="$9" label="${10}"
+  local attempt_log rc x receive_cmd
+  local -a statuses=() limit=()
+  attempt_log="$DIR/zfs-receive.$$.log"; : > "$attempt_log"
+  if [[ "${WARM_BANDWIDTH_MIB:-0}" =~ ^[0-9]+$ ]] && ((WARM_BANDWIDTH_MIB>0)); then limit=(-L "${WARM_BANDWIDTH_MIB}m"); fi
+  if [[ -n "$token" ]]; then receive_cmd="zfs receive -su $(sq "$dst")"; else receive_cmd="zfs receive -su $props $(sq "$dst")"; fi
+  debug_remote "$receive_cmd"
+  if [[ -n "$token" ]]; then
+    debug "PIPELINE: zfs send -t <receive-resume-token> | pv(size=$size${limit[*]:+ limit=${limit[*]}}) | ssh -> $receive_cmd"
+  elif [[ -n "$old" ]]; then
+    debug "PIPELINE: zfs send -cp -i $(printf '%q' "$src@$old") $(printf '%q' "$src@$new") | pv(size=$size${limit[*]:+ limit=${limit[*]}}) | ssh -> $receive_cmd"
+  else
+    debug "PIPELINE: zfs send -cp $(printf '%q' "$src@$new") | pv(size=$size${limit[*]:+ limit=${limit[*]}}) | ssh -> $receive_cmd"
+  fi
+  set +e
+  if command -v pv >/dev/null 2>&1 && ((size>0)); then
+    if [[ -n "$token" ]]; then
+      zfs send -t "$token" 2>>"$LOG" | pv -n -f -s "$size" "${limit[@]}" 2> >(seed_progress_parser "$base" "$span" "$label" >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    elif [[ -n "$old" ]]; then
+      zfs send -cp -i "$src@$old" "$src@$new" 2>>"$LOG" | pv -n -f -s "$size" "${limit[@]}" 2> >(seed_progress_parser "$base" "$span" "$label" >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    else
+      zfs send -cp "$src@$new" 2>>"$LOG" | pv -n -f -s "$size" "${limit[@]}" 2> >(seed_progress_parser "$base" "$span" "$label" >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    fi
+  elif [[ -n "$token" ]]; then
+    zfs send -vP -t "$token" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  elif [[ -n "$old" ]]; then
+    zfs send -vP -cp -i "$src@$old" "$src@$new" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  else
+    zfs send -vP -cp "$src@$new" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  fi
+  statuses=("${PIPESTATUS[@]}"); rc=0; for x in "${statuses[@]}"; do ((x==0)) || rc=$x; done
+  set -e
+  cat "$attempt_log" >> "$LOG"
+  debug "PIPESTATUS: ${statuses[*]} ; selected exit=$rc"
+  return "$rc"
+}
+remote_resume_token(){ local dst="$1"; remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" | tr -d '\r' || true; }
+transfer_zfs(){
+  local src="$1" dst="$2" type="$3" mount="$4" old="$5" new="$6" label="$7" base="$8" span="$9"
+  local size props token srcg dstg
+  props="$(receive_props "$type" "$mount")"
+  if remote "zfs list -H -t snapshot $(sq "$dst@$new") >/dev/null 2>&1"; then
+    srcg="$(zfs get -H -o value guid "$src@$new")"
+    dstg="$(remote "zfs get -H -o value guid $(sq "$dst@$new")")"
+    [[ "$srcg" == "$dstg" ]] || fail "$label exists at the destination with a different snapshot GUID." 40
+    remote "zfs hold $(sq "unmotion:$SEED_ID") $(sq "$dst@$new") 2>/dev/null || true"
+    log "$label: destination snapshot already complete; GUID verified."
+    return 0
+  fi
+  token="$(remote_resume_token "$dst")"
+  [[ "$token" == - ]] && token=''
+  if [[ -n "$token" ]]; then debug "Destination resume token present for $dst (length ${#token})."; else debug "No destination resume token for $dst."; fi
+  if [[ -n "$token" ]]; then
+    size="$(resume_size "$token")"
+    log "$label: resuming retained ZFS receive token; estimated remaining stream $size bytes."
+  else
+    size="$(zfs_size "$src" "$old" "$new")"
+    log "$label: estimated stream $size bytes."
+  fi
+  if ! run_zfs_attempt "$src" "$dst" "$old" "$new" "$props" "$token" "$size" "$base" "$span" "$label"; then
+    token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+    if [[ -n "$token" ]]; then
+      FAIL_RECORDED=1
+      state INTERRUPTED "$base" "$label interrupted; resumable ZFS state retained"
+      log 'Use Resume to continue from the destination receive token, or Remove failed seed to discard it.'
+      exit 75
+    fi
+    fail "$label failed and no resumable receive token was retained; see the log." 41
+  fi
+  srcg="$(zfs get -H -o value guid "$src@$new")"
+  dstg="$(remote "zfs get -H -o value guid $(sq "$dst@$new")")"
+  [[ "$srcg" == "$dstg" ]] || fail "$label completed but snapshot GUID verification failed." 42
+  remote "zfs hold $(sq "unmotion:$SEED_ID") $(sq "$dst@$new") 2>/dev/null || true"
+  log "$label: 100% — snapshot GUID verified."
+}
+
+state TRANSFERRING 15 "${ACTION^} prepared storage"
+STORAGE_TSV="$DIR/storage-new.tsv"; : > "$STORAGE_TSV"
+declare -A SEED_DEST_SEEN=()
+INDEX=0; TOTAL=$(( ${#ZFS_SOURCES[@]} + ${#RSYNC_FILES[@]} )); ((TOTAL>0))||TOTAL=1
+for src in "${ZFS_SOURCES[@]}"; do
+  ((INDEX+=1)); kind=zvol; mount='';
+  if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then kind=dataset; srcmount="$(zfs get -H -o value mountpoint "$src")"; [[ -n "$DEST_IMAGE_ZFS_DATASET" ]] || fail 'Destination image directory is not an exact ZFS dataset, so a dedicated image dataset cannot be received.' 20; dst="$DEST_IMAGE_ZFS_DATASET/$(basename "$src")"; mount="$DEST_IMAGE_DIR/$(basename "$srcmount")";
+  else [[ "$DEST_ZVOL_READY" == 1 && -n "$DEST_ZVOL_DATASET" ]] || fail 'Destination zvol dataset is unavailable.' 21; dst="$DEST_ZVOL_DATASET/$(basename "$src")"; fi
+  [[ -n "$dst" && -z "${SEED_DEST_SEEN[$dst]:-}" ]] || fail "Multiple source disks/datasets map to destination $dst" 21
+  SEED_DEST_SEEN[$dst]=1
+  obj_base=$((15+(INDEX-1)*65/TOTAL)); obj_span=$((65/TOTAL)); ((obj_span<1))&&obj_span=1
+  state TRANSFERRING "$obj_base" "Replicating $src"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$src" "$dst" "$NEW_SNAPSHOT" "${srcmount:-}" "$mount" >> "$STORAGE_TSV"
+  transfer_zfs "$src" "$dst" "$kind" "$mount" "$OLD_SNAPSHOT" "$NEW_SNAPSHOT" "ZFS $src" "$obj_base" "$obj_span"
+done
+BW=(); if [[ "${WARM_BANDWIDTH_MIB:-0}" =~ ^[0-9]+$ ]] && ((WARM_BANDWIDTH_MIB>0));then BW=(--bwlimit="$((WARM_BANDWIDTH_MIB*1024))");fi
+rsync_seed_progress_parser(){
+  local base="$1" span="$2" label="$3" line pct last=-5 overall
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    printf '%s %s\n' "$(date '+%F %T')" "$line" >>"$LOG"
+    if [[ "$line" =~ ([0-9]{1,3})% ]]; then
+      pct="${BASH_REMATCH[1]}"; ((pct>100))&&pct=100; overall=$((base+span*pct/100))
+      /usr/local/sbin/unmotion-seed-state "$SEED_ID" TRANSFERRING "$overall" "$label: ${pct}%"
+      if ((pct==100||pct>=last+5)); then log "$label: ${pct}%"; last=$pct; fi
+    fi
+  done
+}
+for src in "${RSYNC_FILES[@]}"; do
+  ((INDEX+=1)); dst="$DEST_IMAGE_DIR/$VM_NAME/$(basename "$src")"
+  [[ -z "${SEED_DEST_SEEN[$dst]:-}" ]] || fail "Multiple source images map to destination $dst" 21
+  SEED_DEST_SEEN[$dst]=1
+  remote "mkdir -p $(sq "${dst%/*}"); test ! -e $(sq "$dst") || chmod 0600 $(sq "$dst")"
+  obj_base=$((15+(INDEX-1)*65/TOTAL)); obj_span=$((65/TOTAL)); ((obj_span<1))&&obj_span=1; label="Image $(basename "$src")"
+  state TRANSFERRING "$obj_base" "Synchronising $(basename "$src")"
+  printf 'image\t%s\t%s\t\t\t\n' "$src" "$dst" >> "$STORAGE_TSV"
+  debug "CMD local: rsync -aS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 ${BW[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE:$dst")"
+  set +e
+  rsync -aS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 "${BW[@]}" -e "$RSYNC_RSH" -- "$src" "$REMOTE:$dst" 2>&1 | tr '\r' '\n' | rsync_seed_progress_parser "$obj_base" "$obj_span" "$label"
+  rc="${PIPESTATUS[0]}"; set -e; ((rc==0)) || fail "rsync failed for $src" "$rc"
+  [[ "$(stat -c %s -- "$src")" == "$(remote "stat -c %s -- $(sq "$dst")")" ]] || fail "Size verification failed for $dst" 22
+  remote "chmod 0400 $(sq "$dst")"
+done
+
+if [[ -n "$OLD_SNAPSHOT" ]]; then
+  while IFS=$'\t' read -r kind src dst snap _; do [[ "$kind" == zvol || "$kind" == dataset ]] || continue; zfs release "unmotion:$SEED_ID" "$src@$OLD_SNAPSHOT" 2>/dev/null||true; zfs destroy "$src@$OLD_SNAPSHOT" 2>/dev/null||true; remote "zfs release $(sq "unmotion:$SEED_ID") $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true; zfs destroy $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true"; done < "$STORAGE_TSV"
+fi
+
+php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line);$items[]=["kind"=>$p[0]??"","source"=>$p[1]??"","destination"=>$p[2]??"","snapshot"=>$p[3]??"","sourceMountpoint"=>$p[4]??"","destinationMountpoint"=>$p[5]??""];} $d=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];if(!is_array($d))$d=[];$d=array_replace($d,["id"=>$argv[3],"vmUuid"=>$argv[4],"vmName"=>$argv[5],"peerId"=>$argv[6],"peerName"=>$argv[7],"peerHostId"=>$argv[8],"state"=>"READY","progress"=>100,"message"=>"Prepared copy is current","generation"=>(int)$argv[9],"baseSnapshot"=>$argv[10],"storage"=>$items,"sourceStateAtSync"=>$argv[11],"quiesced"=>$argv[12]==="1","tpm"=>$argv[13]==="1","guestAgent"=>$argv[14]==="1","createdAt"=>$d["createdAt"]??date(DATE_ATOM),"lastSyncAt"=>date(DATE_ATOM),"updatedAt"=>date(DATE_ATOM)]);unset($d["pendingGeneration"],$d["pendingSnapshot"],$d["pendingAction"],$d["pendingQuiesced"]);$t=$argv[2].".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$argv[2]);' "$STORAGE_TSV" "$SEED_JSON" "$SEED_ID" "$VM_UUID" "$VM_NAME" "$PEER_ID" "$PEER_NAME" "$PEER_HOST_ID" "$GENERATION" "$NEW_SNAPSHOT" "$VM_STATE" "$QUIESCED" "$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo !empty($d["tpm"])?1:0;' "$VM_JSON")" "$QGA_CONNECTED"
+mkdir -p "$BASE/incoming/seeds" >/dev/null 2>&1 || true
+seed_b64="$(base64 -w0 "$SEED_JSON")"
+remote "mkdir -p $(sq "$BASE/incoming/seeds"); printf %s $(sq "$seed_b64") | base64 -d > $(sq "$BASE/incoming/seeds/$SEED_ID.json"); chmod 600 $(sq "$BASE/incoming/seeds/$SEED_ID.json")"
+state READY 100 'Prepared copy is current'
+log "Warm Move ${ACTION} completed. Destination storage remains read-only and no VM definition was created."
+trap - EXIT

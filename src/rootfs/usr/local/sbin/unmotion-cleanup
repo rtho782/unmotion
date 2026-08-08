@@ -1,0 +1,11 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try {
+    unmCleanupAll();
+    echo "unMotion pairings, keys, jobs and local plugin state removed.\n";
+} catch(Throwable $e) {
+    fwrite(STDERR,$e->getMessage()."\n");
+    exit(1);
+}

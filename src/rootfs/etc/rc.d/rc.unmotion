@@ -1,0 +1,35 @@
+#!/bin/bash
+PLUGIN=/boot/config/plugins/unmotion
+SERVICE=/etc/avahi/services/unmotion.service
+init_config(){
+  mkdir -p "$PLUGIN" "$PLUGIN/peers" "$PLUGIN/jobs" "$PLUGIN/ownership" "$PLUGIN/seeds"
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; unmWriteRuntimeConfig(unmLoadConfig()); unmHostId();' >/dev/null 2>&1 || true
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmJobs() as $j){if(in_array($j["state"]??"",["STARTING","PREFLIGHT","PREPARING_DESTINATION","SHUTTING_DOWN","SNAPSHOTTING","CONVERTING","TRANSFERRING","HOST_STATE","DEFINING_DESTINATION","CANCELLING","STARTING_DESTINATION","OWNERSHIP_HANDOFF"],true)){ $p=UNM_JOBS_DIR."/".$j["id"]."/job.json"; $j["state"]="INTERRUPTED";$j["message"]="Host or plugin restarted; job may be resumed";$j["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$j);}}' >/dev/null 2>&1 || true
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmSeeds() as $seed){if(in_array($seed["state"]??"",["STARTING","PREFLIGHT","SNAPSHOTTING","TRANSFERRING","REMOVING"],true)){ $p=unmSeedPath((string)$seed["id"])."/seed.json"; $seed["state"]="INTERRUPTED";$seed["message"]="Host or plugin restarted; run Update or Remove after checking the destination";$seed["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$seed);}}' >/dev/null 2>&1 || true
+  for request in "$PLUGIN"/incoming/*/source-cleanup-request.json; do
+    [[ -f "$request" ]] || continue
+    state=$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo $d["state"]??"";' "$request" 2>/dev/null)
+    case "$state" in scheduled|watching|validating|requesting_source_cleanup) job=$(basename "$(dirname "$request")"); nohup setsid /usr/local/sbin/unmotion-soak-cleanup "$job" >>"$(dirname "$request")/source-cleanup-launcher.log" 2>&1 & ;; esac
+  done
+}
+advertise(){
+  [[ -x /usr/bin/avahi-browse || -x /usr/bin/avahi-publish-service || -d /etc/avahi/services ]] || return 0
+  discovery=$(php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; echo unmLoadConfig()["discovery"]?"1":"0";' 2>/dev/null || echo 0)
+  [[ "$discovery" == 1 ]] || { rm -f "$SERVICE"; return 0; }
+  mkdir -p /etc/avahi/services
+  host=$(hostname | sed 's/[&<>]/_/g'); id=$(cat "$PLUGIN/host_id" 2>/dev/null); version=$(cat /usr/local/emhttp/plugins/unmotion/VERSION 2>/dev/null || echo unknown)
+  ssh_port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
+  [[ "$ssh_port" =~ ^[0-9]+$ ]] || ssh_port=22
+  cat > "$SERVICE" <<EOF
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group><name replace-wildcards="yes">$host unMotion</name><service><type>_unmotion._tcp</type><port>$ssh_port</port><txt-record>host_id=$id</txt-record><txt-record>version=$version</txt-record><txt-record>protocol=5</txt-record></service></service-group>
+EOF
+  pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true
+}
+case "${1:-start}" in
+  start) init_config; advertise ;;
+  stop) rm -f "$SERVICE"; pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true ;;
+  restart) "$0" stop; "$0" start ;;
+  *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
+esac

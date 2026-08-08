@@ -1,0 +1,34 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+if ($argc !== 2) { fwrite(STDERR, "Usage: unmotion-inspect domain.xml\n"); exit(2); }
+$xml=@file_get_contents($argv[1]);
+if($xml===false){fwrite(STDERR,"Unable to read domain XML\n");exit(3);}
+$out=['name'=>'','uuid'=>'','zvols'=>[],'files'=>[],'fileDetails'=>[],'datasetGroups'=>[],'isos'=>[]];
+foreach(['name','uuid'] as $tag)if(preg_match('~<'.$tag.'\b[^>]*>(.*?)</'.$tag.'>~s',$xml,$m))$out[$tag]=trim(html_entity_decode(strip_tags($m[1]),ENT_QUOTES|ENT_XML1));
+$disks=[];
+if(preg_match_all('~<disk\b[^>]*>.*?</disk>~s',$xml,$blocks))foreach($blocks[0] as $block){
+    $device=preg_match('~<disk\b[^>]*\bdevice=(["\'])(.*?)\1~s',$block,$m)?$m[2]:'';$source='';$kind='';
+    if(preg_match('~<source\b[^>]*\bdev=(["\'])(.*?)\1~s',$block,$m)){$source=html_entity_decode($m[2],ENT_QUOTES|ENT_XML1);$kind='block';}
+    elseif(preg_match('~<source\b[^>]*\bfile=(["\'])(.*?)\1~s',$block,$m)){$source=html_entity_decode($m[2],ENT_QUOTES|ENT_XML1);$kind='file';}
+    if($source==='')continue;
+    if($device==='cdrom'){$out['isos'][]=$source;continue;}
+    if($device!=='disk')continue;
+    $format=preg_match('~<driver\b[^>]*\btype=(["\'])(.*?)\1~s',$block,$fm)?strtolower($fm[2]):'';
+    if($kind==='block'&&str_starts_with($source,'/dev/zvol/')){$out['zvols'][]=substr($source,strlen('/dev/zvol/'));$disks[]=['type'=>'zvol','source'=>$source,'format'=>$format];}
+    elseif($kind==='file'){$out['files'][]=$source;$disks[]=['type'=>'file','source'=>$source,'format'=>$format];}
+}
+$vm=unmClassifyVmStorage(['name'=>$out['name'],'uuid'=>$out['uuid'],'disks'=>$disks,'pci'=>[]],true);
+$groups=[];
+foreach($vm['disks'] as $disk){
+    if(($disk['type']??'')!=='file')continue;
+    $out['fileDetails'][]=$disk;
+    if(($disk['transferClass']??'')==='zfs-dataset-image'){
+        $ds=(string)$disk['zfsDataset'];
+        if(!isset($groups[$ds]))$groups[$ds]=['dataset'=>$ds,'mountpoint'=>$disk['zfsMountpoint'],'dedicated'=>true,'files'=>[]];
+        $groups[$ds]['files'][]=['source'=>$disk['source'],'relativePath'=>$disk['relativePath']];
+    }
+}
+$out['datasetGroups']=array_values($groups);
+echo json_encode($out,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR),"\n";

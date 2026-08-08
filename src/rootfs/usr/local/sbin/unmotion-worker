@@ -1,0 +1,568 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+JOB_ID="${1:-}"
+[[ "$JOB_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo "Invalid job id" >&2; exit 2; }
+BASE="/boot/config/plugins/unmotion"
+JOBDIR="$BASE/jobs/$JOB_ID"
+LOG="$JOBDIR/migration.log"
+REQUEST="$JOBDIR/request.cfg"
+SETTINGS="$BASE/settings.cfg"
+CANCEL_FILE="$JOBDIR/cancel.requested"
+[[ -f "$REQUEST" && -f "$SETTINGS" ]] || { echo "Missing job or settings" >&2; exit 3; }
+# shellcheck disable=SC1090
+source "$SETTINGS"
+# shellcheck disable=SC1090
+source "$REQUEST"
+PEERCFG="$BASE/peers/$PEER_ID.cfg"
+[[ -f "$PEERCFG" ]] || { echo "Peer configuration missing" >&2; exit 4; }
+# shellcheck disable=SC1090
+source "$PEERCFG"
+
+if [[ -z "${VM_UUID:-}" ]]; then VM_UUID="$(virsh domuuid "$VM_NAME" 2>/dev/null || true)"; fi
+[[ "$VM_UUID" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || { echo "Invalid or missing VM UUID" >&2; exit 4; }
+VM_REF="$VM_UUID"
+RESOLVED_VM_NAME="$(virsh domname "$VM_REF" 2>/dev/null || true)"
+[[ -n "$RESOLVED_VM_NAME" ]] || { echo "VM UUID is not defined locally: $VM_UUID" >&2; exit 4; }
+[[ "$RESOLVED_VM_NAME" != *$'\n'* && "$RESOLVED_VM_NAME" != *$'\r'* && "$RESOLVED_VM_NAME" != *$'\t'* && "$RESOLVED_VM_NAME" != */* ]] || { echo "VM name contains unsafe path characters" >&2; exit 4; }
+VM_NAME="$RESOLVED_VM_NAME"
+
+mkdir -p "$JOBDIR"
+touch "$LOG"; chmod 600 "$LOG"
+exec 9>/var/run/unmotion.lock
+if ! flock -n 9; then /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Another migration job is active"; exit 5; fi
+
+export UNM_WORKER_PID=$$
+SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+REMOTE="${PEER_USER}@${PEER_HOST}"
+DEST_STARTED=0
+DEST_START_ATTEMPTED=0
+SOURCE_WAS_RUNNING=0
+SOURCE_AUTOSTART="disable"
+SOURCE_UNDEFINED=0
+SOURCE_RENAMED=0
+JOB_FINAL=0
+COMPLETED_WITH_WARNINGS=0
+INTERRUPT_MESSAGE=''
+STAGE_ROOT="${IMAGE_DIR%/}/.unmotion-staging/$JOB_ID"
+SOURCE_CLEANUP_ACTION="${SOURCE_CLEANUP_ACTION:-unregister}"
+DESTINATION_CONFLICT_ACTION="${DESTINATION_CONFLICT_ACTION:-cancel}"
+SOAK_SECONDS="${SOAK_SECONDS:-300}"
+[[ "$SOURCE_CLEANUP_ACTION" == unregister || "$SOURCE_CLEANUP_ACTION" == retain || "$SOURCE_CLEANUP_ACTION" == delete ]] || { echo "Invalid source cleanup action" >&2; exit 4; }
+[[ "$DESTINATION_CONFLICT_ACTION" == cancel || "$DESTINATION_CONFLICT_ACTION" == overwrite ]] || { echo "Invalid destination conflict action" >&2; exit 4; }
+
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+state(){ /usr/local/sbin/unmotion-state "$JOB_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
+sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
+remote(){ ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+json_get(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(explode(".",$argv[2]) as $k){if(!is_array($d)||!array_key_exists($k,$d)){exit(3);} $d=$d[$k];} if(is_bool($d))echo $d?"1":"0";elseif(is_array($d))echo json_encode($d);elseif($d!==null)echo $d;' "$1" "$2"; }
+DEBUG_LOGGING="${DEBUG_LOGGING:-0}"
+sanitize_command(){
+  local text="${1:-}"
+  [[ -n "${PEER_KEY:-}" ]] && text="${text//${PEER_KEY}/<peer-key>}"
+  [[ -n "${PEER_KNOWN_HOSTS:-}" ]] && text="${text//${PEER_KNOWN_HOSTS}/<known-hosts>}"
+  text="$(printf '%s' "$text" | sed -E 's/[A-Za-z0-9+\/=]{200,}/<redacted-payload>/g')"
+  if ((${#text}>1600)); then text="${text:0:1600}… [truncated]"; fi
+  printf '%s' "$text"
+}
+debug(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; printf '%s DEBUG %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
+debug_remote(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; debug "CMD remote [$REMOTE]: $(sanitize_command "$1")"; }
+cancel_requested(){ [[ -f "$CANCEL_FILE" ]]; }
+cleanup_staging(){ [[ "$STAGE_ROOT" == /mnt/*/.unmotion-staging/* ]] && rm -rf -- "$STAGE_ROOT" 2>/dev/null || true; }
+
+restore_source(){
+  (( DEST_STARTED == 0 )) || return 0
+  (( SOURCE_UNDEFINED == 0 )) || return 0
+  if (( DEST_START_ATTEMPTED == 1 )); then log "Destination start was attempted but could not be verified; source will remain stopped to prevent split-brain."; return 0; fi
+  if virsh dominfo "$VM_REF" >/dev/null 2>&1; then
+    if [[ "$SOURCE_AUTOSTART" == "enable" || "$SOURCE_AUTOSTART" == "yes" ]]; then virsh autostart "$VM_REF" >/dev/null 2>&1 || true; fi
+    if (( SOURCE_WAS_RUNNING == 1 )) && [[ "$(virsh domstate "$VM_REF" 2>/dev/null | tr -d '\r')" == "shut off" ]]; then
+      log "Failure occurred before destination start; restarting source VM."
+      virsh start "$VM_REF" >>"$LOG" 2>&1 || true
+    fi
+  fi
+}
+finish_cancel(){
+  set +e; JOB_FINAL=1; log "Cancellation requested"; restore_source; cleanup_staging
+  if (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Cancellation occurred after destination start attempt; inspect both hosts"
+  else state CANCELLED 0 "Migration cancelled; source restored where safe"
+  fi
+  exit 130
+}
+on_error(){
+  local rc=$? line=${BASH_LINENO[0]:-unknown} cmd="${BASH_COMMAND:-unknown}"
+  trap - ERR; set +e
+  if cancel_requested; then finish_cancel; fi
+  if ((rc==75)); then
+    JOB_FINAL=1
+    log "Transfer interrupted with resumable ZFS state retained."
+    state INTERRUPTED 0 "${INTERRUPT_MESSAGE:-ZFS transfer interrupted; use Resume to continue}"
+    exit "$rc"
+  fi
+  JOB_FINAL=1; log "ERROR at line $line (exit $rc): $(sanitize_command "$cmd")"; restore_source
+  if (( DEST_STARTED == 1 )); then state COMPLETE_WITH_WARNINGS 100 "Destination is running; source cleanup or ownership recording failed"
+  elif (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Destination start outcome is unknown; inspect both hosts before any restart"
+  else state FAILED 0 "Migration failed; see log"; fi
+  exit "$rc"
+}
+on_exit(){
+  local rc=$?; trap - ERR; set +e
+  if (( rc != 0 && JOB_FINAL == 0 )); then
+    if cancel_requested; then finish_cancel; fi
+    JOB_FINAL=1; log "Worker exited with status $rc"; restore_source
+    if (( DEST_STARTED == 1 )); then state COMPLETE_WITH_WARNINGS 100 "Destination is running; source cleanup or ownership recording failed"; elif (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Destination start outcome is unknown; inspect both hosts before any restart"; else state FAILED 0 "Migration failed; see log"; fi
+  fi
+}
+trap on_error ERR
+trap on_exit EXIT
+trap 'trap - ERR INT TERM; finish_cancel' INT TERM
+debug "Worker start: job=$JOB_ID vm=$VM_UUID peer=$REMOTE mode=${MIGRATION_MODE:-cold} debug=$DEBUG_LOGGING"
+debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes $REMOTE"
+
+require(){ command -v "$1" >/dev/null 2>&1 || { log "Missing command: $1"; return 1; }; }
+for c in virsh ssh rsync tar php flock gzip base64 stat unmotion-inspect; do require "$c"; done
+
+REMOTE_CAPS="$JOBDIR/remote-capabilities.json"
+SOURCE_XML="$JOBDIR/source.xml"
+LIVE_XML="$JOBDIR/live.xml"
+DEST_XML="$JOBDIR/destination.xml"
+MAP_TSV="$JOBDIR/mapping.tsv"
+HOST_ARCHIVE="$JOBDIR/host-state.tar.gz"
+DISK_MANIFEST="$JOBDIR/disks.json"
+USB_MANIFEST="${USB_MANIFEST:-$JOBDIR/usb-manifest.json}"
+: > "$MAP_TSV"
+
+state PREFLIGHT 2 "Checking source and destination"
+cancel_requested && finish_cancel
+debug_remote "/usr/local/sbin/unmotion-agent capabilities"
+remote "/usr/local/sbin/unmotion-agent capabilities" > "$REMOTE_CAPS"
+debug "Remote capabilities received successfully."
+DEST_IMAGE_DIR="$(json_get "$REMOTE_CAPS" storage.imageDirectory)"
+DEST_ZVOL_DATASET="$(json_get "$REMOTE_CAPS" storage.zvolDataset || true)"
+DEST_ISO_DIR="$(json_get "$REMOTE_CAPS" storage.isoDirectory)"
+DEST_DEDUP_REMOTE="$(json_get "$REMOTE_CAPS" storage.dedup)"
+DEST_COMPRESSION_REMOTE="$(json_get "$REMOTE_CAPS" storage.compression || echo inherit)"
+DEST_IMAGE_ZFS_DATASET="$(json_get "$REMOTE_CAPS" storage.imageZfsDataset || true)"
+DEST_IMAGE_ZFS_CONTAINING="$(json_get "$REMOTE_CAPS" storage.imageZfsContainingDataset || true)"
+DEST_ISO_ZFS_CONTAINING="$(json_get "$REMOTE_CAPS" storage.isoZfsContainingDataset || true)"
+DEST_ZVOL_READY="$(json_get "$REMOTE_CAPS" features.zvol || echo 0)"
+DEST_CPU_COUNT="$(json_get "$REMOTE_CAPS" resources.cpuOnlineCount || echo 0)"
+DEST_CPU_SET="$(json_get "$REMOTE_CAPS" resources.cpuOnlineSet || true)"
+DEST_NUMA_SET="$(json_get "$REMOTE_CAPS" resources.numaNodeSet || true)"
+DEST_MEMORY_AVAILABLE="$(json_get "$REMOTE_CAPS" resources.availableBytes || echo 0)"
+DEST_MEMORY_TOTAL="$(json_get "$REMOTE_CAPS" resources.totalBytes || echo 0)"
+REMOTE_HOST_ID="$(json_get "$REMOTE_CAPS" hostId)"
+REMOTE_PROTOCOL="$(json_get "$REMOTE_CAPS" protocolVersion)"
+[[ "$REMOTE_HOST_ID" == "$PEER_HOST_ID" ]] || { log "Peer host identity changed; re-pair before migration."; exit 10; }
+[[ "$REMOTE_PROTOCOL" == "5" ]] || { log "Incompatible peer protocol: $REMOTE_PROTOCOL"; exit 11; }
+debug "Destination storage: imageDirectory=${DEST_IMAGE_DIR:-<empty>} zvolDataset=${DEST_ZVOL_DATASET:-<empty>} isoDirectory=${DEST_ISO_DIR:-<empty>}"
+[[ "$DEST_IMAGE_DIR" == /mnt/* ]] || { log "Destination image directory is invalid or not configured: ${DEST_IMAGE_DIR:-<empty>}"; exit 12; }
+[[ "$DEST_DEDUP_REMOTE" == off || "$DEST_DEDUP_REMOTE" == on || "$DEST_DEDUP_REMOTE" == verify ]] || { log "Invalid destination dedup setting"; exit 12; }
+[[ "$DEST_COMPRESSION_REMOTE" == inherit || "$DEST_COMPRESSION_REMOTE" == off || "$DEST_COMPRESSION_REMOTE" == lz4 || "$DEST_COMPRESSION_REMOTE" == zstd || "$DEST_COMPRESSION_REMOTE" == zstd-fast || "$DEST_COMPRESSION_REMOTE" == gzip ]] || { log "Invalid destination compression setting"; exit 12; }
+if [[ "$DEST_ZVOL_READY" == 1 ]]; then [[ -n "$DEST_ZVOL_DATASET" ]] && remote "zfs list $(sq "$DEST_ZVOL_DATASET") >/dev/null"; fi
+
+if ! virsh dominfo "$VM_REF" >>"$LOG" 2>&1; then log "Source VM is no longer defined: $VM_NAME ($VM_UUID)"; exit 18; fi
+if ! virsh dumpxml "$VM_REF" --inactive > "$SOURCE_XML" 2>>"$LOG"; then log "Unable to export the source VM XML: $VM_NAME ($VM_UUID)"; exit 18; fi
+PRE_STATE="$(virsh domstate "$VM_REF" | tr -d '\r')"
+if [[ "$PRE_STATE" != "shut off" ]]; then virsh dumpxml "$VM_REF" > "$LIVE_XML" 2>>"$LOG" || cp "$SOURCE_XML" "$LIVE_XML"; else cp "$SOURCE_XML" "$LIVE_XML"; fi
+UUID="$(sed -nE 's|.*<uuid>([^<]+)</uuid>.*|\1|p' "$SOURCE_XML" | head -n1 | tr -d '\r')"
+[[ "$UUID" == "$VM_UUID" ]] || { log "Exported VM UUID does not match the selected VM (expected $VM_UUID, found ${UUID:-missing})"; exit 19; }
+SOURCE_VCPUS="$(sed -nE 's|.*<vcpu[^>]*>[[:space:]]*([0-9]+)[[:space:]]*</vcpu>.*|\1|p' "$SOURCE_XML" | head -n1)"
+SOURCE_MEMORY_KIB="$(php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; echo unmXmlMemoryKiB(file_get_contents($argv[1]));' "$SOURCE_XML")"
+TARGET_VCPUS="${TARGET_VCPUS:-$SOURCE_VCPUS}"
+TARGET_MEMORY_KIB="${TARGET_MEMORY_KIB:-$SOURCE_MEMORY_KIB}"
+CPU_PINNING_ACTION="${CPU_PINNING_ACTION:-remove}"
+[[ "$TARGET_VCPUS" =~ ^[0-9]+$ && "$TARGET_VCPUS" -ge 1 ]] || { log "Invalid requested vCPU count: $TARGET_VCPUS"; exit 19; }
+[[ "$TARGET_MEMORY_KIB" =~ ^[0-9]+$ && "$TARGET_MEMORY_KIB" -ge 131072 ]] || { log "Invalid requested VM memory: $TARGET_MEMORY_KIB KiB"; exit 19; }
+[[ "$DEST_CPU_COUNT" =~ ^[0-9]+$ && "$DEST_CPU_COUNT" -ge "$TARGET_VCPUS" ]] || { log "Destination has $DEST_CPU_COUNT online CPUs but the migration requests $TARGET_VCPUS vCPUs"; exit 19; }
+[[ "$DEST_MEMORY_AVAILABLE" =~ ^[0-9]+$ && "$DEST_MEMORY_AVAILABLE" -ge $((TARGET_MEMORY_KIB*1024)) ]] || { log "Destination has insufficient currently available RAM for $TARGET_MEMORY_KIB KiB"; exit 19; }
+if [[ "$CPU_PINNING_ACTION" == "retain" ]]; then
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; $xml=file_get_contents($argv[1]);$caps=json_decode(file_get_contents($argv[2]),true);$src=(int)$argv[3];$dst=(int)$argv[4];$r=unmPinningCompatibility(unmCpuPinningInfo($xml),(array)($caps["resources"]??[]),$src,$dst);if(empty($r["valid"])){fwrite(STDERR,implode(" ",$r["reasons"]??[]));exit(1);}' "$SOURCE_XML" "$REMOTE_CAPS" "$SOURCE_VCPUS" "$TARGET_VCPUS" 2>>"$LOG" || { log "Requested CPU pin retention is not valid on the destination"; exit 19; }
+elif [[ "$CPU_PINNING_ACTION" == "none" ]]; then
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; exit(unmCpuPinningInfo(file_get_contents($argv[1]))["present"]?1:0);' "$SOURCE_XML" || { log "CPU pinning action none is invalid because source pinning exists"; exit 19; }
+elif [[ "$CPU_PINNING_ACTION" != "remove" ]]; then log "Invalid CPU pinning action: $CPU_PINNING_ACTION"; exit 19; fi
+REMOVE_CPU_PINNING=$([[ "$CPU_PINNING_ACTION" == "remove" ]] && echo 1 || echo 0)
+log "Resource plan: ${SOURCE_VCPUS} -> ${TARGET_VCPUS} vCPUs; $((SOURCE_MEMORY_KIB/1024)) -> $((TARGET_MEMORY_KIB/1024)) MiB RAM; CPU pinning: ${CPU_PINNING_ACTION}"
+log "Destination resources: CPUs ${DEST_CPU_SET:-unknown} (${DEST_CPU_COUNT} online); RAM available $((DEST_MEMORY_AVAILABLE/1024/1024)) MiB of $((DEST_MEMORY_TOTAL/1024/1024)) MiB"
+if grep -qE "<hostdev[^>]+type=['\"]pci['\"]" "$SOURCE_XML" "$LIVE_XML"; then log "PCIe passthrough detected; 0.3 refuses this migration."; exit 20; fi
+USB_COUNT="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo count($d["devices"]??[]);' "$USB_MANIFEST" 2>/dev/null || echo 0)"
+if (( USB_COUNT > 0 )); then case "$USB_ACTION" in retain|remove) : ;; *) log "USB passthrough requires an explicit retain/remove decision."; exit 21;; esac; fi
+REMOTE_EXISTING_VM=0
+REMOTE_NAME_BY_UUID="$(remote "virsh domname $(sq "$UUID") 2>/dev/null" | tr -d '\r' || true)"
+if [[ -n "$REMOTE_NAME_BY_UUID" ]]; then
+  REMOTE_VM_STATE="$(remote "virsh domstate $(sq "$UUID") 2>/dev/null" | tr -d '\r' || true)"
+  [[ "$REMOTE_VM_STATE" == "shut off" || "$REMOTE_VM_STATE" == "no state" || -z "$REMOTE_VM_STATE" ]] || { log "A VM with this UUID is running on the destination: $REMOTE_NAME_BY_UUID ($REMOTE_VM_STATE)"; exit 22; }
+  [[ "$DESTINATION_CONFLICT_ACTION" == "overwrite" ]] || { log "A retained VM with this UUID already exists on the destination. Select overwrite or cancel."; exit 22; }
+  REMOTE_EXISTING_VM=1
+  log "Destination contains stopped VM $REMOTE_NAME_BY_UUID with the same UUID; overwrite is authorised."
+fi
+REMOTE_UUID_BY_NAME="$(remote "virsh domuuid $(sq "$VM_NAME") 2>/dev/null" | tr -d '\r' || true)"
+[[ -z "$REMOTE_UUID_BY_NAME" || "$REMOTE_UUID_BY_NAME" == "$UUID" ]] || { log "A different destination VM already uses the name $VM_NAME"; exit 22; }
+LOADER_PATH="$(sed -nE 's|.*<loader[^>]*>([^<]+)</loader>.*|\1|p' "$SOURCE_XML" | head -n1)"
+if [[ -n "$LOADER_PATH" ]]; then remote "test -f $(sq "$LOADER_PATH")" || { log "Destination firmware missing: $LOADER_PATH"; exit 23; }; fi
+
+/usr/local/sbin/unmotion-inspect "$SOURCE_XML" > "$DISK_MANIFEST"
+mapfile -t ZVOLS < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["zvols"]??[]) as $v)echo $v,"\n";' "$DISK_MANIFEST")
+mapfile -t FILE_DISKS < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["files"]??[]) as $v)echo $v,"\n";' "$DISK_MANIFEST")
+UNSUPPORTED_STORAGE_COUNT="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);$n=0;foreach(($d["fileDetails"]??[]) as $v)if(str_starts_with((string)($v["transferClass"]??""),"unsupported"))$n++;echo $n;' "$DISK_MANIFEST")"
+((UNSUPPORTED_STORAGE_COUNT==0)) || { log "A disk has an unsupported or unverified qcow2 backing chain; migration is blocked."; exit 24; }
+mapfile -t RSYNC_FILE_DISKS < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["fileDetails"]??[]) as $v)if(($v["transferClass"]??"")!=="zfs-dataset-image")echo $v["source"],"\n";' "$DISK_MANIFEST")
+mapfile -t ISOS < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["isos"]??[]) as $v)echo $v,"\n";' "$DISK_MANIFEST")
+if (( ${#ISOS[@]} == 0 )); then
+  debug "No attached ISOs; destination ISO directory is not required for this migration."
+elif [[ "${ISO_ACTION:-copy}" == copy ]]; then
+  [[ "$DEST_ISO_DIR" == /mnt/* ]] || { log "ISO copy requested but destination ISO directory is invalid or not configured: ${DEST_ISO_DIR:-<empty>}"; exit 12; }
+fi
+(( ${#ZVOLS[@]} + ${#FILE_DISKS[@]} > 0 )) || { log "No supported data disks found."; exit 24; }
+if (( ${#ZVOLS[@]} > 0 )); then require zfs; [[ "$DEST_ZVOL_READY" == 1 ]] || require qemu-img; fi
+
+WARM_MODE=0; WARM_BASE_SNAPSHOT=""; WARM_SEED_JSON=""
+if [[ -n "${WARM_SEED_ID:-}" ]]; then
+  [[ "$WARM_SEED_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { log "Invalid Warm Move seed ID"; exit 24; }
+  WARM_SEED_JSON="$BASE/seeds/$WARM_SEED_ID/seed.json"
+  [[ -f "$WARM_SEED_JSON" ]] || { log "Prepared copy record is missing: $WARM_SEED_ID"; exit 24; }
+  [[ "$(json_get "$WARM_SEED_JSON" vmUuid)" == "$VM_UUID" && "$(json_get "$WARM_SEED_JSON" peerId)" == "$PEER_ID" && "$(json_get "$WARM_SEED_JSON" state)" == READY ]] || { log "Prepared copy does not match this VM and destination or is not ready."; exit 24; }
+  WARM_BASE_SNAPSHOT="$(json_get "$WARM_SEED_JSON" baseSnapshot)"; [[ -n "$WARM_BASE_SNAPSHOT" ]] || { log "Prepared copy has no common base snapshot."; exit 24; }
+  WARM_MODE=1; touch "$JOBDIR/destination-prepared"; log "Warm Move cutover will use prepared base snapshot $WARM_BASE_SNAPSHOT."
+fi
+
+seed_destination(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)if(($x["source"]??"")===$argv[2]){echo $x["destination"]??"";exit;}' "$WARM_SEED_JSON" "$1"; }
+seed_destination_mount(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)if(($x["source"]??"")===$argv[2]){echo $x["destinationMountpoint"]??"";exit;}' "$WARM_SEED_JSON" "$1"; }
+
+ZVOL_DESTS=(); CONVERT_ZVOLS=(); CONVERT_DESTS=(); CONVERT_STAGES=(); DATASET_SRCS=(); DATASET_DESTS=(); DATASET_SRC_MOUNTS=(); DATASET_DEST_MOUNTS=(); DATASET_FILES=()
+declare -A DEST_SEEN=() DATASET_SEEN=()
+OVERWRITE_KINDS=(); OVERWRITE_PATHS=()
+DEST_PREPARED_MARKER="$JOBDIR/destination-prepared"
+for src in "${ZVOLS[@]}"; do
+  zfs list -t volume "$src" >/dev/null
+  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || { log "Native ZFS encryption is not supported in 0.3 beta1: $src"; exit 25; }
+  if [[ "$DEST_ZVOL_READY" == 1 && -n "$DEST_ZVOL_DATASET" ]]; then
+    if ((WARM_MODE));then dst="$(seed_destination "$src")";else dst="$DEST_ZVOL_DATASET/$(basename "$src")";fi
+    [[ -n "$dst" && -z "${DEST_SEEN[$dst]:-}" ]] || { log "Invalid or duplicate destination for $src"; exit 26; }
+    DEST_SEEN[$dst]=1; ZVOL_DESTS+=("$dst"); printf 'disk\t/dev/zvol/%s\t/dev/zvol/%s\n' "$src" "$dst" >> "$MAP_TSV"
+    if (( ! WARM_MODE )) && remote "zfs list $(sq "$dst") >/dev/null 2>&1"; then
+      token="$(remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" || true)"
+      if [[ -n "$token" && "$token" != - ]]; then :; elif [[ "$DESTINATION_CONFLICT_ACTION" == overwrite ]]; then OVERWRITE_KINDS+=(zvol);OVERWRITE_PATHS+=("$dst");else log "Destination zvol already exists: $dst";exit 26;fi
+    fi
+  else
+    ((WARM_MODE==0)) || { log "A prepared zvol cannot be cut over to image storage."; exit 26; }
+    dst="$DEST_IMAGE_DIR/$VM_NAME/$(basename "$src").img";stage="$STAGE_ROOT/$(basename "$src").img"
+    [[ -z "${DEST_SEEN[$dst]:-}" ]] || { log "Multiple disks map to destination $dst";exit 26; }
+    DEST_SEEN[$dst]=1;CONVERT_ZVOLS+=("$src");CONVERT_DESTS+=("$dst");CONVERT_STAGES+=("$stage");printf 'zvol-file\t/dev/zvol/%s\t%s\n' "$src" "$dst" >> "$MAP_TSV"
+    if remote "test -e $(sq "$dst")";then [[ "$DESTINATION_CONFLICT_ACTION" == overwrite ]]&&{ OVERWRITE_KINDS+=(image);OVERWRITE_PATHS+=("$dst"); }||{ log "Destination image exists: $dst";exit 26;};fi
+  fi
+done
+
+# Dedicated per-VM filesystem datasets are replicated once, while all contained image paths are rewritten.
+while IFS=$'\t' read -r ds mount source relative; do
+  [[ -n "$ds" ]] || continue
+  if [[ -z "$DEST_IMAGE_ZFS_DATASET" ]]; then continue; fi
+  if [[ -z "${DATASET_SEEN[$ds]:-}" ]]; then
+    if ((WARM_MODE));then dst="$(seed_destination "$ds")";dest_mount="$(seed_destination_mount "$ds")";else dst="$DEST_IMAGE_ZFS_DATASET/$(basename "$ds")";dest_mount="$DEST_IMAGE_DIR/$(basename "$mount")";fi
+    [[ -n "$dst" && -n "$dest_mount" ]] || { log "Unable to map dedicated dataset $ds";exit 27; }
+    [[ -z "${DEST_SEEN[$dst]:-}" ]] || { log "Multiple source disks/datasets map to destination $dst"; exit 27; }
+    DEST_SEEN[$dst]=1
+    DATASET_SEEN[$ds]=${#DATASET_SRCS[@]};DATASET_SRCS+=("$ds");DATASET_DESTS+=("$dst");DATASET_SRC_MOUNTS+=("$mount");DATASET_DEST_MOUNTS+=("$dest_mount");DATASET_FILES+=("")
+    if (( ! WARM_MODE )) && remote "zfs list $(sq "$dst") >/dev/null 2>&1"; then
+      token="$(remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" || true)"
+      if [[ -n "$token" && "$token" != - ]]; then
+        log "Destination dataset has a resumable receive token: $dst"
+      elif [[ "$DESTINATION_CONFLICT_ACTION" == overwrite ]]; then
+        OVERWRITE_KINDS+=(dataset); OVERWRITE_PATHS+=("$dst")
+      else
+        log "Destination dataset exists: $dst"; exit 27
+      fi
+    fi
+  fi
+  idx=${DATASET_SEEN[$ds]};dest_file="${DATASET_DEST_MOUNTS[$idx]}/${relative#/}";printf 'disk\t%s\t%s\n' "$source" "$dest_file" >> "$MAP_TSV"
+done < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["datasetGroups"]??[] as $g)foreach($g["files"]??[] as $f)echo ($g["dataset"]??""),"\t",($g["mountpoint"]??""),"\t",($f["source"]??""),"\t",($f["relativePath"]??""),"\n";' "$DISK_MANIFEST")
+
+# If the destination image directory is not itself a ZFS dataset, dedicated source datasets fall back to rsync.
+if [[ -z "$DEST_IMAGE_ZFS_DATASET" ]];then mapfile -t RSYNC_FILE_DISKS < <(printf '%s\n' "${FILE_DISKS[@]}");fi
+FILE_DESTS=()
+for src in "${RSYNC_FILE_DISKS[@]}";do
+  [[ "$src" == /mnt/* && -f "$src" && ! -L "$src" ]]||{ log "Invalid source image: $src";exit 27; }
+  if ((WARM_MODE));then dst="$(seed_destination "$src")";else dst="$DEST_IMAGE_DIR/$VM_NAME/$(basename "$src")";fi
+  [[ -n "$dst" && -z "${DEST_SEEN[$dst]:-}" ]]||{ log "Invalid or duplicate destination for $src";exit 27; }
+  DEST_SEEN[$dst]=1;FILE_DESTS+=("$dst");printf 'disk\t%s\t%s\n' "$src" "$dst" >> "$MAP_TSV"
+  if (( ! WARM_MODE ))&&remote "test -e $(sq "$dst")";then [[ "$DESTINATION_CONFLICT_ACTION" == overwrite ]]&&{ OVERWRITE_KINDS+=(image);OVERWRITE_PATHS+=("$dst"); }||{ log "Destination image exists: $dst";exit 27;};fi
+done
+
+ISO_DESTS=();for src in "${ISOS[@]}";do case "$ISO_ACTION" in copy) [[ "$src" == /mnt/*&&-f "$src"&&! -L "$src" ]]||{ log "ISO missing: $src";exit 28;};[[ "$DEST_ISO_DIR" == /mnt/* ]]||{ log "ISO copy requested but the destination ISO directory is not configured.";exit 28;};dst="$DEST_ISO_DIR/$(basename "$src")";ISO_DESTS+=("$dst");printf 'iso\t%s\t%s\n' "$src" "$dst" >>"$MAP_TSV";;remove)ISO_DESTS+=("");printf 'iso-remove\t%s\t%s\n' "$src" "$src">>"$MAP_TSV";;retain)ISO_DESTS+=("$src");;*)log "Invalid ISO action: $ISO_ACTION";exit 29;;esac;done
+
+human_bytes(){ php -r '$n=(float)$argv[1];$u=["B","KiB","MiB","GiB","TiB"];for($i=0;$n>=1024&&$i<count($u)-1;$i++)$n/=1024;echo ($n>=10?sprintf("%.0f",$n):sprintf("%.1f",$n))." ".$u[$i];' "$1"; }
+REQ_ZVOL=0;REQ_IMAGE=0;REQ_ISO=0;REQ_STAGE=0
+for src in "${ZVOLS[@]}";do if [[ "$DEST_ZVOL_READY" == 1&&-n "$DEST_ZVOL_DATASET" ]];then b="$(zfs get -pH -o value referenced "$src")";((REQ_ZVOL+=b));else b="$(zfs get -pH -o value volsize "$src")";((REQ_IMAGE+=b));((REQ_STAGE+=b));fi;done
+for src in "${DATASET_SRCS[@]}";do b="$(zfs get -pH -o value referenced "$src")";((REQ_IMAGE+=b));done
+for src in "${RSYNC_FILE_DISKS[@]}";do b="$(stat -c %s -- "$src")";((REQ_IMAGE+=b));done
+if [[ "$ISO_ACTION" == copy ]];then for src in "${ISOS[@]}";do b="$(stat -c %s -- "$src")";((REQ_ISO+=b));done;fi
+check_capacity(){
+  ((WARM_MODE==0))||{ log "Prepared storage already exists; only final delta capacity is required.";return 0; }
+  read -r _ ib is < <(remote "stat -f -c '%d %a %S' -- $(sq "$DEST_IMAGE_DIR")");ifree=$((ib*is));((REQ_IMAGE==0||ifree>=REQ_IMAGE))||{ log "Insufficient destination image space";return 29; }
+  if ((REQ_ZVOL>0));then zfree="$(remote "zfs get -pH -o value available $(sq "$DEST_ZVOL_DATASET")")";((zfree>=REQ_ZVOL))||{ log "Insufficient destination zvol space";return 29;};fi
+  if ((REQ_STAGE>0));then read -r sb ss < <(stat -f -c '%a %S' -- "$IMAGE_DIR");((sb*ss>=REQ_STAGE))||{ log "Insufficient source staging space";return 29;};fi
+  log "Capacity plan verified: zvol $(human_bytes "$REQ_ZVOL"), image/dataset $(human_bytes "$REQ_IMAGE"), staging $(human_bytes "$REQ_STAGE")"
+}
+if ((WARM_MODE==0&&REMOTE_EXISTING_VM==0&&${#OVERWRITE_PATHS[@]}==0));then check_capacity;fi
+
+/usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
+STATE_PATHS=();NVRAM_PATH="$(sed -nE 's|.*<nvram[^>]*>([^<]+)</nvram>.*|\1|p' "$SOURCE_XML"|head -n1)";if [[ -n "$NVRAM_PATH" ]];then [[ "$NVRAM_PATH" == /etc/libvirt/qemu/nvram/*||"$NVRAM_PATH" == /var/lib/libvirt/qemu/nvram/* ]]||exit 30;[[ -f "$NVRAM_PATH"&&! -L "$NVRAM_PATH" ]]||exit 30;STATE_PATHS+=("$NVRAM_PATH");fi
+HAS_TPM=0;if grep -qE '<tpm([[:space:]>])' "$SOURCE_XML";then HAS_TPM=1;TPM_DIR="";for base in /etc/libvirt/qemu/swtpm/tpm-states /var/lib/libvirt/swtpm /var/lib/libvirt/qemu/swtpm /etc/libvirt/swtpm;do [[ -d "$base/$UUID" ]]&&{ TPM_DIR="$base/$UUID";break;};[[ -d "$base" ]]&&TPM_DIR="$(find "$base" -type d -name "$UUID" -print -quit 2>/dev/null||true)";[[ -n "$TPM_DIR" ]]&&break;done;[[ -n "$TPM_DIR" ]]||{ log "TPM state not found";exit 30;};STATE_PATHS+=("$TPM_DIR");fi
+
+CURRENT_STATE="$(virsh domstate "$VM_REF"|tr -d '\r')";[[ "$CURRENT_STATE" == running||"$CURRENT_STATE" == idle||"$CURRENT_STATE" == paused ]]&&SOURCE_WAS_RUNNING=1
+SOURCE_AUTOSTART="$(virsh dominfo "$VM_REF"|awk -F: '/^Autostart/{gsub(/^[[:space:]]+/,"",$2);print $2}')";virsh autostart "$VM_REF" --disable >/dev/null 2>&1||true
+if [[ "$CURRENT_STATE" != 'shut off' ]];then state SHUTTING_DOWN 5 'Requesting graceful shutdown for Warm Move cutover';virsh shutdown "$VM_REF";waited=0;while ((waited<SHUTDOWN_TIMEOUT));do cancel_requested&&finish_cancel;[[ "$(virsh domstate "$VM_REF"|tr -d '\r')" == 'shut off' ]]&&break;sleep 2;((waited+=2));state SHUTTING_DOWN "$((5+waited*5/SHUTDOWN_TIMEOUT))" "Waiting for guest shutdown (${waited}s)";done;[[ "$(virsh domstate "$VM_REF"|tr -d '\r')" == 'shut off' ]]||{ log 'Graceful shutdown timed out; no force-stop attempted.';exit 31;};fi
+
+if ((WARM_MODE==0))&&((REMOTE_EXISTING_VM==1||${#OVERWRITE_PATHS[@]}>0));then state PREPARING_DESTINATION 10 'Removing authorised stale destination copy';OVERWRITE_TSV="$JOBDIR/overwrite.tsv";:>"$OVERWRITE_TSV";for i in "${!OVERWRITE_PATHS[@]}";do printf '%s\t%s\n' "${OVERWRITE_KINDS[$i]}" "${OVERWRITE_PATHS[$i]}" >>"$OVERWRITE_TSV";done;OVERWRITE_JSON="$JOBDIR/overwrite.json";php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);$items[]=["kind"=>$p[0],"path"=>$p[1]];}file_put_contents($argv[5],json_encode(["vmUuid"=>$argv[2],"vmName"=>$argv[3],"destinationHostId"=>$argv[4],"storage"=>$items],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$OVERWRITE_TSV" "$UUID" "$VM_NAME" "$PEER_HOST_ID" "$OVERWRITE_JSON";remote "/usr/local/sbin/unmotion-agent prepare-overwrite $(sq "$(base64 -w0 "$OVERWRITE_JSON")")" >>"$LOG" 2>&1;check_capacity;fi
+virsh dumpxml "$VM_REF" --inactive >"$SOURCE_XML";/usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
+
+ZFS_SOURCES=("${ZVOLS[@]}" "${DATASET_SRCS[@]}")
+if ((${#ZFS_SOURCES[@]}>0));then
+  state SNAPSHOTTING 12 'Creating atomic final ZFS snapshot'
+  snaps=();for src in "${ZFS_SOURCES[@]}";do snaps+=("$src@$SNAPSHOT_NAME");done
+  if ! zfs list -t snapshot "${snaps[0]}" >/dev/null 2>&1; then
+    if [[ "$DEBUG_LOGGING" == 1 ]]; then q=''; for a in zfs snapshot "${snaps[@]}"; do printf -v a '%q' "$a"; q+="${q:+ }$a"; done; debug "CMD local: $q"; fi
+    zfs snapshot "${snaps[@]}"
+  fi
+fi
+receive_properties(){ local type="$1" mount="${2:-}" p="-o dedup=$(sq "$DEST_DEDUP_REMOTE")";[[ "$DEST_COMPRESSION_REMOTE" == inherit ]]||p+=" -o compression=$(sq "$DEST_COMPRESSION_REMOTE")";[[ "$type" == dataset ]]&&p+=" -o mountpoint=$(sq "$mount")";printf '%s' "$p"; }
+progress_update(){ local stage="$1" base="$2" span="$3" label="$4" pct="$5" detail="${6:-}" overall;[[ "$pct" =~ ^[0-9]+$ ]]||return 0;((pct<0))&&pct=0;((pct>100))&&pct=100;overall=$((base+span*pct/100));((overall>70))&&overall=70;/usr/local/sbin/unmotion-state "$JOB_ID" "$stage" "$overall" "$label: ${pct}%${detail:+ — $detail}"; }
+stream_progress_parser(){ local stage="$1" base="$2" span="$3" label="$4" mode="$5" line pct=-1 last=-1 last_log=-5 clean;while IFS= read -r line;do clean="$(printf '%s' "$line"|sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//')";[[ -n "$clean" ]]||continue;printf '%s %s\n' "$(date '+%F %T')" "$clean">>"$LOG";if [[ "$mode" == rsync&&"$clean" =~ ([0-9]{1,3})% ]];then pct="${BASH_REMATCH[1]}";elif [[ "$mode" == qemu&&"$clean" =~ \(([0-9]+)(\.[0-9]+)?/100%\) ]];then pct="${BASH_REMATCH[1]}";elif [[ "$mode" == pv&&"$clean" =~ ^[0-9]+$ ]];then pct="$clean";else continue;fi;if ((pct!=last));then progress_update "$stage" "$base" "$span" "$label" "$pct" "$clean";if ((pct==100||pct>=last_log+5));then log "$label: ${pct}% — $clean";last_log=$pct;fi;last=$pct;fi;done; }
+zfs_stream_size(){
+  local src="$1" old="${2:-}" new="$3" out
+  local -a args=(-nP -cp)
+  if [[ -n "$old" ]]; then out="$(zfs send "${args[@]}" -i "$src@$old" "$src@$new" 2>/dev/null || true)"; else out="$(zfs send "${args[@]}" "$src@$new" 2>/dev/null || true)"; fi
+  awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"
+}
+zfs_resume_size(){ local token="$1" out; out="$(zfs send -nP -t "$token" 2>/dev/null || true)"; awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"; }
+remote_resume_token(){ local dst="$1"; remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" | tr -d '\r' || true; }
+run_zfs_transfer_attempt(){
+  local src="$1" dst="$2" snap="$3" old="$4" props="$5" token="$6" size="$7" base="$8" span="$9" label="${10}"
+  local attempt_log rc x receive_cmd
+  local -a statuses=()
+  attempt_log="$JOBDIR/zfs-receive.$$.log"; : > "$attempt_log"
+  if [[ -n "$token" ]]; then receive_cmd="zfs receive -su $(sq "$dst")"; else receive_cmd="zfs receive -su $props $(sq "$dst")"; fi
+  debug_remote "$receive_cmd"
+  if [[ -n "$token" ]]; then
+    debug "PIPELINE: zfs send -t <receive-resume-token> | pv(size=$size) | ssh -> $receive_cmd"
+  elif [[ -n "$old" ]]; then
+    debug "PIPELINE: zfs send -cp -i $(printf '%q' "$src@$old") $(printf '%q' "$snap") | pv(size=$size) | ssh -> $receive_cmd"
+  else
+    debug "PIPELINE: zfs send -cp $(printf '%q' "$snap") | pv(size=$size) | ssh -> $receive_cmd"
+  fi
+  set +e
+  if command -v pv >/dev/null 2>&1 && ((size>0)); then
+    if [[ -n "$token" ]]; then
+      zfs send -t "$token" 2>>"$LOG" | pv -n -f -s "$size" 2> >(stream_progress_parser TRANSFERRING "$base" "$span" "$label" pv >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    elif [[ -n "$old" ]]; then
+      zfs send -cp -i "$src@$old" "$snap" 2>>"$LOG" | pv -n -f -s "$size" 2> >(stream_progress_parser TRANSFERRING "$base" "$span" "$label" pv >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    else
+      zfs send -cp "$snap" 2>>"$LOG" | pv -n -f -s "$size" 2> >(stream_progress_parser TRANSFERRING "$base" "$span" "$label" pv >/dev/null) | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+    fi
+  elif [[ -n "$token" ]]; then
+    zfs send -vP -t "$token" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  elif [[ -n "$old" ]]; then
+    zfs send -vP -cp -i "$src@$old" "$snap" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  else
+    zfs send -vP -cp "$snap" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt_log" 2>&1
+  fi
+  statuses=("${PIPESTATUS[@]}"); rc=0; for x in "${statuses[@]}"; do ((x==0)) || rc=$x; done
+  set -e
+  cat "$attempt_log" >> "$LOG"
+  debug "PIPESTATUS: ${statuses[*]} ; selected exit=$rc"
+  return "$rc"
+}
+transfer_zfs_object(){
+  local src="$1" dst="$2" type="$3" mount="$4" base="$5" span="$6" label="$7" old="${8:-}"
+  local snap="$src@$SNAPSHOT_NAME" size props srcg dstg token
+  props="$(receive_properties "$type" "$mount")"
+  if remote "zfs list $(sq "$dst@$SNAPSHOT_NAME") >/dev/null 2>&1"; then
+    srcg="$(zfs get -H -o value guid "$snap")"; dstg="$(remote "zfs get -H -o value guid $(sq "$dst@$SNAPSHOT_NAME")")"; [[ "$srcg" == "$dstg" ]] || return 40; return 0
+  fi
+  token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+  if [[ -n "$token" ]]; then
+    size="$(zfs_resume_size "$token")"
+    state TRANSFERRING "$base" "$label (resuming; estimated remaining stream $size bytes)"
+  else
+    size="$(zfs_stream_size "$src" "$old" "$SNAPSHOT_NAME")"
+    state TRANSFERRING "$base" "$label (estimated stream $size bytes)"
+  fi
+  if ! run_zfs_transfer_attempt "$src" "$dst" "$snap" "$old" "$props" "$token" "$size" "$base" "$span" "$label"; then
+    token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+    if [[ -n "$token" ]]; then
+      INTERRUPT_MESSAGE="$label interrupted; source remains stopped and Resume will continue from the retained ZFS token"
+      return 75
+    fi
+    return 1
+  fi
+  srcg="$(zfs get -H -o value guid "$snap")"; dstg="$(remote "zfs get -H -o value guid $(sq "$dst@$SNAPSHOT_NAME")")"; [[ "$srcg" == "$dstg" ]]
+  remote "zfs set readonly=off $(sq "$dst"); zfs set dedup=$(sq "$DEST_DEDUP_REMOTE") $(sq "$dst"); $([[ "$DEST_COMPRESSION_REMOTE" == inherit ]]&&echo true||printf 'zfs set compression=%s %s' "$(sq "$DEST_COMPRESSION_REMOTE")" "$(sq "$dst")"); $([[ "$type" == dataset ]]&&printf 'zfs mount %s 2>/dev/null || true' "$(sq "$dst")"||echo true)"
+  progress_update TRANSFERRING "$base" "$span" "$label" 100 'snapshot GUID verified'
+}
+
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+transfer_file(){ local src="$1" dst="$2" base="$3" span="$4" label="$5" parent rc src_size dst_size;parent="${dst%/*}";remote "mkdir -p $(sq "$parent"); test ! -e $(sq "$dst") || chmod 0600 $(sq "$dst")";src_size="$(stat -c %s -- "$src")";state TRANSFERRING "$base" "$label ($(human_bytes "$src_size"))";set +e;args=(-aS --protect-args --numeric-ids --partial --partial-dir=.unmotion-partial --info=progress2 --human-readable --stats);((WARM_MODE))&&args+=(--inplace --no-whole-file);debug "CMD local: rsync ${args[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE:$dst")";rsync "${args[@]}" -e "$RSYNC_RSH" -- "$src" "$REMOTE:$dst" 2>&1|tr '\r' '\n'|stream_progress_parser TRANSFERRING "$base" "$span" "$label" rsync;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";dst_size="$(remote "stat -c %s -- $(sq "$dst")")";[[ "$src_size" == "$dst_size" ]]||return 44;progress_update TRANSFERRING "$base" "$span" "$label" 100 'size verified'; }
+convert_zvol(){ local src="$1" stage="$2" base="$3" span="$4" label="$5" rc;state CONVERTING "$base" "$label";rm -f -- "$stage.tmp" "$stage";debug "CMD local: qemu-img convert -p -f raw -O raw $(printf '%q' "/dev/zvol/$src") $(printf '%q' "$stage.tmp")";set +e;qemu-img convert -p -f raw -O raw "/dev/zvol/$src" "$stage.tmp" 2>&1|tr '\r' '\n'|stream_progress_parser CONVERTING "$base" "$span" "$label" qemu;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";mv -f -- "$stage.tmp" "$stage"; }
+ZVOL_BYTES=();DATASET_BYTES=();CONVERT_BYTES=();FILE_BYTES=();ISO_BYTES=();TOTAL_TRANSFER_BYTES=0
+for src in "${ZVOLS[@]}";do if [[ "$DEST_ZVOL_READY" == 1&&-n "$DEST_ZVOL_DATASET" ]];then b="$(zfs_stream_size "$src" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)" "$SNAPSHOT_NAME")";ZVOL_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));fi;done
+for src in "${DATASET_SRCS[@]}";do b="$(zfs_stream_size "$src" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)" "$SNAPSHOT_NAME")";DATASET_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));done
+for src in "${CONVERT_ZVOLS[@]}";do b="$(zfs get -pH -o value volsize "$src")";CONVERT_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));done
+for src in "${RSYNC_FILE_DISKS[@]}";do b="$(stat -c %s -- "$src")";FILE_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));done
+if [[ "$ISO_ACTION" == copy ]];then for src in "${ISOS[@]}";do b="$(stat -c %s -- "$src")";ISO_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));done;fi;((TOTAL_TRANSFER_BYTES>0))||TOTAL_TRANSFER_BYTES=1;TRANSFER_CURSOR=15
+debug "Transfer plan: totalBytes=$TOTAL_TRANSFER_BYTES zvols=${#ZVOL_DESTS[@]} datasets=${#DATASET_DESTS[@]} convertedZvols=${#CONVERT_ZVOLS[@]} rsyncImages=${#RSYNC_FILE_DISKS[@]} isos=$([[ "$ISO_ACTION" == copy ]] && echo ${#ISOS[@]} || echo 0)"
+next_span(){ local bytes="$1" span; span=$((bytes*55/TOTAL_TRANSFER_BYTES)); ((span<1))&&span=1; ((TRANSFER_CURSOR+span>70))&&span=$((70-TRANSFER_CURSOR)); ((span<0))&&span=0; printf '%s' "$span"; }
+for i in "${!ZVOL_DESTS[@]}";do b="${ZVOL_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_zfs_object "${ZVOLS[$i]}" "${ZVOL_DESTS[$i]}" zvol '' "$TRANSFER_CURSOR" "$span" "Zvol $(basename "${ZVOLS[$i]}")" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)";((TRANSFER_CURSOR+=span));done
+for i in "${!DATASET_DESTS[@]}";do b="${DATASET_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_zfs_object "${DATASET_SRCS[$i]}" "${DATASET_DESTS[$i]}" dataset "${DATASET_DEST_MOUNTS[$i]}" "$TRANSFER_CURSOR" "$span" "Dataset $(basename "${DATASET_SRCS[$i]}")" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)";((TRANSFER_CURSOR+=span));done
+for i in "${!CONVERT_ZVOLS[@]}";do src="${CONVERT_ZVOLS[$i]}";stage="${CONVERT_STAGES[$i]}";dst="${CONVERT_DESTS[$i]}";b="${CONVERT_BYTES[$i]:-1}";span="$(next_span "$b")";mkdir -p "${stage%/*}";convert_zvol "$src" "$stage" "$TRANSFER_CURSOR" "$((span/2))" "Converting $(basename "$src")";transfer_file "$stage" "$dst" "$((TRANSFER_CURSOR+span/2))" "$((span-span/2))" "Converted image $(basename "$stage")";((TRANSFER_CURSOR+=span));done
+for i in "${!RSYNC_FILE_DISKS[@]}";do b="${FILE_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_file "${RSYNC_FILE_DISKS[$i]}" "${FILE_DESTS[$i]}" "$TRANSFER_CURSOR" "$span" "Image $(basename "${RSYNC_FILE_DISKS[$i]}")";((TRANSFER_CURSOR+=span));done
+if [[ "$ISO_ACTION" == copy ]];then for i in "${!ISOS[@]}";do src="${ISOS[$i]}";dst="${ISO_DESTS[$i]}";b="${ISO_BYTES[$i]:-1}";span="$(next_span "$b")";if remote "test -f $(sq "$dst")";then log "Reusing existing ISO $dst";else transfer_file "$src" "$dst" "$TRANSFER_CURSOR" "$span" "ISO $(basename "$src")";fi;((TRANSFER_CURSOR+=span));done;fi
+state TRANSFER_VERIFIED 70 "Storage transfer completed and verified"
+
+cancel_requested && finish_cancel
+state HOST_STATE 72 "Transferring XML, UEFI and TPM state"
+rm -f "$HOST_ARCHIVE"
+if (( ${#STATE_PATHS[@]} > 0 )); then rel=(); for p in "${STATE_PATHS[@]}"; do rel+=("${p#/}"); done; tar --xattrs --acls --numeric-owner -C / -czf "$HOST_ARCHIVE" "${rel[@]}"; gzip -t "$HOST_ARCHIVE"; fi
+REMOTE_STAGE="/boot/config/plugins/unmotion/incoming/$JOB_ID"
+remote "mkdir -p $(sq "$REMOTE_STAGE")"
+rsync -a -e "$RSYNC_RSH" -- "$DEST_XML" "$REMOTE:$REMOTE_STAGE/destination.xml" >>"$LOG" 2>&1
+if [[ -f "$HOST_ARCHIVE" ]]; then rsync -a -e "$RSYNC_RSH" -- "$HOST_ARCHIVE" "$REMOTE:$REMOTE_STAGE/host-state.tar.gz" >>"$LOG" 2>&1; remote "tar --xattrs --acls --numeric-owner -C / -xzf $(sq "$REMOTE_STAGE/host-state.tar.gz")"; fi
+
+cancel_requested && finish_cancel
+state DEFINING_DESTINATION 82 "Defining VM on destination"
+remote "virsh define $(sq "$REMOTE_STAGE/destination.xml")" >>"$LOG" 2>&1
+for dst in "${ZVOL_DESTS[@]}" "${DATASET_DESTS[@]}"; do [[ -n "$dst" ]] && remote "zfs list $(sq "$dst@pre-first-boot-$JOB_ID") >/dev/null 2>&1 || zfs snapshot $(sq "$dst@pre-first-boot-$JOB_ID")"; done
+
+rename_source_vm(){
+  local suffix="$1" desired current fallback_xml
+  desired="$VM_NAME$suffix"
+  current="$(virsh domname "$VM_REF" 2>/dev/null || true)"
+  [[ "$current" == "$desired" ]] && { SOURCE_RETAINED_NAME="$desired"; SOURCE_RENAMED=1; return 0; }
+  if virsh dominfo "$desired" >/dev/null 2>&1; then desired="$desired - ${JOB_ID##*-}"; fi
+  if virsh domrename "$VM_REF" "$desired" >>"$LOG" 2>&1; then
+    SOURCE_RETAINED_NAME="$desired"; SOURCE_RENAMED=1; return 0
+  fi
+  log "virsh domrename was unavailable; falling back to redefine with a marked source name."
+  fallback_xml="$JOBDIR/source-retained.xml"
+  virsh dumpxml "$VM_REF" --inactive > "$fallback_xml.original"
+  php -r '$x=file_get_contents($argv[1]);$n=htmlspecialchars($argv[2],ENT_QUOTES|ENT_XML1);$x=preg_replace("~<name\\b[^>]*>.*?</name>~s","<name>".$n."</name>",$x,1);file_put_contents($argv[3],$x);' "$fallback_xml.original" "$desired" "$fallback_xml"
+  args=(virsh undefine "$VM_REF"); [[ -n "$NVRAM_PATH" ]] && args+=(--keep-nvram); (( HAS_TPM==1 )) && args+=(--keep-tpm)
+  "${args[@]}" >>"$LOG" 2>&1
+  if ! virsh define "$fallback_xml" >>"$LOG" 2>&1; then
+    virsh define "$fallback_xml.original" >>"$LOG" 2>&1 || true
+    return 1
+  fi
+  SOURCE_RETAINED_NAME="$desired"; SOURCE_RENAMED=1
+}
+
+unregister_source_vm(){
+  local args=(virsh undefine "$VM_REF")
+  [[ -n "$NVRAM_PATH" ]] && args+=(--keep-nvram)
+  (( HAS_TPM==1 )) && args+=(--keep-tpm)
+  if "${args[@]}" >>"$LOG" 2>&1; then
+    SOURCE_UNDEFINED=1
+    SOURCE_RETAINED_NAME="$VM_NAME"
+    return 0
+  fi
+  return 1
+}
+
+create_source_cleanup_manifest(){
+  local tsv="$JOBDIR/source-storage.tsv"
+  : > "$tsv"
+  for src in "${ZVOLS[@]}"; do printf 'zvol\t%s\n' "$src" >> "$tsv"; done
+  for src in "${DATASET_SRCS[@]}"; do printf 'dataset\t%s\n' "$src" >> "$tsv"; done
+  for src in "${RSYNC_FILE_DISKS[@]}"; do printf 'image\t%s\n' "$src" >> "$tsv"; done
+  php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);if(count($p)===2)$items[]=["kind"=>$p[0],"path"=>$p[1]];} $d=["jobId"=>$argv[2],"vmUuid"=>$argv[3],"vmName"=>$argv[4],"retainedName"=>$argv[5],"policy"=>$argv[6],"sourceHostId"=>$argv[7],"destinationHostId"=>$argv[8],"destinationHost"=>$argv[9],"storage"=>$items,"nvramPath"=>$argv[10],"tpmPath"=>$argv[11],"createdAt"=>date(DATE_ATOM)];file_put_contents($argv[12],json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($argv[12],0600);' "$tsv" "$JOB_ID" "$UUID" "$VM_NAME" "${SOURCE_RETAINED_NAME:-$VM_NAME}" "$SOURCE_CLEANUP_ACTION" "$(cat "$BASE/host_id")" "$PEER_HOST_ID" "$PEER_NAME" "${NVRAM_PATH:-}" "${TPM_DIR:-}" "$JOBDIR/source-cleanup.json"
+}
+
+if [[ "$START_DESTINATION" == "1" ]]; then
+  state STARTING_DESTINATION 88 "Starting VM on destination"
+  DEST_START_ATTEMPTED=1
+  remote "virsh start $(sq "$VM_UUID")" >>"$LOG" 2>&1 || log "Destination start command returned an error; checking actual state."
+  sleep 3
+  RSTATE="$(remote "virsh domstate $(sq "$VM_UUID")" | tr -d '\r')"
+  [[ "$RSTATE" == "running" || "$RSTATE" == "idle" ]] || { log "Destination VM did not reach running state: $RSTATE"; exit 43; }
+  DEST_STARTED=1
+  if [[ "$SOURCE_AUTOSTART" == "enable" || "$SOURCE_AUTOSTART" == "yes" ]]; then remote "virsh autostart $(sq "$VM_UUID")" >>"$LOG" 2>&1 || { log "WARNING: unable to enable destination autostart"; COMPLETED_WITH_WARNINGS=1; }; fi
+  state OWNERSHIP_HANDOFF 94 "Applying source post-migration policy"
+  virsh autostart "$VM_REF" --disable >>"$LOG" 2>&1 || true
+  case "$SOURCE_CLEANUP_ACTION" in
+    unregister)
+      create_source_cleanup_manifest
+      if unregister_source_vm; then
+        log "Source VM definition removed; source disks, UEFI NVRAM and TPM state were retained."
+      else
+        log "WARNING: unable to unregister the source VM; it remains stopped with autostart disabled."
+        SOURCE_RETAINED_NAME="$VM_NAME"; COMPLETED_WITH_WARNINGS=1
+      fi
+      ;;
+    retain)
+      if ! rename_source_vm " - Migrated to $PEER_NAME"; then log "WARNING: unable to rename the retained source VM; it remains stopped with autostart disabled."; SOURCE_RETAINED_NAME="$VM_NAME"; COMPLETED_WITH_WARNINGS=1; fi
+      create_source_cleanup_manifest
+      ;;
+    delete)
+      if ! rename_source_vm " - Pending deletion after migration to $PEER_NAME"; then log "WARNING: unable to rename the retained source VM; it remains stopped with autostart disabled."; SOURCE_RETAINED_NAME="$VM_NAME"; COMPLETED_WITH_WARNINGS=1; fi
+      create_source_cleanup_manifest
+      ;;
+  esac
+else restore_source; fi
+
+MARKER_LOCAL="$BASE/ownership/$UUID.json"; mkdir -p "$BASE/ownership"
+if (( DEST_STARTED == 1 )); then
+  OWNER_ID="$PEER_HOST_ID"; OWNER_NAME="$PEER_NAME"; REMOTE_MARKER_STATE="owned"
+  case "$SOURCE_CLEANUP_ACTION" in
+    delete) LOCAL_MARKER_STATE="pending_cleanup" ;;
+    retain) LOCAL_MARKER_STATE="migrated_out_retained" ;;
+    unregister) LOCAL_MARKER_STATE="migrated_out_unregistered" ;;
+  esac
+else
+  OWNER_ID="$(cat "$BASE/host_id")"; OWNER_NAME="$(hostname)"; LOCAL_MARKER_STATE="copied"; REMOTE_MARKER_STATE="staged"
+fi
+php -r '$p=$argv[1];$d=["vmUuid"=>$argv[2],"vmName"=>$argv[3],"sourceVmName"=>$argv[4],"ownerHostId"=>$argv[5],"ownerHost"=>$argv[6],"state"=>$argv[7],"sourcePolicy"=>$argv[8],"jobId"=>$argv[9],"updatedAt"=>date(DATE_ATOM)];file_put_contents($p,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($p,0600);' "$MARKER_LOCAL" "$UUID" "$VM_NAME" "${SOURCE_RETAINED_NAME:-$VM_NAME}" "$OWNER_ID" "$OWNER_NAME" "$LOCAL_MARKER_STATE" "$SOURCE_CLEANUP_ACTION" "$JOB_ID"
+marker_b64="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);$d["state"]=$argv[2];echo base64_encode(json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$MARKER_LOCAL" "$REMOTE_MARKER_STATE")"
+if ! remote "mkdir -p $(sq "$BASE/ownership"); printf %s $(sq "$marker_b64") | base64 -d > $(sq "$BASE/ownership/$UUID.json"); chmod 600 $(sq "$BASE/ownership/$UUID.json")"; then log "WARNING: unable to write remote ownership marker"; COMPLETED_WITH_WARNINGS=1; fi
+
+if (( DEST_STARTED == 1 )) && [[ "$SOURCE_CLEANUP_ACTION" == "delete" ]]; then
+  state SOURCE_VALIDATION 98 "Destination will validate 5 minutes of continuous runtime before deleting the source copy"
+  cleanup_request="$JOBDIR/source-cleanup-request.json"
+  php -r '$d=["jobId"=>$argv[1],"vmUuid"=>$argv[2],"sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"soakSeconds"=>(int)$argv[5]];file_put_contents($argv[6],json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$JOB_ID" "$UUID" "$(cat "$BASE/host_id")" "$PEER_HOST_ID" "$SOAK_SECONDS" "$cleanup_request"
+  cleanup_b64="$(base64 -w0 "$cleanup_request")"
+  if remote "/usr/local/sbin/unmotion-agent schedule-source-cleanup $(sq "$cleanup_b64")" >>"$LOG" 2>&1; then
+    log "Destination cleanup watcher scheduled. It will request source deletion after $SOAK_SECONDS seconds of continuous runtime."
+  else
+    log "WARNING: unable to schedule destination-driven source cleanup. The source copy remains stopped and marked for manual review."
+    COMPLETED_WITH_WARNINGS=1
+  fi
+fi
+
+if (( WARM_MODE == 1 )); then
+  while IFS=$'\t' read -r kind src dst; do
+    [[ "$kind" == zvol || "$kind" == dataset ]] || continue
+    zfs release "unmotion:$WARM_SEED_ID" "$src@$WARM_BASE_SNAPSHOT" 2>/dev/null || true
+    zfs destroy "$src@$WARM_BASE_SNAPSHOT" 2>/dev/null || true
+    remote "zfs release $(sq "unmotion:$WARM_SEED_ID") $(sq "$dst@$WARM_BASE_SNAPSHOT") 2>/dev/null || true; zfs destroy $(sq "$dst@$WARM_BASE_SNAPSHOT") 2>/dev/null || true" || true
+  done < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)echo ($x["kind"]??""),"\t",($x["source"]??""),"\t",($x["destination"]??""),"\n";' "$WARM_SEED_JSON")
+  remote "rm -f -- $(sq "$BASE/incoming/seeds/$WARM_SEED_ID.json")" || true
+  php -r '$p=$argv[1];$d=json_decode(file_get_contents($p),true);$d["state"]="CONSUMED";$d["message"]="Warm Move cutover completed";$d["updatedAt"]=date(DATE_ATOM);file_put_contents($p,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$WARM_SEED_JSON" || true
+  seed_dir="$BASE/seeds/$WARM_SEED_ID"
+  [[ ! -f "$seed_dir/seed.log" ]] || cp -f -- "$seed_dir/seed.log" "$JOBDIR/warm-seed.log"
+  [[ "$seed_dir" == "$BASE"/seeds/* ]] && rm -rf -- "$seed_dir"
+fi
+cleanup_staging
+if (( COMPLETED_WITH_WARNINGS == 1 )); then
+  state COMPLETE_WITH_WARNINGS 100 "$VM_NAME is running on $PEER_NAME; review cleanup warnings"
+elif [[ "$SOURCE_CLEANUP_ACTION" == "delete" ]]; then
+  state COMPLETE 100 "$VM_NAME migrated to $PEER_NAME; source deletion is pending the 5-minute destination validation"
+elif [[ "$SOURCE_CLEANUP_ACTION" == "retain" ]]; then
+  state COMPLETE 100 "$VM_NAME migrated to $PEER_NAME; source retained as ${SOURCE_RETAINED_NAME:-stopped copy}"
+else
+  state COMPLETE 100 "$VM_NAME migrated to $PEER_NAME; source VM unregistered and storage retained"
+fi
+JOB_FINAL=1
+trap - ERR EXIT INT TERM
+case "$SOURCE_CLEANUP_ACTION" in
+  delete) log "Migration completed. Source VM is stopped, autostart-disabled and pending destination-driven cleanup." ;;
+  retain) log "Migration completed. Source VM and disks were retained with autostart disabled and a migrated-name suffix." ;;
+  unregister) log "Migration completed. Source VM definition was removed; source disks, UEFI NVRAM and TPM state were retained." ;;
+esac

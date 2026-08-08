@@ -1,0 +1,8 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+PKG="$ROOT/unmotion-0.3.0_beta7-noarch-1.txz"
+rm -f "$PKG"
+tar --owner=0 --group=0 -C "$ROOT/source" -cJf "$PKG" .
+md5sum "$PKG"
+sha256sum "$PKG"

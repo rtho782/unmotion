@@ -1,0 +1,9 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$id=$argv[1]??''; $state=$argv[2]??''; $progress=(int)($argv[3]??0); $message=$argv[4]??'';
+if(!preg_match('/^[A-Za-z0-9_.-]+$/',$id)) exit(2);
+$path=UNM_JOBS_DIR.'/'.$id.'/job.json'; $j=unmLoadJson($path); if(!$j) exit(3);
+$j['state']=$state; $j['progress']=max(0,min(100,$progress)); $j['message']=$message; $j['updatedAt']=date(DATE_ATOM); $j['pid']=getenv('UNM_WORKER_PID')?:($j['pid']??null);
+unmAtomicJson($path,$j);

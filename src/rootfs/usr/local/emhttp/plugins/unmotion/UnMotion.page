@@ -1,0 +1,23 @@
+Menu="Tasks:88"
+Title="unMotion"
+Tag="exchange"
+Icon="exchange"
+Code="f0ec"
+Type="xmenu"
+Tabs="false"
+---
+<?php
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$config = unmLoadConfig();
+?>
+<link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
+<script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
+<div id="unm-flash" class="unm-flash"></div>
+<div class="unm-toolbar"><div><h2 style="margin:0">_(unMotion)_ <small class="unm-muted">v<?=htmlspecialchars(UNM_VERSION)?></small></h2><span class="unm-muted">_(Cold and reduced-downtime Warm Move between paired Unraid hosts)_</span></div><div class="unm-actions"><label>_(Destination)_: <select id="unm-peer-select"></select></label><span id="unm-selected-peer-health" class="unm-health-pill unm-health-checking">_(Checking health…)_</span><label>_(ISOs)_: <select id="unm-default-iso"><option value="copy">_(Copy)_</option><option value="remove">_(Leave empty)_</option><option value="retain">_(Retain paths)_</option></select></label><input type="button" id="unm-refresh" value="_(Refresh)_"><input type="button" value="_(Settings)_" onclick="location.href='/UnMotionSettings'"></div></div>
+<div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table unm-vm-table"><colgroup><col class="unm-col-vm"><col class="unm-col-state"><col class="unm-col-storage"><col class="unm-col-features"><col class="unm-col-vcpu"><col class="unm-col-ram"><col class="unm-col-autostart"><col class="unm-col-action"></colgroup><thead><tr><th>_(VM)_</th><th>_(State)_</th><th>_(Storage)_</th><th>_(Features)_</th><th>_(vCPUs)_</th><th>_(RAM)_</th><th>_(Autostart)_</th><th>_(Action)_</th></tr></thead><tbody id="unm-vm-body"><tr><td colspan="8">_(Loading...)_</td></tr></tbody></table></div>
+<div class="unm-section-heading"><h2>_(Prepared Warm Moves)_</h2></div>
+<div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table"><thead><tr><th>_(VM)_</th><th>_(Destination)_</th><th>_(State)_</th><th>_(Last sync)_</th><th>_(Estimated changes)_</th><th>_(Actions)_</th></tr></thead><tbody id="unm-seed-body"><tr><td colspan="6">_(Loading...)_</td></tr></tbody></table></div>
+<div class="unm-section-heading"><h2>_(Migration jobs)_</h2><input type="button" id="unm-clear-jobs" value="_(Clear completed/cancelled)_"></div>
+<div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table"><thead><tr><th>_(VM)_</th><th>_(Destination)_</th><th>_(State)_</th><th>_(Progress)_</th><th>_(Message)_</th><th>_(Actions)_</th></tr></thead><tbody id="unm-job-body"></tbody></table></div>
+<div id="unm-modal" class="unm-modal"><div class="unm-modal-box"><h2 id="unm-modal-title"></h2><div id="unm-modal-content"></div><div class="unm-modal-actions"><input type="button" class="unm-modal-close" value="_(Cancel)_"><input type="button" id="unm-recheck" value="_(Recheck)_"><input type="button" id="unm-confirm-migrate" value="_(Migrate)_"></div></div></div>
+<div id="unm-log-modal" class="unm-modal"><div class="unm-modal-box"><h2>_(Migration log)_</h2><pre id="unm-log-text" class="unm-pre"></pre><div class="unm-modal-actions"><input type="button" class="unm-modal-close" value="_(Close)_"></div></div></div>

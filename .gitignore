@@ -1,0 +1,11 @@
+/dist/
+/work/
+*.tmp
+*.log
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+

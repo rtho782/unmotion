@@ -1,0 +1,61 @@
+#!/bin/bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+VERSION="0.3.0-beta7"
+PKG="$ROOT/unmotion-0.3.0_beta7-noarch-1.txz"
+OUT="$ROOT/unmotion-0.3.0-beta7.plg"
+"$ROOT/build.sh" >/dev/null
+MD5="$(md5sum "$PKG" | awk '{print $1}')"
+SHA256="$(sha256sum "$PKG" | awk '{print $1}')"
+B64="$(mktemp)"
+base64 "$PKG" > "$B64"
+cat > "$OUT" <<EOF
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+<!ENTITY name "unmotion">
+<!ENTITY author "Rich Skinner / OpenAI prototype">
+<!ENTITY version "$VERSION">
+<!ENTITY launch "UnMotion">
+<!ENTITY plgdir "/boot/config/plugins/&name;">
+<!ENTITY package "&plgdir;/packages/unmotion-0.3.0_beta7-noarch-1.txz">
+<!ENTITY payload "/tmp/unmotion-&version;.txz.b64">
+]>
+<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
+<CHANGES>
+### unMotion 0.3.0-beta7
+- Fixes Warm Move cutover failure in the transfer progress allocator under Bash nounset mode.
+- Splits local variable declaration from arithmetic evaluation so bytes is initialized before it is referenced.
+- Adds a debug transfer-plan summary before storage transfer begins.
+- Retains beta6 ISO handling, beta4 diagnostics and beta3 compressed/resumable ZFS replication.
+</CHANGES>
+<FILE Name="&payload;"><INLINE>
+EOF
+cat "$B64" >> "$OUT"
+cat >> "$OUT" <<EOF
+</INLINE></FILE>
+<FILE Run="/bin/bash"><INLINE>
+set -e
+mkdir -p "&plgdir;/packages"
+TMP="&package;.tmp.\$\$"
+base64 -d "&payload;" > "\$TMP"
+echo "$MD5  \$TMP" | md5sum -c -
+mv -f "\$TMP" "&package;"
+chmod 600 "&package;"
+/sbin/upgradepkg --install-new "&package;"
+/etc/rc.d/rc.unmotion start || true
+rm -f "&payload;"
+</INLINE></FILE>
+<FILE Run="/bin/bash" Method="remove"><INLINE>
+/etc/rc.d/rc.unmotion stop || true
+/usr/local/sbin/unmotion-cleanup || true
+/sbin/removepkg unmotion 2>/dev/null || true
+rm -rf /usr/local/emhttp/plugins/unmotion /usr/local/sbin/unmotion-* /etc/rc.d/rc.unmotion
+rm -rf "&plgdir;"
+rm -f "&payload;"
+</INLINE></FILE>
+<!-- Embedded package SHA-256: $SHA256 -->
+</PLUGIN>
+EOF
+rm -f "$B64"
+printf 'Created %s\n' "$OUT"
+sha256sum "$OUT"

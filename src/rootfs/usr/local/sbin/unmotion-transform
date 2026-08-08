@@ -1,0 +1,64 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+if($argc<4){fwrite(STDERR,"Usage: transform source.xml dest.xml mapping.tsv [usb-action] [remove-cpu] [usb-manifest.json] [target-vcpus] [target-memory-kib]\n");exit(2);}
+[$script,$src,$dst,$mapFile]=$argv;
+$usbAction=(string)($argv[4]??'retain');
+$removeCpu=($argv[5]??'1')==='1';
+$usbManifest=(string)($argv[6]??'');
+$targetVcpus=(int)($argv[7]??0);
+$targetMemoryKiB=(int)($argv[8]??0);
+if(!in_array($usbAction,['retain','remove'],true)){fwrite(STDERR,"Invalid USB action\n");exit(2);}
+$xml=@file_get_contents($src);if($xml===false){fwrite(STDERR,"Unable to read XML\n");exit(3);}
+$maps=[];foreach(file($mapFile,FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,3);if(count($p)===3)$maps[]=$p;}
+foreach($maps as [$type,$old,$new]){
+    if($type==='iso-remove'){
+        $q=preg_quote($old,'~');$xml=preg_replace('~\s*<source\b(?=[^>]*\bfile=(["\'])'.$q.'\1)[^>]*/>\s*~s',"\n",$xml)??$xml;
+    }elseif($type==='zvol-file'){
+        $oldQuoted=preg_quote($old,'~');
+        $xml=preg_replace_callback('~<disk\b[^>]*>.*?</disk>~s',function(array $m)use($oldQuoted,$new):string{
+            $block=$m[0];if(!preg_match('~<source\b[^>]*\bdev=(["\'])'.$oldQuoted.'\1[^>]*/>~s',$block))return $block;
+            $block=preg_replace_callback('~<disk\b[^>]*>~',function(array $d):string{$open=$d[0];if(preg_match('~\btype=(["\'])block\1~',$open))return preg_replace('~\btype=(["\'])block\1~','type=\'file\'',$open,1)??$open;return rtrim($open,'>')." type='file'>";},$block,1)??$block;
+            return preg_replace('~<source\b[^>]*\bdev=(["\'])'.$oldQuoted.'\1[^>]*/>~s',"<source file='".htmlspecialchars($new,ENT_QUOTES|ENT_XML1)."'/>",$block,1)??$block;
+        },$xml)??$xml;
+    }else $xml=str_replace($old,$new,$xml);
+}
+if($usbAction==='remove'){
+    $xml=preg_replace_callback('~<hostdev\b[^>]*>.*?</hostdev>~s',fn(array $m):string=>preg_match('~^<hostdev\b[^>]*\btype=(["\'])usb\1~s',$m[0])?'':$m[0],$xml)??$xml;
+}elseif($usbManifest!==''&&is_file($usbManifest)){
+    $manifest=json_decode((string)file_get_contents($usbManifest),true);if(!is_array($manifest)){fwrite(STDERR,"Invalid USB manifest\n");exit(6);}
+    $xml=preg_replace_callback('~<hostdev\b[^>]*>.*?</hostdev>~s',fn(array $m):string=>preg_match('~^<hostdev\b[^>]*\btype=(["\'])usb\1~s',$m[0])?'':$m[0],$xml)??$xml;
+    $additions='';$seen=[];
+    foreach(($manifest['devices']??[]) as $device){
+        $vendor=strtolower((string)($device['vendor']??''));$product=strtolower((string)($device['product']??''));
+        if(empty($device['portable'])||!preg_match('/^0x[0-9a-f]{4}$/',$vendor)||!preg_match('/^0x[0-9a-f]{4}$/',$product)){fwrite(STDERR,"A USB device cannot be retained because its VID:PID is unresolved or ambiguous\n");exit(6);}
+        $key=$vendor.':'.$product;if(isset($seen[$key])){fwrite(STDERR,"Duplicate USB VID:PID cannot be retained portably\n");exit(6);}$seen[$key]=true;
+        $additions.="\n    <hostdev mode='subsystem' type='usb' managed='no'>\n      <source>\n        <vendor id='".$vendor."'/>\n        <product id='".$product."'/>\n      </source>\n    </hostdev>";
+    }
+    if($additions!=='')$xml=preg_replace('~\s*</devices>~s',$additions."\n  </devices>",$xml,1)??$xml;
+}
+if($targetMemoryKiB>0){
+    foreach(['memory','currentMemory'] as $tag){
+        $replacement="<$tag unit='KiB'>$targetMemoryKiB</$tag>";
+        if(preg_match('~<'.$tag.'\b[^>]*>.*?</'.$tag.'>~s',$xml))$xml=preg_replace('~<'.$tag.'\b[^>]*>.*?</'.$tag.'>~s',$replacement,$xml,1)??$xml;
+        elseif($tag==='memory')$xml=preg_replace('~(<metadata\b.*?</metadata>)~s',"$1\n  $replacement",$xml,1)??$xml;
+    }
+}
+if($targetVcpus>0){
+    $sourceVcpus=preg_match('~<vcpu\b[^>]*>\s*(\d+)\s*</vcpu>~s',$xml,$m)?(int)$m[1]:0;
+    $xml=preg_replace_callback('~(<vcpu\b[^>]*>)\s*\d+\s*(</vcpu>)~s',fn(array $m):string=>$m[1].$targetVcpus.$m[2],$xml,1)??$xml;
+    if($sourceVcpus!==$targetVcpus&&preg_match('~<topology\b([^>]*)/>~s',$xml,$top)){
+        $attrs=[];foreach(['sockets','dies','clusters','cores','threads'] as $a)$attrs[$a]=preg_match('~\b'.$a.'=(["\'])(\d+)\1~',$top[1],$m)?max(1,(int)$m[2]):1;
+        $den=$attrs['sockets']*$attrs['dies']*$attrs['clusters']*$attrs['threads'];
+        if($den>0&&$targetVcpus%$den===0)$attrs['cores']=(int)($targetVcpus/$den);else{$attrs=['sockets'=>1,'dies'=>1,'clusters'=>1,'cores'=>$targetVcpus,'threads'=>1];}
+        $new="<topology sockets='{$attrs['sockets']}' dies='{$attrs['dies']}' clusters='{$attrs['clusters']}' cores='{$attrs['cores']}' threads='{$attrs['threads']}'/>";
+        $xml=preg_replace('~<topology\b[^>]*/>~s',$new,$xml,1)??$xml;
+    }
+}
+if($removeCpu){
+    $xml=preg_replace('~\s*<cputune(?:\s[^>]*)?>.*?</cputune>\s*~s',"\n",$xml)??$xml;
+    $xml=preg_replace('~\s*<numatune(?:\s[^>]*)?>.*?</numatune>\s*~s',"\n",$xml)??$xml;
+    $xml=preg_replace_callback('~<vcpu\b[^>]*>~s',fn(array $m):string=>preg_replace('~\s+cpuset=(["\']).*?\1~s','',$m[0])??$m[0],$xml,1)??$xml;
+}
+if(preg_match('~<hostdev\b[^>]*\btype=(["\'])pci\1~s',$xml)){fwrite(STDERR,"PCI passthrough remains in destination XML\n");exit(4);}
+if(file_put_contents($dst,$xml)===false){fwrite(STDERR,"Unable to save XML\n");exit(5);}

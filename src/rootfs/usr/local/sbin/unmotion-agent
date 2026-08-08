@@ -1,0 +1,61 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$cmd=$argv[1]??'capabilities';
+try {
+    switch($cmd){
+        case 'capabilities':
+            echo json_encode(unmCapabilities(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'health':
+            echo json_encode(unmHealth(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'inventory':
+            echo json_encode(['vms'=>unmInventory()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'usb-list':
+            $index=unmUsbSystemIndex(); $items=[];
+            foreach(($index['byAddress']??[]) as $device) $items[]=$device;
+            echo json_encode(['usb'=>$items],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'zfs-dataset-for-path':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            if($decoded===false||!str_starts_with($decoded,'/mnt/')) throw new InvalidArgumentException('Invalid path.');
+            $exact=(string)($argv[3]??'0')==='1';
+            echo json_encode(['dataset'=>unmZfsDatasetForPath($decoded,$exact)],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-prepare':
+            $encoded=(string)($argv[2]??'');
+            $decoded=base64_decode($encoded,true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid reciprocal pairing request.');
+            echo json_encode(unmPrepareReciprocalPeer($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-finalize':
+            echo json_encode(unmFinalizeReciprocalPeer((string)($argv[2]??'')),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-forget':
+            unmForgetPeerLocal((string)($argv[2]??''));
+            echo json_encode(['success'=>true],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'prepare-overwrite':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid overwrite request.');
+            echo json_encode(unmPrepareDestinationOverwrite($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'schedule-source-cleanup':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid source-cleanup request.');
+            echo json_encode(unmScheduleSourceCleanup($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'finalize-source-cleanup':
+            echo json_encode(unmFinalizeSourceCleanup((string)($argv[2]??''),(string)($argv[3]??'')),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        default:
+            fwrite(STDERR,"Unknown command\n");
+            exit(2);
+    }
+} catch(Throwable $e){ fwrite(STDERR,$e->getMessage()."\n"); exit(1); }

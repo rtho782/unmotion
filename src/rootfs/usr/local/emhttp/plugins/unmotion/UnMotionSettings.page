@@ -1,0 +1,36 @@
+Menu="OtherSettings"
+Title="unMotion"
+Tag="exchange"
+Icon="exchange"
+Code="f0ec"
+Type="xmenu"
+Tabs="false"
+---
+<?php
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+?>
+<link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
+<script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
+<div id="unm-flash" class="unm-flash"></div>
+<div id="unm-settings-loading" class="unm-page-loading"><span class="unm-spinner" aria-hidden="true"></span><span class="unm-loading-text">_(Loading unMotion settings…)_</span></div>
+<div id="unm-settings-content" class="unm-loading-hidden">
+<div class="unm-toolbar"><div><h2 style="margin:0">_(unMotion settings)_ <small class="unm-muted">v<?=htmlspecialchars(UNM_VERSION)?></small></h2><span class="unm-muted">_(Host ID)_: <span id="unm-local-id"></span> · <span id="unm-local-name"></span></span></div><input type="button" value="_(Open unMotion)_" onclick="location.href='/UnMotion'"></div>
+<div id="unm-ssh-status"></div>
+<div class="unm-grid"><div class="unm-card"><h3>_(Destination storage on this host)_</h3><p class="unm-muted">_(On first install, unMotion pre-fills these paths when at least two thirds of existing VM storage uses the same image directory, zvol dataset or ISO directory.)_</p><form id="unm-settings-form" onsubmit="return false">
+<div class="unm-form-row"><label>_(Image directory)_</label><input type="text" name="image_dir" placeholder="/mnt/cache/domains"></div>
+<div class="unm-form-row"><label>_(Zvol dataset)_</label><div><input type="text" name="zvol_dataset" placeholder="cache/vm-zvols"><small class="unm-muted">_(Optional. Leave empty to receive source zvols as sparse raw image files.)_</small></div></div>
+<div class="unm-form-row"><label>_(ISO directory)_</label><input type="text" name="iso_dir" placeholder="/mnt/user/isos"></div>
+<div class="unm-form-row"><label>_(Destination dedup)_</label><select name="dedup"><option value="off">off</option><option value="on">on</option><option value="verify">verify</option></select></div>
+<div class="unm-form-row"><label>_(Destination compression)_</label><select name="compression"><option value="inherit">inherit existing setting</option><option value="off">off</option><option value="lz4">lz4</option><option value="zstd">zstd</option><option value="zstd-fast">zstd-fast</option><option value="gzip">gzip</option></select></div>
+<div class="unm-form-row"><label>_(Shutdown timeout seconds)_</label><input type="number" name="shutdown_timeout" min="30" max="3600"></div>
+<div class="unm-form-row"><label>_(Warm Move bandwidth limit)_</label><div><input type="number" name="warm_bandwidth_mib" min="0" max="10240"><small class="unm-muted">_(MiB/s. Use 0 for unlimited.)_</small></div></div>
+<div class="unm-form-row"><label>_(Peer health polling)_</label><div><input type="number" name="health_poll_seconds" min="5" max="120"><small class="unm-muted">_(Seconds while an unMotion page is visible.)_</small></div></div>
+<div class="unm-form-row"><label>_(Memory health thresholds)_</label><div><input type="number" name="health_memory_warning_percent" min="1" max="50" style="width:110px">% warning &nbsp; <input type="number" name="health_memory_critical_percent" min="1" max="50" style="width:110px">% critical</div></div>
+<div class="unm-form-row"><label>_(Source handling after migration)_</label><select name="source_cleanup_default"><option value="unregister">_(Unregister VM and retain storage)_</option><option value="retain">_(Keep registered, disable autostart and rename)_</option><option value="delete">_(Delete VM and storage after validation)_</option></select></div>
+<div class="unm-form-row"><label>_(Defaults)_</label><div><label class="unm-toggle"><input type="checkbox" name="copy_isos_default"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Copy attached ISOs)_</span></label><br><label class="unm-toggle"><input type="checkbox" name="remove_cpu_pinning"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Default to removing valid CPU/NUMA pinning)_</span></label><br><label class="unm-toggle"><input type="checkbox" name="discovery"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Advertise and automatically discover via mDNS)_</span></label><br><label class="unm-toggle"><input type="checkbox" name="quiesce_snapshots"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Use QEMU Guest Agent filesystem quiescing for online ZFS snapshots)_</span></label></div></div>
+<div class="unm-form-row"><label>_(Diagnostics)_</label><div><label class="unm-toggle"><input type="checkbox" name="debug_logging"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Debug logging)_</span></label><br><small class="unm-muted">_(Logs command execution, exit codes, ZFS snapshots/holds, SSH receive commands and resume-token state. Authentication secrets and payload contents are not logged.)_</small></div></div>
+<div class="unm-actions"><input type="button" id="unm-save-settings" value="_(Apply)_"></div></form></div>
+<div class="unm-card"><h3>_(Pair a peer)_</h3><p class="unm-muted">_(Discovery runs automatically. The password is used once to establish dedicated Ed25519 keys in both directions, then discarded.)_</p>
+<div class="unm-form-row"><label>_(Host or IP)_</label><input type="text" id="peer-host"></div><div class="unm-form-row"><label>_(SSH port)_</label><input type="number" id="peer-port" value="22"></div><div class="unm-form-row"><label>_(Password for root)_</label><input type="password" id="peer-password" autocomplete="new-password"></div><div class="unm-actions"><input type="button" id="unm-pair" value="_(Pair)_"><input type="button" id="unm-discover" value="_(Refresh discovery)_"></div><div id="unm-discovery-results"><p class="unm-muted">_(Discovering plugin peers…)_</p></div></div></div>
+<h2>_(Paired peers)_</h2><div id="unm-peer-list"></div>
+</div>
