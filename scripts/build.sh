@@ -4,7 +4,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")}"
 SAFE_VERSION="${VERSION//-/_}"
-PKG="unmotion-${SAFE_VERSION}-noarch-1.txz"
+# Slackware/Unraid compares package versions bytewise enough that an uppercase
+# _RC1 sorts before the recovered lowercase _beta7 package token.  Keep the
+# display/plugin version unchanged, but normalize the package token so RC1 is
+# recognized as the upgrade it is.
+SAFE_VERSION="${SAFE_VERSION,,}"
+PKG="unmotion-${SAFE_VERSION}-noarch-3.txz"
 PLG="unmotion-${VERSION}.plg"
 STAGE="$ROOT/work/package-root"
 DIST="$ROOT/dist"
@@ -37,7 +42,11 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Development build from this repository. Replace this text with reviewed release notes.
+- Preserve resumable ZFS state when a destination reboots before its array starts.
+- Fix prepared-copy removal when storage records contain empty TSV fields.
+- Fix Warm Move rsync cutover by keeping --partial-dir separate from --inplace.
+- Re-protect prepared image files after a pre-start cutover failure or cancellation.
+- Parse quoted Avahi TXT records independently and reset settings dirty state after save.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF
@@ -70,4 +79,3 @@ EOF
 } > "$DIST/$PLG"
 
 sha256sum "$DIST/$PKG" "$DIST/$PLG"
-

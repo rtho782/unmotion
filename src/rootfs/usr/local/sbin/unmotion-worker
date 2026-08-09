@@ -71,6 +71,21 @@ debug_remote(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; debug "CMD remote [$REM
 cancel_requested(){ [[ -f "$CANCEL_FILE" ]]; }
 cleanup_staging(){ [[ "$STAGE_ROOT" == /mnt/*/.unmotion-staging/* ]] && rm -rf -- "$STAGE_ROOT" 2>/dev/null || true; }
 
+protect_warm_images(){
+  (( ${WARM_MODE:-0} == 1 && DEST_START_ATTEMPTED == 0 )) || return 0
+  [[ -f "${WARM_SEED_JSON:-}" ]] || return 0
+  local dst protected=0
+  while IFS= read -r -d '' dst; do
+    [[ "$dst" == /mnt/* ]] || { log "WARNING: refusing to change an invalid prepared-image path: $dst"; continue; }
+    if remote "test ! -f $(sq "$dst") || chmod 0400 $(sq "$dst")"; then
+      protected=1
+    else
+      log "WARNING: unable to restore prepared-image protection for $dst"
+    fi
+  done < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)if(($x["kind"]??"")==="image"&&is_string($x["destination"]??null))echo $x["destination"],"\0";' "$WARM_SEED_JSON")
+  (( protected == 0 )) || log "Restored read-only protection on prepared Warm Move image storage."
+}
+
 restore_source(){
   (( DEST_STARTED == 0 )) || return 0
   (( SOURCE_UNDEFINED == 0 )) || return 0
@@ -84,7 +99,7 @@ restore_source(){
   fi
 }
 finish_cancel(){
-  set +e; JOB_FINAL=1; log "Cancellation requested"; restore_source; cleanup_staging
+  set +e; JOB_FINAL=1; log "Cancellation requested"; protect_warm_images; restore_source; cleanup_staging
   if (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Cancellation occurred after destination start attempt; inspect both hosts"
   else state CANCELLED 0 "Migration cancelled; source restored where safe"
   fi
@@ -100,7 +115,7 @@ on_error(){
     state INTERRUPTED 0 "${INTERRUPT_MESSAGE:-ZFS transfer interrupted; use Resume to continue}"
     exit "$rc"
   fi
-  JOB_FINAL=1; log "ERROR at line $line (exit $rc): $(sanitize_command "$cmd")"; restore_source
+  JOB_FINAL=1; log "ERROR at line $line (exit $rc): $(sanitize_command "$cmd")"; protect_warm_images; restore_source
   if (( DEST_STARTED == 1 )); then state COMPLETE_WITH_WARNINGS 100 "Destination is running; source cleanup or ownership recording failed"
   elif (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Destination start outcome is unknown; inspect both hosts before any restart"
   else state FAILED 0 "Migration failed; see log"; fi
@@ -110,7 +125,7 @@ on_exit(){
   local rc=$?; trap - ERR; set +e
   if (( rc != 0 && JOB_FINAL == 0 )); then
     if cancel_requested; then finish_cancel; fi
-    JOB_FINAL=1; log "Worker exited with status $rc"; restore_source
+    JOB_FINAL=1; log "Worker exited with status $rc"; protect_warm_images; restore_source
     if (( DEST_STARTED == 1 )); then state COMPLETE_WITH_WARNINGS 100 "Destination is running; source cleanup or ownership recording failed"; elif (( DEST_START_ATTEMPTED == 1 )); then state ATTENTION_REQUIRED 88 "Destination start outcome is unknown; inspect both hosts before any restart"; else state FAILED 0 "Migration failed; see log"; fi
   fi
 }
@@ -336,7 +351,14 @@ zfs_stream_size(){
   awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"
 }
 zfs_resume_size(){ local token="$1" out; out="$(zfs send -nP -t "$token" 2>/dev/null || true)"; awk '$1=="size"{v=$2}END{print v+0}' <<<"$out"; }
-remote_resume_token(){ local dst="$1"; remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" | tr -d '\r' || true; }
+remote_resume_token(){
+  local dst="$1" parent token
+  parent="${dst%/*}"
+  token="$(remote "if zfs list -H -o name $(sq "$dst") >/dev/null 2>&1; then zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null; elif zfs list -H -o name $(sq "$parent") >/dev/null 2>&1; then printf '%s\\n' -; else exit 75; fi")" || return $?
+  token="${token//$'\r'/}"
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token"
+}
 run_zfs_transfer_attempt(){
   local src="$1" dst="$2" snap="$3" old="$4" props="$5" token="$6" size="$7" base="$8" span="$9" label="${10}"
   local attempt_log rc x receive_cmd
@@ -380,7 +402,11 @@ transfer_zfs_object(){
   if remote "zfs list $(sq "$dst@$SNAPSHOT_NAME") >/dev/null 2>&1"; then
     srcg="$(zfs get -H -o value guid "$snap")"; dstg="$(remote "zfs get -H -o value guid $(sq "$dst@$SNAPSHOT_NAME")")"; [[ "$srcg" == "$dstg" ]] || return 40; return 0
   fi
-  token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+  if ! token="$(remote_resume_token "$dst")"; then
+    INTERRUPT_MESSAGE="$label paused; destination receive state is unavailable. Start the destination array, then use Resume"
+    return 75
+  fi
+  [[ "$token" == - ]] && token=''
   if [[ -n "$token" ]]; then
     size="$(zfs_resume_size "$token")"
     state TRANSFERRING "$base" "$label (resuming; estimated remaining stream $size bytes)"
@@ -389,7 +415,11 @@ transfer_zfs_object(){
     state TRANSFERRING "$base" "$label (estimated stream $size bytes)"
   fi
   if ! run_zfs_transfer_attempt "$src" "$dst" "$snap" "$old" "$props" "$token" "$size" "$base" "$span" "$label"; then
-    token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+    if ! token="$(remote_resume_token "$dst")"; then
+      INTERRUPT_MESSAGE="$label interrupted; destination receive state is unavailable. Start the destination array, then use Resume"
+      return 75
+    fi
+    [[ "$token" == - ]] && token=''
     if [[ -n "$token" ]]; then
       INTERRUPT_MESSAGE="$label interrupted; source remains stopped and Resume will continue from the retained ZFS token"
       return 75
@@ -402,7 +432,7 @@ transfer_zfs_object(){
 }
 
 RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
-transfer_file(){ local src="$1" dst="$2" base="$3" span="$4" label="$5" parent rc src_size dst_size;parent="${dst%/*}";remote "mkdir -p $(sq "$parent"); test ! -e $(sq "$dst") || chmod 0600 $(sq "$dst")";src_size="$(stat -c %s -- "$src")";state TRANSFERRING "$base" "$label ($(human_bytes "$src_size"))";set +e;args=(-aS --protect-args --numeric-ids --partial --partial-dir=.unmotion-partial --info=progress2 --human-readable --stats);((WARM_MODE))&&args+=(--inplace --no-whole-file);debug "CMD local: rsync ${args[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE:$dst")";rsync "${args[@]}" -e "$RSYNC_RSH" -- "$src" "$REMOTE:$dst" 2>&1|tr '\r' '\n'|stream_progress_parser TRANSFERRING "$base" "$span" "$label" rsync;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";dst_size="$(remote "stat -c %s -- $(sq "$dst")")";[[ "$src_size" == "$dst_size" ]]||return 44;progress_update TRANSFERRING "$base" "$span" "$label" 100 'size verified'; }
+transfer_file(){ local src="$1" dst="$2" base="$3" span="$4" label="$5" parent rc src_size dst_size;parent="${dst%/*}";remote "mkdir -p $(sq "$parent"); test ! -e $(sq "$dst") || chmod 0600 $(sq "$dst")";src_size="$(stat -c %s -- "$src")";state TRANSFERRING "$base" "$label ($(human_bytes "$src_size"))";set +e;args=(-aS --protect-args --numeric-ids --partial --info=progress2 --human-readable --stats);if ((WARM_MODE));then args+=(--inplace --no-whole-file);else args+=(--partial-dir=.unmotion-partial);fi;debug "CMD local: rsync ${args[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE:$dst")";rsync "${args[@]}" -e "$RSYNC_RSH" -- "$src" "$REMOTE:$dst" 2>&1|tr '\r' '\n'|stream_progress_parser TRANSFERRING "$base" "$span" "$label" rsync;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";dst_size="$(remote "stat -c %s -- $(sq "$dst")")";[[ "$src_size" == "$dst_size" ]]||return 44;progress_update TRANSFERRING "$base" "$span" "$label" 100 'size verified'; }
 convert_zvol(){ local src="$1" stage="$2" base="$3" span="$4" label="$5" rc;state CONVERTING "$base" "$label";rm -f -- "$stage.tmp" "$stage";debug "CMD local: qemu-img convert -p -f raw -O raw $(printf '%q' "/dev/zvol/$src") $(printf '%q' "$stage.tmp")";set +e;qemu-img convert -p -f raw -O raw "/dev/zvol/$src" "$stage.tmp" 2>&1|tr '\r' '\n'|stream_progress_parser CONVERTING "$base" "$span" "$label" qemu;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";mv -f -- "$stage.tmp" "$stage"; }
 ZVOL_BYTES=();DATASET_BYTES=();CONVERT_BYTES=();FILE_BYTES=();ISO_BYTES=();TOTAL_TRANSFER_BYTES=0
 for src in "${ZVOLS[@]}";do if [[ "$DEST_ZVOL_READY" == 1&&-n "$DEST_ZVOL_DATASET" ]];then b="$(zfs_stream_size "$src" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)" "$SNAPSHOT_NAME")";ZVOL_BYTES+=("$b");((TOTAL_TRANSFER_BYTES+=b));fi;done

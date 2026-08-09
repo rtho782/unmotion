@@ -10,12 +10,12 @@ Use a Linux/Unraid development environment with Bash, PHP CLI, Node.js (for Java
 ./scripts/verify.sh
 ```
 
-The script verifies the recovered artifacts, confirms that the PLG payload equals the retained TXZ, compares the TXZ contents with `src/rootfs`, checks version/protocol invariants and runs available syntax checks.
+The script verifies the recovered beta7 artifacts independently, checks current version/protocol invariants, runs behavioral regressions and executes all available syntax checks.
 
 ## Build
 
 ```bash
-./scripts/build.sh 0.3.0-beta7
+./scripts/build.sh 0.3.0-RC1
 ```
 
 The script stages `src/rootfs`, applies package permissions, creates a Slackware-style TXZ and embeds it into a PLG under `dist/`. For a new release, update the `VERSION` file and release notes first, then pass the matching version.
@@ -23,11 +23,11 @@ The script stages `src/rootfs`, applies package permissions, creates a Slackware
 ## Test deployment
 
 ```bash
-scp dist/unmotion-<version>.plg root@UNRAID-DEV01:/tmp/unmotion.plg
-ssh root@UNRAID-DEV01 'cp /tmp/unmotion.plg /boot/config/plugins/unmotion.plg && plugin install /boot/config/plugins/unmotion.plg'
+scp dist/unmotion-<version>.plg root@UNRAID-DEV01:/tmp/unmotion-<version>.plg
+ssh root@UNRAID-DEV01 'plugin install /tmp/unmotion-<version>.plg forced && cp /tmp/unmotion-<version>.plg /boot/config/plugins/unmotion.plg && rm -f /boot/config/plugins/unmotion-<version>.plg /var/log/plugins/unmotion-<version>.plg'
 ```
 
-Repeat for `UNRAID-DEV02`, verify the installed version, restart the plugin and test discovery/pairing before migration tests.
+Repeat for `UNRAID-DEV02`, verify the installed version, restart the plugin and test discovery/pairing before migration tests. The package filename uses a lowercase normalized version token internally (for example, `_rc1`) so Unraid orders it after `_beta7`; the displayed plugin version retains its release spelling.
 
 ## Release discipline
 
@@ -37,4 +37,3 @@ Repeat for `UNRAID-DEV02`, verify the installed version, restart the plugin and 
 4. Install on both disposable peers.
 5. Test cold and Warm Move paths, including recovery/failure cases.
 6. Record SHA-256 hashes and create a Git tag only after verification.
-

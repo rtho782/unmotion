@@ -1,10 +1,10 @@
 # unMotion
 
-unMotion is an experimental Unraid plugin for moving libvirt virtual machines between paired Unraid hosts. This repository preserves the recovered `0.3.0-beta7` release exactly and adds the documentation and build scaffolding needed for continued Git-based development.
+unMotion is an experimental Unraid plugin for moving libvirt virtual machines between paired Unraid hosts. The current development release is `0.3.0-RC1`; the recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
 
 > **Beta software:** migrations change VM definitions and storage. Use disposable test hosts and verified backups. Do not treat a successful preflight as a substitute for a recovery plan.
 
-## What beta7 supports
+## What RC1 supports
 
 - Peer discovery and reciprocal pairing over SSH (protocol version 5).
 - Cold migration of powered-off VMs.
@@ -18,7 +18,7 @@ unMotion is an experimental Unraid plugin for moving libvirt virtual machines be
 ## Repository layout
 
 ```text
-src/rootfs/                 Exact files extracted from the beta7 TXZ
+src/rootfs/                 Current RC1 package source, derived from beta7
 release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
@@ -26,19 +26,21 @@ docs/                       Architecture, development and recovery notes
 AGENTS.md                   Durable rules for Codex and contributors
 ```
 
-The executable beta7 product code is recovered, not recreated, and was cross-checked against the separately published source tarball. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
+The beta7 baseline was recovered, not recreated, and was cross-checked against the separately published source tarball. RC1 contains explicitly documented post-recovery fixes. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
-## Install the recovered beta7 release
+## Install RC1
 
-Copy `release/0.3.0-beta7/unmotion-0.3.0-beta7.plg` to an Unraid host, then run as `root`:
+Build RC1, copy `dist/unmotion-0.3.0-RC1.plg` to a temporary path on the Unraid host, then run as `root`:
 
 ```bash
-cp /path/to/unmotion-0.3.0-beta7.plg /boot/config/plugins/unmotion.plg
-plugin install /boot/config/plugins/unmotion.plg
+plugin install /tmp/unmotion-0.3.0-RC1.plg forced
+cp /tmp/unmotion-0.3.0-RC1.plg /boot/config/plugins/unmotion.plg
+rm -f /boot/config/plugins/unmotion-0.3.0-RC1.plg \
+      /var/log/plugins/unmotion-0.3.0-RC1.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The final command must print `0.3.0-beta7`. Use the stable installed filename `unmotion.plg`; versioned `.plg` filenames can create duplicate entries in Unraid's Plugins tab.
+The final command must print `0.3.0-RC1`. The exact versioned descriptor cleanup keeps the required stable `unmotion.plg` identity and prevents a duplicate Plugins-tab entry; it does not remove plugin state.
 
 Install the same version on both peers. Pair hosts from **Settings → unMotion**, then test connectivity before attempting a migration.
 
@@ -65,4 +67,4 @@ Outputs are written to `dist/`. The build creates a new package from the source 
 
 Read [AGENTS.md](AGENTS.md) before changing behavior. The minimum safe workflow is documented in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and the proposed isolated lab in [docs/TEST-ENVIRONMENT.md](docs/TEST-ENVIRONMENT.md).
 
-No live destructive migration was run while reconstructing this repository. Verification here covers artifact provenance, extraction equality, version/protocol invariants and available syntax checks.
+The recovered baseline provenance remains independently verifiable. RC1 is additionally exercised on the disposable `UNRAID-DEV01`/`02` lab, including interrupted receives and outer-VM power loss.

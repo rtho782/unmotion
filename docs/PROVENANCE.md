@@ -19,7 +19,7 @@ MD5     4bf2dad8dd80c4a87546a9c55fb9f518
 SHA-256 cbcacc6c8b3c1a9df4e4ce4b7020a9806ddaf00aff91fd8527b97d05e30c34f6
 ```
 
-`src/rootfs/` is a direct extraction of that TXZ. No executable beta7 source file was rewritten during repository creation. Documentation, tests and build helpers were newly added and are not claimed as beta7 artifacts.
+`src/rootfs/` began as a direct extraction of that TXZ. No executable beta7 source file was rewritten during repository creation. Starting with `0.3.0-RC1`, explicitly documented post-recovery fixes are applied to the current package source; the untouched beta7 artifacts remain under `release/0.3.0-beta7/`.
 
 The user subsequently supplied the separately published source tarball. Its SHA-256 is:
 

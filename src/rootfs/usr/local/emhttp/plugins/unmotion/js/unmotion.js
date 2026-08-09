@@ -588,6 +588,7 @@ function loadSettings() {
           
         }
         );
+        $('#unm-save-settings').prop('disabled',true);
         
       }
       $('#unm-default-iso').val(s.copy_isos_default?'copy':'remove');
@@ -628,6 +629,7 @@ function saveSettings() {
     ).done(function(r) {
       appSettings=r.settings||appSettings;
       flash('Settings saved.');
+      $('#unm-save-settings').prop('disabled',true);
       if(appSettings.discovery)discover();
       
     }
@@ -843,4 +845,3 @@ $(function() {
 
 }
 )(jQuery);
-

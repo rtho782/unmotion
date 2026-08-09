@@ -17,3 +17,6 @@ PHP CLI was not installed in the Windows reconstruction environment, so `php -l`
 
 No live Unraid host or VM migration was invoked during reconstruction.
 
+## RC1 development verification
+
+`0.3.0-RC1` is the first post-recovery development release. Its verification is tracked separately from the immutable beta7 artifact record above. RC1 adds behavioral regressions for quoted Avahi TXT records, empty TSV cleanup fields, destination-unavailable resume classification, mutually exclusive rsync options, prepared-image re-protection after failed cutover and settings dirty-state reset. Live validation uses only the disposable `UNRAID-DEV01` and `UNRAID-DEV02` lab hosts.
