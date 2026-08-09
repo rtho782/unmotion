@@ -1,0 +1,188 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+JOB_ID="${1:-}"
+[[ "$JOB_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || exit 2
+JOBDIR="/boot/config/plugins/unmotion/jobs/$JOB_ID"
+REQUEST="$JOBDIR/request.cfg"
+JOB_JSON="$JOBDIR/job.json"
+LOG="$JOBDIR/migration.log"
+[[ -f "$REQUEST" && -f "$JOB_JSON" ]] || exit 2
+# shellcheck disable=SC1090
+source "$REQUEST"
+export UNM_WORKER_PID="$$"
+
+state(){ /usr/local/sbin/unmotion-state "$JOB_ID" "$1" "$2" "$3"; }
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >>"$LOG"; }
+require(){ command -v "$1" >/dev/null 2>&1 || { log "Required command missing: $1"; exit 3; }; }
+for command in virsh php flock sha256sum rsync zfs; do require "$command"; done
+
+[[ "${CLONE_UUID:-}" =~ ^[A-Fa-f0-9-]{36}$ ]] || { log 'Invalid clone UUID.'; exit 4; }
+[[ "${VM_UUID:-}" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || { log 'Invalid source UUID.'; exit 4; }
+[[ -f "${PLAN_JSON:-}" && -f "${SOURCE_XML:-}" ]] || { log 'Clone plan or source XML is missing.'; exit 4; }
+
+exec 9>"/var/lock/unmotion-$VM_UUID.lock"
+flock -n 9 || { state FAILED 0 'Another unMotion operation is already using this VM'; exit 5; }
+
+CREATED_ZFS=(); CREATED_FILES=(); CREATED_DIRS=(); CREATED_SNAPS=(); CLONE_DEFINED=0; COMPLETE=0; CANCELLED=0
+# shellcheck disable=SC2329 # Invoked indirectly by the EXIT trap.
+cleanup(){
+  local rc="${1:-1}" i domain_state cleanup_failed=0 attempt absent_checks=0
+  local xml_path="/etc/libvirt/qemu/$CLONE_NAME.xml" clone_dir=''
+  (( COMPLETE==0 )) || return 0
+  set +e
+  if (( CLONE_DEFINED )) || virsh dominfo "$CLONE_UUID" >/dev/null 2>&1; then
+    for ((attempt=0;attempt<40;attempt++)); do
+      if ! virsh dominfo "$CLONE_UUID" >/dev/null 2>&1 && [[ ! -e "$xml_path" ]]; then
+        absent_checks=$((absent_checks+1)); ((absent_checks>=4)) && break
+        sleep 0.25
+        continue
+      fi
+      absent_checks=0
+      virsh dominfo "$CLONE_UUID" >/dev/null 2>&1 || { sleep 0.25; continue; }
+      domain_state="$(virsh domstate "$CLONE_UUID" 2>/dev/null | tr -d '\r')"
+      if [[ "$domain_state" != 'shut off' && "$domain_state" != 'no state' && -n "$domain_state" ]]; then
+        virsh destroy "$CLONE_UUID" >>"$LOG" 2>&1 || true
+      else
+        virsh autostart "$CLONE_UUID" --disable >>"$LOG" 2>&1 || true
+        virsh undefine "$CLONE_UUID" --nvram >>"$LOG" 2>&1 || virsh undefine "$CLONE_UUID" >>"$LOG" 2>&1 || true
+      fi
+      sleep 0.25
+    done
+    if virsh dominfo "$CLONE_UUID" >/dev/null 2>&1 || [[ -e "$xml_path" ]]; then
+      log "ERROR: exact clone domain $CLONE_UUID or its persistent XML remains after cleanup retries."
+      cleanup_failed=1
+    fi
+  fi
+  for ((i=${#CREATED_ZFS[@]}-1;i>=0;i--)); do
+    if [[ "${CREATED_ZFS[$i]}" == *'@'* || "${CREATED_ZFS[$i]}" == *'..'* ]]; then cleanup_failed=1; continue; fi
+    for ((attempt=0;attempt<40;attempt++)); do
+      zfs list -H -o name "${CREATED_ZFS[$i]}" >/dev/null 2>&1 || break
+      zfs destroy "${CREATED_ZFS[$i]}" >>"$LOG" 2>&1 && break
+      sleep 0.25
+    done
+    if zfs list -H -o name "${CREATED_ZFS[$i]}" >/dev/null 2>&1; then
+      log "ERROR: exact clone ZFS destination ${CREATED_ZFS[$i]} remains after cleanup retries."
+      cleanup_failed=1
+    fi
+  done
+  for ((i=${#CREATED_SNAPS[@]}-1;i>=0;i--)); do
+    if [[ "${CREATED_SNAPS[$i]}" != *"@unmotion-clone-$JOB_ID" ]]; then cleanup_failed=1; continue; fi
+    zfs list -H -t snapshot "${CREATED_SNAPS[$i]}" >/dev/null 2>&1 || continue
+    zfs destroy "${CREATED_SNAPS[$i]}" >>"$LOG" 2>&1 || cleanup_failed=1
+  done
+  for ((i=${#CREATED_FILES[@]}-1;i>=0;i--)); do rm -f -- "${CREATED_FILES[$i]}" >>"$LOG" 2>&1 || cleanup_failed=1; [[ ! -e "${CREATED_FILES[$i]}" ]] || cleanup_failed=1; done
+  for ((i=${#CREATED_DIRS[@]}-1;i>=0;i--)); do rmdir -- "${CREATED_DIRS[$i]}" >>"$LOG" 2>&1 || true; done
+  # shellcheck disable=SC2016 # PHP, not the shell, expands $p and $argv.
+  clone_dir="$(php -r '$p=json_decode(file_get_contents($argv[1]),true);echo $p["clone"]["directory"]??"";' "$PLAN_JSON" 2>>"$LOG" || true)"
+  if [[ "$clone_dir" == /mnt/* && "$clone_dir" != *'/../'* && ! -L "$clone_dir" ]]; then
+    rmdir -- "$clone_dir" >>"$LOG" 2>&1 || true
+    [[ ! -d "$clone_dir" ]] || { log "ERROR: exact clone directory $clone_dir remains after cleanup."; cleanup_failed=1; }
+  elif [[ -n "$clone_dir" ]]; then
+    log "ERROR: unsafe clone directory recorded for cleanup: $clone_dir"
+    cleanup_failed=1
+  fi
+  if (( cleanup_failed )); then
+    state FAILED 0 'Clone stopped, but exact cleanup is incomplete; review the log and use Cancel again'
+    log "Clone worker exited with status $rc; exact cleanup is incomplete and was not reported as successful."
+  elif (( CANCELLED )); then
+    state CANCELLED 0 'Clone cancelled; newly-created local storage was removed'
+    log "Clone worker exited with status $rc; exact clone destinations were verified absent."
+  else
+    state FAILED 0 'Clone failed; source VM was not changed and newly-created local storage was removed'
+    log "Clone worker exited with status $rc; exact clone destinations were verified absent."
+  fi
+}
+trap 'CANCELLED=1; exit 130' TERM INT
+trap 'rc=$?; cleanup "$rc"' EXIT
+
+cancel_check(){ [[ ! -f "$JOBDIR/cancel.requested" ]] || { CANCELLED=1; exit 130; }; }
+decode(){ [[ "$1" == '-' ]] && return 0; printf '%s' "$1" | base64 -d; }
+
+state PREFLIGHT 1 'Revalidating local clone source and destinations'
+SOURCE_STATE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r')"
+[[ "$SOURCE_STATE" == 'shut off' ]] || { log "Source state changed to $SOURCE_STATE"; exit 10; }
+CURRENT_XML="$JOBDIR/source-current.xml"; virsh dumpxml "$VM_UUID" --inactive >"$CURRENT_XML"
+CURRENT_HASH="$(sha256sum "$CURRENT_XML" | awk '{print $1}')"
+[[ "$CURRENT_HASH" == "${SOURCE_XML_SHA256:-}" ]] || { log 'Source domain XML changed after preflight.'; exit 11; }
+virsh dominfo "$CLONE_NAME" >/dev/null 2>&1 && { log 'Clone name is now in use.'; exit 12; }
+virsh dominfo "$CLONE_UUID" >/dev/null 2>&1 && { log 'Clone UUID is now in use.'; exit 12; }
+# shellcheck disable=SC2016 # PHP, not the shell, expands $p, $used and $mac.
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$p=json_decode(file_get_contents($argv[1]),true);$used=unmLocalDomainMacs();foreach($p["clone"]["macs"]??[] as $mac)if(isset($used[strtolower((string)$mac)]))exit(1);' "$PLAN_JSON" || { log 'A generated clone MAC address is now in use.'; exit 12; }
+
+# shellcheck disable=SC2016 # PHP, not the shell, expands $p and $argv.
+ITEMS="$(php -r '$p=json_decode(file_get_contents($argv[1]),true);echo count($p["plan"]??[]);' "$PLAN_JSON")"
+INDEX=0; SNAP="unmotion-clone-$JOB_ID"
+state COPYING_STORAGE 4 'Creating independent local storage copies'
+
+# shellcheck disable=SC2016 # PHP, not the shell, expands variables in the process-substitution program.
+while IFS=$'\t' read -r ekind esource edestination emount ebytes; do
+  cancel_check
+  kind="$(decode "$ekind")"; source="$(decode "$esource")"; destination="$(decode "$edestination")"; mountpoint="$(decode "$emount")"; bytes="$(decode "$ebytes")"
+  INDEX=$((INDEX+1)); pct=$((4 + INDEX*62/(ITEMS>0?ITEMS:1)))
+  case "$kind" in
+    dataset|zvol)
+      [[ -n "$source" && -n "$destination" && "$source" != *'@'* && "$destination" != *'@'* && "$destination" != *'..'* ]] || exit 20
+      zfs list -H -o name "$source" >/dev/null
+      ! zfs list -H -o name "$destination" >/dev/null 2>&1 || { log "Destination ZFS object exists: $destination"; exit 21; }
+      srcsnap="$source@$SNAP"; dstsnap="$destination@$SNAP"
+      ! zfs list -H -t snapshot -o name "$srcsnap" >/dev/null 2>&1 || { log "Source snapshot exists: $srcsnap"; exit 21; }
+      state SNAPSHOTTING "$pct" "Snapshotting $source"
+      zfs snapshot "$srcsnap"; CREATED_SNAPS+=("$srcsnap"); CREATED_ZFS+=("$destination")
+      receive=(zfs receive -u -o "dedup=${DEST_DEDUP:-off}")
+      [[ "${DEST_COMPRESSION:-inherit}" == inherit ]] || receive+=(-o "compression=$DEST_COMPRESSION")
+      if [[ "$kind" == dataset ]]; then
+        [[ "$mountpoint" == /mnt/* ]] || exit 22
+        mkdir -p -- "${mountpoint%/*}"; receive+=(-o "mountpoint=$mountpoint" -o canmount=on)
+      fi
+      state COPYING_STORAGE "$pct" "Copying $kind $source ($bytes bytes)"
+      zfs send -cp "$srcsnap" | "${receive[@]}" "$destination"
+      src_guid="$(zfs get -H -o value guid "$srcsnap")"; dst_guid="$(zfs get -H -o value guid "$dstsnap")"
+      [[ "$src_guid" == "$dst_guid" ]] || { log "Snapshot GUID verification failed for $destination"; exit 23; }
+      zfs set readonly=off "$destination"
+      [[ "$kind" != dataset ]] || zfs mount "$destination"
+      zfs destroy "$dstsnap"; zfs destroy "$srcsnap"
+      last_snap_index=$((${#CREATED_SNAPS[@]} - 1))
+      unset "CREATED_SNAPS[$last_snap_index]"
+      ;;
+    file|nvram)
+      [[ "$source" == /* && "$destination" == /* && "$destination" != *'..'* ]] || exit 24
+      [[ -f "$source" && ! -L "$source" && ! -e "$destination" && ! -L "$destination" ]] || { log "Unsafe or conflicting file copy: $source -> $destination"; exit 25; }
+      parent="${destination%/*}"; if [[ ! -d "$parent" ]]; then mkdir -p -- "$parent"; CREATED_DIRS+=("$parent"); fi
+      CREATED_FILES+=("$destination"); state COPYING_STORAGE "$pct" "Copying $(basename "$source") ($bytes bytes)"
+      rsync -aS --protect-args --numeric-ids -- "$source" "$destination"
+      [[ "$(stat -c %s -- "$source")" == "$(stat -c %s -- "$destination")" ]] || exit 26
+      ;;
+    *) log "Invalid clone plan item: $kind"; exit 27;;
+  esac
+done < <(php -r '$p=json_decode(file_get_contents($argv[1]),true);$order=["dataset"=>0,"zvol"=>1,"file"=>2,"nvram"=>3];$items=$p["plan"]??[];usort($items,fn($a,$b)=>($order[$a["kind"]]??9)<=>($order[$b["kind"]]??9));foreach($items as $i){$v=[$i["kind"]??"",$i["source"]??"",$i["destination"]??"",$i["mountpoint"]??"",(string)($i["bytes"]??0)];echo implode("\t",array_map(fn($x)=>($e=base64_encode((string)$x))===""?"-":$e,$v)),"\n";}' "$PLAN_JSON")
+
+cancel_check
+state DEFINING_CLONE 72 'Creating clone libvirt definition with NIC links down'
+DISCONNECTED_XML="$JOBDIR/clone-disconnected.xml"
+/usr/local/sbin/unmotion-clone-transform "$SOURCE_XML" "$DISCONNECTED_XML" "$PLAN_JSON" disconnected
+virsh define "$DISCONNECTED_XML" >>"$LOG" 2>&1; CLONE_DEFINED=1
+[[ "$(virsh domuuid "$CLONE_NAME")" == "$CLONE_UUID" ]] || exit 30
+virsh autostart "$CLONE_UUID" --disable >/dev/null 2>&1 || true
+
+FINAL_STATE=COMPLETE; FINAL_MESSAGE='Clone created stopped with NIC links down for manual guest identity review'
+if [[ "${GUEST_CUSTOMIZATION:-none-disconnected}" == ubuntu-dhcp ]]; then
+  state GUEST_CUSTOMIZING 78 'Booting the clone with NIC links down for Ubuntu customization'
+  if virsh start "$CLONE_UUID" >>"$LOG" 2>&1 && /usr/local/sbin/unmotion-guest-customize "$CLONE_UUID" "$CLONE_NAME" "$PLAN_JSON" >>"$LOG" 2>&1; then
+    state GUEST_CUSTOMIZING 92 'Ubuntu identity reset complete; shutting down the isolated clone'
+    virsh qemu-agent-command "$CLONE_UUID" '{"execute":"guest-shutdown","arguments":{"mode":"powerdown"}}' >>"$LOG" 2>&1 || true
+    waited=0; while [[ "$(virsh domstate "$CLONE_UUID" 2>/dev/null | tr -d '\r')" != 'shut off' && $waited -lt 90 ]]; do sleep 2; waited=$((waited+2)); done
+    if [[ "$(virsh domstate "$CLONE_UUID" 2>/dev/null | tr -d '\r')" != 'shut off' ]]; then log 'Customized clone did not shut down within 90 seconds; forcing off the isolated clone.'; virsh destroy "$CLONE_UUID" >>"$LOG" 2>&1; fi
+    CONNECTED_XML="$JOBDIR/clone-final.xml";/usr/local/sbin/unmotion-clone-transform "$SOURCE_XML" "$CONNECTED_XML" "$PLAN_JSON" connected
+    virsh define "$CONNECTED_XML" >>"$LOG" 2>&1;virsh autostart "$CLONE_UUID" --disable >/dev/null 2>&1 || true
+    FINAL_MESSAGE='Clone created stopped; Ubuntu identity reset and Netplan changed to DHCP';
+  else
+    log 'Automatic Ubuntu customization was not completed. The clone is retained safely with NIC links down.'
+    virsh destroy "$CLONE_UUID" >>"$LOG" 2>&1 || true
+    FINAL_STATE=COMPLETE_WITH_WARNINGS;FINAL_MESSAGE='Clone created stopped with NIC links down; automatic Ubuntu customization needs manual follow-up'
+  fi
+fi
+
+[[ "$(virsh domstate "$CLONE_UUID" 2>/dev/null | tr -d '\r')" == 'shut off' ]] || { log 'Clone unexpectedly remained running.'; exit 31; }
+COMPLETE=1;state "$FINAL_STATE" 100 "$FINAL_MESSAGE";log "$FINAL_MESSAGE"
+exit 0

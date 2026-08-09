@@ -11,10 +11,11 @@ function reply(array $data, int $status=200): never {
 function fail(Throwable|string $e, int $status=400): never {
     reply(['success'=>false,'error'=>$e instanceof Throwable?$e->getMessage():(string)$e],$status);
 }
-function launchWorker(string $id, string $dir): int {
-    $cmd='nohup setsid /usr/local/sbin/unmotion-worker '.escapeshellarg($id).' >>'.escapeshellarg($dir.'/launcher.log').' 2>&1 & echo $!';
+function launchWorker(string $id, string $dir, string $worker='/usr/local/sbin/unmotion-worker'): int {
+    if(!in_array($worker,['/usr/local/sbin/unmotion-worker','/usr/local/sbin/unmotion-clone-worker'],true))throw new InvalidArgumentException('Invalid worker.');
+    $cmd='nohup setsid '.escapeshellarg($worker).' '.escapeshellarg($id).' >>'.escapeshellarg($dir.'/launcher.log').' 2>&1 & echo $!';
     $r=unmRun($cmd,null,10); $pid=(int)trim($r['stdout']);
-    if($r['code']!==0||$pid<=0) throw new RuntimeException('Unable to launch migration worker: '.trim($r['stderr']));
+    if($r['code']!==0||$pid<=0) throw new RuntimeException('Unable to launch worker: '.trim($r['stderr']));
     return $pid;
 }
 
@@ -54,6 +55,31 @@ try {
             if(isset($_POST['migration_mode']))$opts['migration_mode']=(string)$_POST['migration_mode'];
             $vmId=(string)($_POST['vm_id']??$_POST['vm']??'');
             reply(['success'=>true,'preflight'=>unmPreflight($vmId,(string)($_POST['peer_id']??''),$opts)]);
+        case 'clonePreflight':
+            $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];
+            reply(['success'=>true,'preflight'=>unmClonePreflight((string)($_POST['vm_id']??''),(string)($_POST['clone_name']??''),$opts)]);
+        case 'startClone':
+            $vmId=(string)($_POST['vm_id']??'');$cloneName=unmCloneName((string)($_POST['clone_name']??''));
+            $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];$customization=(string)($opts['guest_customization']??'ubuntu-dhcp');
+            if(!in_array($customization,['ubuntu-dhcp','none-disconnected'],true))throw new InvalidArgumentException('Invalid guest customization mode.');
+            $cloneUuid=unmNewUuid();$opts['clone_uuid']=$cloneUuid;$opts['guest_customization']=$customization;
+            $pre=unmClonePreflight($vmId,$cloneName,$opts);if(!$pre['ready'])throw new RuntimeException(implode('; ',$pre['errors']));
+            if(strtolower(trim((string)($pre['vm']['state']??'')))!=='shut off')throw new RuntimeException('Power off the source VM before cloning.');
+            $vmUuid=(string)($pre['vm']['uuid']??'');if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new RuntimeException('The selected VM has no valid UUID.');
+            $jobId=date('Ymd-His').'-clone-'.substr(bin2hex(random_bytes(5)),0,10);$dir=UNM_JOBS_DIR.'/'.$jobId;mkdir($dir,0700,true);
+            $sourceXml=unmDomainXml($vmUuid,true);$sourceXmlPath=$dir.'/source.xml';file_put_contents($sourceXmlPath,$sourceXml,LOCK_EX);chmod($sourceXmlPath,0600);
+            $sourceHash=hash('sha256',$sourceXml);if($sourceHash!==(string)($pre['clone']['sourceXmlSha256']??''))throw new RuntimeException('Source domain XML changed during clone setup.');
+            $planPath=$dir.'/clone-plan.json';unmAtomicJson($planPath,$pre);
+            $cfg=unmLoadConfig();$request=[
+                'JOB_ID'=>$jobId,'JOB_TYPE'=>'clone','VM_UUID'=>$vmUuid,'VM_NAME'=>(string)$pre['vm']['name'],
+                'CLONE_UUID'=>$cloneUuid,'CLONE_NAME'=>$cloneName,'PLAN_JSON'=>$planPath,'SOURCE_XML'=>$sourceXmlPath,'SOURCE_XML_SHA256'=>$sourceHash,
+                'GUEST_CUSTOMIZATION'=>$customization,'DEST_DEDUP'=>(string)$cfg['dedup'],'DEST_COMPRESSION'=>(string)$cfg['compression'],'SOURCE_CLEANUP_ACTION'=>'unregister',
+            ];
+            unmWriteCfg($dir.'/request.cfg',$request);
+            $job=['id'=>$jobId,'jobType'=>'clone','vm'=>(string)$pre['vm']['name'],'cloneName'=>$cloneName,'peerId'=>unmHostId(),'peerName'=>'This server: '.$cloneName,'state'=>'STARTING','progress'=>0,'message'=>'Starting local clone worker','createdAt'=>date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM),'request'=>$request,'preflight'=>$pre];
+            unmAtomicJson($dir.'/job.json',$job);file_put_contents($dir.'/migration.log','');chmod($dir.'/migration.log',0600);
+            $pid=launchWorker($jobId,$dir,'/usr/local/sbin/unmotion-clone-worker');$job=unmLoadJson($dir.'/job.json',$job);$job['pid']=$pid;$job['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/job.json',$job);
+            reply(['success'=>true,'job'=>$job]);
         case 'startMigration':
             $vmId=(string)($_POST['vm_id']??$_POST['vm']??''); $peerId=(string)($_POST['peer_id']??'');
             $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];
@@ -115,6 +141,7 @@ try {
         case 'resumeJob':
             $id=(string)($_POST['job_id']??''); if(!preg_match('/^[A-Za-z0-9_.-]+$/',$id)) throw new InvalidArgumentException('Invalid job id.');
             $dir=UNM_JOBS_DIR.'/'.$id; $job=unmLoadJson($dir.'/job.json'); if(!$job) throw new RuntimeException('Job not found.');
+            if(($job['jobType']??'migration')==='clone')throw new RuntimeException('Local clone jobs cannot be resumed; source storage remains unchanged, so start a new clone after reviewing the log.');
             if (!in_array($job['state']??'', ['FAILED','INTERRUPTED'], true)) throw new RuntimeException('Only failed or interrupted pre-handoff jobs can be resumed automatically.');
             @unlink($dir.'/cancel.requested');
             $job['state']='STARTING'; $job['message']='Resume requested'; $job['updatedAt']=date(DATE_ATOM); unmAtomicJson($dir.'/job.json',$job);

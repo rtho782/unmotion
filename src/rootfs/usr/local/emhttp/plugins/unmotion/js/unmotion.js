@@ -11,7 +11,7 @@ var appSettings= {
   }
   ;
   
-var activeVmId='',activeVmName='',activePreflight=null,activeWarmSeedId='';
+var activeVmId='',activeVmName='',activePreflight=null,activeWarmSeedId='',activeOperation='migration',activeCloneName='';
   var activeMigrateButton=null;
   
 var discoveryTimer=null,peerRefreshTimer=null,discoveryInFlight=false,currentLogId='',currentLogType='job',logTimer=null,healthTimer=null;
@@ -230,6 +230,9 @@ function renderInventory() {
           actions+='<input type="button" value="Warm Move blocked" disabled title="'+esc(warmBlockedReason(vm))+'">';
         }
       }
+      if((vm.pci||[]).length)actions+='<input type="button" value="Clone blocked by PCIe" disabled title="Remove PCIe passthrough before cloning">';
+      else if(vm.tpm)actions+='<input type="button" value="Clone blocked by TPM" disabled title="RC2 does not clone virtual TPM identity or secrets">';
+      else actions+='<input type="button" class="unm-clone" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="'+(poweredOff?'Clone locally':'Power off before clone')+'" '+(poweredOff?'':'disabled')+'>';
       actions+='</div>';
       body.append('<tr><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td class="unm-storage-cell">'+esc(storageText(vm))+storageDetailHtml(vm)+'</td><td class="unm-features-cell">'+flags(vm)+'</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+esc(vm.autostart)+'</td><td>'+actions+'</td></tr>');
     });
@@ -307,7 +310,7 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
       return;
       
     }
-    activeVmId=vmId;
+    activeOperation='migration';activeVmId=vmId;
     activeVmName=vmName;
     activeWarmSeedId=(resourceOverride||{}).warm_seed_id||'';
     if(triggerButton)activeMigrateButton=$(triggerButton);
@@ -429,14 +432,35 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
       html+='<div class="unm-card"><strong>Source handling after migration</strong><div class="unm-choice-list"><label><input type="radio" name="unm-source-cleanup" value="unregister" '+(preservedSourceCleanup==='unregister'?'checked':'')+'> <strong>Unregister source VM, retain storage</strong><br><span class="unm-muted">Remove the source libvirt definition while retaining disks, UEFI NVRAM and TPM state.</span></label><label><input type="radio" name="unm-source-cleanup" value="retain" '+(preservedSourceCleanup==='retain'?'checked':'')+'> <strong>Keep source VM registered and rename it</strong><br><span class="unm-muted">Disable autostart and append “ - Migrated to '+esc((p.peer||{}).name||'destination')+'”.</span></label><label><input type="radio" name="unm-source-cleanup" value="delete" '+(preservedSourceCleanup==='delete'?'checked':'')+'> <strong>Delete source VM and storage after validation</strong><br><span class="unm-muted">Delete only after five minutes of continuous destination runtime.</span></label></div></div>';
       $('#unm-modal-content').html(html);
       $('#unm-modal').addClass('open');
+      $('#unm-confirm-migrate').val('Migrate');$('#unm-recheck').show();
       updateMigrationEligibility();
       
     }
     ).fail(err).always(stopBusy);
     
   }
+
+function showClonePreflight(vmId,vmName,cloneName,triggerButton) {
+    activeOperation='clone';activeVmId=vmId;activeVmName=vmName;activeWarmSeedId='';activeCloneName=cloneName||vmName+' - Clone';
+    var stopBusy=setButtonBusy(triggerButton||$('#unm-recheck'),'Checking');
+    var customization=$('#unm-clone-customization').val()||'ubuntu-dhcp';
+    post('clonePreflight',{vm_id:vmId,clone_name:activeCloneName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
+      var p=r.preflight||{},clone=p.clone||{},lines=[];activePreflight=p;
+      (p.plan||[]).forEach(function(i){lines.push(String(i.kind||'item').toUpperCase()+': '+(i.source||'')+' â†’ '+(i.destination||'')+(i.bytes?' ['+fmtBytes(i.bytes)+']':''));});
+      $('#unm-modal-title').text('Clone '+vmName+' on this server');
+      var html='<div class="unm-card"><div class="unm-form-row"><label>Clone name</label><input id="unm-clone-name" type="text" maxlength="128" value="'+esc(activeCloneName)+'"></div>';
+      html+='<div class="unm-form-row"><label>Guest handling</label><select id="unm-clone-customization"><option value="ubuntu-dhcp" '+(clone.customization==='ubuntu-dhcp'?'selected':'')+'>Ubuntu via guest agent: reset identity and use DHCP</option><option value="none-disconnected" '+(clone.customization==='none-disconnected'?'selected':'')+'>Do not alter guest; keep every NIC link down</option></select></div></div>';
+      if((p.errors||[]).length)html+='<div class="unm-bad"><strong>Blocked</strong><ul>'+p.errors.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+      if((p.warnings||[]).length)html+='<div class="unm-warn"><strong>Safety notes</strong><ul>'+p.warnings.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+      html+='<div class="unm-card"><strong>New KVM identity</strong><p>UUID: '+esc(clone.uuid||'pending')+'</p><p>MACs: '+esc((clone.macs||[]).join(', ')||'none')+'</p><p>Autostart: disabled; final power state: stopped</p></div>';
+      html+='<div class="unm-pre">'+esc(lines.join('\n'))+'</div>';
+      $('#unm-modal-content').html(html);$('#unm-modal').addClass('open');$('#unm-confirm-migrate').val('Clone');$('#unm-recheck').show();
+      updateMigrationEligibility();
+    }).fail(err).always(stopBusy);
+  }
   
 function recheckPreflight() {
+    if(activeOperation==='clone'){activeCloneName=$('#unm-clone-name').val()||'';showClonePreflight(activeVmId,activeVmName,activeCloneName,null);return;}
     var opts=selectedResourceOptions();
     opts._usb_action=$('#unm-usb-action').val()||'cancel';
     showPreflight(activeVmId,activeVmName,$('#unm-iso-action').val(),opts,null);
@@ -446,6 +470,7 @@ function recheckPreflight() {
 function updateMigrationEligibility() {
     var disabled=!activePreflight||!activePreflight.ready;
     var reason='';
+    if(activeOperation==='clone'){$('#unm-confirm-migrate').prop('disabled',disabled).attr('title',disabled?'Resolve clone preflight errors.':'');return;}
     if(activePreflight&&(activePreflight.vm||{}).usb&&activePreflight.vm.usb.length&&$('#unm-usb-action').val()==='cancel') {disabled=true;reason='Choose how to handle USB passthrough.';}
     var conflicts=((activePreflight||{}).conflicts||{}).items||[];
     if(conflicts.length&&$('#unm-conflict-action').val()==='cancel') {disabled=true;reason='Choose overwrite or close the migration dialog.';}
@@ -466,6 +491,7 @@ function updateMigrationEligibility() {
   }
 
   function startMigration() {
+    if(activeOperation==='clone')return startClone();
     var usb=$('#unm-usb-action').val();
     if(usb==='cancel') {
       flash('Choose how to handle USB passthrough or cancel.',true);
@@ -502,9 +528,19 @@ function updateMigrationEligibility() {
     ).fail(err).always(stopBusy);
     
   }
+
+  function startClone() {
+    var cloneName=$('#unm-clone-name').val()||'',customization=$('#unm-clone-customization').val()||'none-disconnected';
+    if(!cloneName){flash('Enter a clone name.',true);return;}
+    if(!window.confirm('Create a full independent local clone named “'+cloneName+'”?\n\nThe source must remain powered off. USB passthrough will be removed and the clone will finish stopped.'))return;
+    var stopBusy=setButtonBusy($('#unm-confirm-migrate'),'Cloning');
+    post('startClone',{vm_id:activeVmId,clone_name:cloneName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
+      $('#unm-modal').removeClass('open');flash('Local clone job '+r.job.id+' started.');loadInventory();loadJobs();
+    }).fail(err).always(stopBusy);
+  }
   
 function isCancellable(state) {
-    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','HOST_STATE','DEFINING_DESTINATION','CANCELLING'].indexOf(state)>=0;
+    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'].indexOf(state)>=0;
     
   }
   
@@ -514,10 +550,10 @@ function loadJobs() {
     post('jobs').done(function(r) {
       body.empty();
       (r.jobs||[]).slice(0,20).forEach(function(j) {
-        var retry=['FAILED','INTERRUPTED'].indexOf(j.state)>=0;
+        var failed=['FAILED','INTERRUPTED'].indexOf(j.state)>=0,retry=failed&&(j.jobType||'migration')!=='clone';
         var actions='<input type="button" value="Log" class="unm-log" data-id="'+esc(j.id)+'"> ';
         if(retry)actions+='<input type="button" value="Resume" class="unm-resume" data-id="'+esc(j.id)+'"> ';
-        if((isCancellable(j.state)||retry)&&j.state!=='CANCELLING')actions+='<input type="button" value="Cancel" class="unm-cancel-job" data-id="'+esc(j.id)+'"> ';
+        if((isCancellable(j.state)||failed)&&j.state!=='CANCELLING')actions+='<input type="button" value="Cancel" class="unm-cancel-job" data-id="'+esc(j.id)+'"> ';
         var cleanupAction=((j.request||{}).SOURCE_CLEANUP_ACTION||'unregister');
         var removable=['CANCELLED','COMPLETE_CLEANED'].indexOf(j.state)>=0||(['COMPLETE','COMPLETE_WITH_WARNINGS'].indexOf(j.state)>=0&&cleanupAction!=='delete');
         if(removable)actions+='<input type="button" value="Remove" class="unm-remove-job" data-id="'+esc(j.id)+'">';
@@ -525,7 +561,7 @@ function loadJobs() {
         
       }
       );
-      if(!(r.jobs||[]).length)body.html('<tr><td colspan="6">No migration jobs yet.</td></tr>');
+      if(!(r.jobs||[]).length)body.html('<tr><td colspan="6">No migration or clone jobs yet.</td></tr>');
       
     }
     ).fail(err);
@@ -724,6 +760,7 @@ $(function() {
       
     }
     );
+    $(document).on('click','.unm-clone',function(){showClonePreflight($(this).attr('data-vm-id'),$(this).attr('data-vm-name'),$(this).attr('data-vm-name')+' - Clone',this);});
     $(document).on('click','.unm-warm-prepare',function(){startWarmOperation($(this).attr('data-vm-id'),'prepare',this);});
     $(document).on('click','.unm-warm-update',function(){startWarmOperation($(this).attr('data-vm-id'),'update',this);});
     $(document).on('click','.unm-warm-cutover',function(){
@@ -768,7 +805,7 @@ $(function() {
     }
     );
     $(document).on('click','.unm-cancel-job',function() {
-      if(!confirm('Cancel this migration? The source will be restarted where it is safe to do so.'))return;
+      if(!confirm('Cancel this job? Clone jobs remove only their newly-created destinations; migration jobs preserve the source where it is safe to do so.'))return;
       post('cancelJob', {
         job_id:$(this).data('id')
       }
@@ -783,6 +820,8 @@ $(function() {
     );
     $(document).on('change','#unm-usb-action',updateMigrationEligibility);
     $(document).on('change','#unm-conflict-action',function(){if($(this).val()==='overwrite')recheckPreflight();else updateMigrationEligibility();});
+    $(document).on('input','#unm-clone-name',function(){$('#unm-confirm-migrate').prop('disabled',true).attr('title','Recheck after changing the clone name.');});
+    $(document).on('change','#unm-clone-customization',function(){activeCloneName=$('#unm-clone-name').val()||activeCloneName;showClonePreflight(activeVmId,activeVmName,activeCloneName,null);});
     $(document).on('click','.unm-remove-job',function() {
       if(!confirm('Remove this completed/cancelled job and its local log? VM storage is not deleted.'))return;
       post('removeJob',{job_id:$(this).data('id')}).done(function(){flash('Job removed from history.');loadJobs();}).fail(err);

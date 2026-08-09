@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.3.0-RC1';
+const UNM_VERSION = '0.3.1-RC2';
 const UNM_PROTOCOL = 5;
 const UNM_BOOT_DIR = '/boot/config/plugins/unmotion';
 const UNM_CONFIG_JSON = UNM_BOOT_DIR . '/config.json';
@@ -779,7 +779,7 @@ function unmCapabilities(): array {
     return ['protocolVersion'=>UNM_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true],
+        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -962,6 +962,150 @@ function unmInventory(): array {
         catch (Throwable $e) { $out[]=['name'=>$uuid,'uuid'=>$uuid,'error'=>$e->getMessage()]; }
     }
     return $out;
+}
+
+function unmNewUuid(): string {
+    $bytes=random_bytes(16);
+    $bytes[6]=chr((ord($bytes[6])&0x0f)|0x40);
+    $bytes[8]=chr((ord($bytes[8])&0x3f)|0x80);
+    $hex=bin2hex($bytes);
+    return substr($hex,0,8).'-'.substr($hex,8,4).'-'.substr($hex,12,4).'-'.substr($hex,16,4).'-'.substr($hex,20,12);
+}
+
+function unmCloneName(string $name): string {
+    $name=trim($name);
+    if($name===''||strlen($name)>128||$name[0]==='-'||in_array($name,['.','..'],true)||preg_match('~[\\/\x00-\x1f\x7f]~',$name))
+        throw new InvalidArgumentException('Clone name must be 1-128 characters and cannot contain slashes or control characters.');
+    return $name;
+}
+
+function unmCloneObjectStem(string $name): string {
+    $slug=strtolower((string)preg_replace('/[^A-Za-z0-9_.-]+/','-',trim($name)));
+    $slug=trim($slug,'.-');
+    if($slug==='')$slug='vm';
+    $slug=substr($slug,0,40);
+    return 'unmotion-clone-'.$slug.'-'.substr(hash('sha256',$name),0,8);
+}
+
+function unmLocalDomainMacs(): array {
+    $seen=[];$r=unmRun(['virsh','list','--all','--uuid'],null,30);
+    if($r['code']!==0)return [];
+    foreach(preg_split('/\R/',trim($r['stdout']))?:[] as $uuid){
+        $uuid=trim($uuid);if($uuid==='')continue;
+        try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){continue;}
+        if(preg_match_all('~<mac\b[^>]*\baddress=(["\'])([0-9a-f:]{17})\1~i',$xml,$m))
+            foreach($m[2] as $mac)$seen[strtolower($mac)]=true;
+    }
+    return $seen;
+}
+
+function unmNewDomainMacs(int $count): array {
+    $seen=unmLocalDomainMacs();$out=[];
+    while(count($out)<$count){
+        $tail=random_bytes(3);
+        $mac=sprintf('52:54:00:%02x:%02x:%02x',ord($tail[0]),ord($tail[1]),ord($tail[2]));
+        if(isset($seen[$mac]))continue;
+        $seen[$mac]=true;$out[]=$mac;
+    }
+    return $out;
+}
+
+function unmCloneDatasetIsolated(string $dataset,string $mountpoint,array $diskPaths): bool {
+    if($dataset===''||$mountpoint===''||!str_starts_with($mountpoint,'/mnt/'))return false;
+    $children=unmRun(['zfs','list','-H','-r','-d','1','-o','name',$dataset],null,20);
+    if($children['code']!==0)return false;
+    $names=array_values(array_filter(preg_split('/\R/',trim($children['stdout']))?:[]));
+    if(count($names)!==1||$names[0]!==$dataset)return false;
+    $allowed=[];$parents=[];
+    foreach($diskPaths as $path){
+        $real=realpath((string)$path);if($real===false||!is_file($real)||is_link($real)||!str_starts_with($real.'/',rtrim($mountpoint,'/').'/'))return false;
+        $allowed[$real]=true;$parent=dirname($real);
+        while($parent!==$mountpoint&&str_starts_with($parent.'/',rtrim($mountpoint,'/').'/')){$parents[$parent]=true;$next=dirname($parent);if($next===$parent)break;$parent=$next;}
+    }
+    $scan=unmRun(['find',$mountpoint,'-xdev','-mindepth','1','-printf','%y\0%p\0'],null,30);
+    if($scan['code']!==0)return false;
+    $parts=explode("\0",$scan['stdout']);
+    for($i=0;$i+1<count($parts);$i+=2){$type=$parts[$i];$path=$parts[$i+1];if($path==='')continue;if($type==='d'&&isset($parents[$path]))continue;if($type==='f'&&isset($allowed[$path]))continue;return false;}
+    return true;
+}
+
+/**
+ * Build a same-host, full-copy clone plan.  This is a post-recovery 0.3.1
+ * feature and deliberately does not use dependent `zfs clone` datasets.
+ */
+function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options=[]): array {
+    $cloneName=unmCloneName($cloneName);
+    $vm=unmParseVm($vmIdentifier);$cfg=unmLoadConfig();$errors=[];$warnings=[];$plan=[];$maps=[];
+    $state=strtolower(trim((string)($vm['state']??'')));
+    if($state!=='shut off')$errors[]='Power off the source VM before cloning.';
+    if(!empty($vm['pci']))$errors[]='PCIe passthrough must be removed before cloning.';
+    if(!empty($vm['tpm']))$errors[]='Virtual TPM cloning is blocked in RC2 because copying or resetting TPM identity can invalidate guest secrets.';
+    foreach(($vm['disks']??[]) as $disk)if(str_starts_with((string)($disk['transferClass']??''),'unsupported'))$errors[]=(string)($disk['storageReason']??'Unsupported disk storage.');
+    $existing=unmRun(['virsh','dominfo',$cloneName],null,10);
+    if($existing['code']===0)$errors[]='A local VM already uses the requested clone name.';
+    if(!empty($vm['usb']))$warnings[]='USB passthrough definitions will be removed from the clone.';
+    if(!empty($vm['isos']))$warnings[]='Attached ISOs will retain their current read-only host paths.';
+
+    $customization=(string)($options['guest_customization']??'ubuntu-dhcp');
+    if(!in_array($customization,['ubuntu-dhcp','none-disconnected'],true))$errors[]='Invalid guest customization mode.';
+    if($customization==='ubuntu-dhcp')$warnings[]='The clone will boot once with every NIC link down. If QEMU Guest Agent confirms Ubuntu, unMotion will reset its machine ID, hostname and SSH host keys, replace Netplan with DHCP, then shut it down.';
+    else $warnings[]='Guest identity and network files will not be changed; every cloned NIC will remain link-down until manually reviewed.';
+
+    $cloneUuid=(string)($options['clone_uuid']??'');
+    if(!preg_match('/^[a-f0-9-]{36}$/i',$cloneUuid))$cloneUuid=unmNewUuid();
+    $cloneGenid=unmNewUuid();$cloneDir=rtrim((string)$cfg['image_dir'],'/').'/'.$cloneName;
+    if(file_exists($cloneDir)||is_link($cloneDir))$errors[]='The clone image directory already exists: '.$cloneDir;
+    $stem=unmCloneObjectStem($cloneName);$usedDest=[];$datasetGroups=[];$datasetNo=0;$required=['zfs'=>0,'image'=>0];$poolRequired=[];$datasetCandidates=[];$datasetIsolation=[];
+    foreach(($vm['disks']??[]) as $disk)if(($disk['transferClass']??'')==='zfs-dataset-image')$datasetCandidates[(string)($disk['zfsDataset']??'')][]=(string)($disk['resolvedSource']??$disk['source']??'');
+    foreach($datasetCandidates as $dataset=>$paths){$first=null;foreach(($vm['disks']??[]) as $disk)if(($disk['zfsDataset']??'')===$dataset){$first=$disk;break;}$datasetIsolation[$dataset]=unmCloneDatasetIsolated($dataset,(string)($first['zfsMountpoint']??''),$paths);if(!$datasetIsolation[$dataset])$warnings[]='Dataset '.$dataset.' contains unrelated content or child datasets; cloning will copy only the VM disk files.';}
+
+    foreach(($vm['disks']??[]) as $i=>$disk){
+        $source=(string)($disk['source']??'');$kind=(string)($disk['type']??'');$class=(string)($disk['transferClass']??'');
+        if($source===''||preg_match('/[\x00-\x1f\x7f]/',$source)){$errors[]='A disk has an unsafe or empty source path.';continue;}
+        if($kind==='zvol'){
+            $bytes=0;
+            $src=(string)($disk['zfsDataset']??substr($source,strlen('/dev/zvol/')));
+            $base=rtrim((string)$cfg['zvol_dataset'],'/');if($base==='')$base=dirname($src);
+            if(unmRun(['zfs','list','-H','-o','name',$base],null,10)['code']!==0)$errors[]='Clone zvol parent dataset is unavailable: '.$base;
+            $dst=$base.'/'.$stem.'-disk'.($i+1);$dstPath='/dev/zvol/'.$dst;
+            if(isset($usedDest[$dst])||unmRun(['zfs','list','-H','-o','name',$dst],null,10)['code']===0)$errors[]='Clone zvol destination already exists: '.$dst;
+            $usedDest[$dst]=true;$referenced=unmRun(['zfs','get','-pH','-o','value','referenced',$src],null,10);
+            if($referenced['code']!==0)$errors[]='Unable to inspect source zvol: '.$src;else{$bytes=(int)trim($referenced['stdout']);$required['zfs']+=$bytes;$pool=explode('/',$dst,2)[0];$poolRequired[$pool]=($poolRequired[$pool]??0)+$bytes;}
+            $plan[]=['kind'=>'zvol','source'=>$src,'destination'=>$dst,'bytes'=>$bytes];$maps[$source]=$dstPath;continue;
+        }
+        if($kind!=='file')continue;
+        $copySource=(string)($disk['resolvedSource']??$source);
+        if(!is_file($copySource)||is_link($copySource)){$errors[]='Disk image is missing or is a symbolic link: '.$copySource;continue;}
+        if($class==='zfs-dataset-image'&&!empty($datasetIsolation[(string)($disk['zfsDataset']??'')])){
+            $srcDs=(string)($disk['zfsDataset']??'');
+            if(!isset($datasetGroups[$srcDs])){
+                $datasetNo++;$dstDs=dirname($srcDs).'/'.$stem.($datasetNo>1?'-'.$datasetNo:'');
+                $mount=$datasetNo===1?$cloneDir:$cloneDir.'/dataset-'.$datasetNo;
+                $r=unmRun(['zfs','get','-pH','-o','value','referenced',$srcDs],null,10);$bytes=$r['code']===0?(int)trim($r['stdout']):0;
+                if($r['code']!==0)$errors[]='Unable to inspect source dataset: '.$srcDs;
+                if(unmRun(['zfs','list','-H','-o','name',$dstDs],null,10)['code']===0)$errors[]='Clone dataset destination already exists: '.$dstDs;
+                $datasetGroups[$srcDs]=['destination'=>$dstDs,'mountpoint'=>$mount];$required['zfs']+=$bytes;$pool=explode('/',$dstDs,2)[0];$poolRequired[$pool]=($poolRequired[$pool]??0)+$bytes;
+                $plan[]=['kind'=>'dataset','source'=>$srcDs,'destination'=>$dstDs,'mountpoint'=>$mount,'bytes'=>$bytes];
+            }
+            $group=$datasetGroups[$srcDs];$relative=(string)($disk['relativePath']??basename($copySource));
+            $maps[$source]=rtrim($group['mountpoint'],'/').'/'.ltrim($relative,'/');continue;
+        }
+        $base=basename($copySource);$dst=$cloneDir.'/'.$base;
+        if(isset($usedDest[$dst]))$dst=$cloneDir.'/disk'.($i+1).'-'.$base;
+        $usedDest[$dst]=true;$bytes=(int)filesize($copySource);$required['image']+=$bytes;
+        $plan[]=['kind'=>'file','source'=>$copySource,'destination'=>$dst,'bytes'=>$bytes];$maps[$source]=$dst;
+    }
+
+    $nvram=(string)($vm['nvram']??'');
+    if($nvram!==''){
+        if((!str_starts_with($nvram,'/etc/libvirt/qemu/nvram/')&&!str_starts_with($nvram,'/var/lib/libvirt/qemu/nvram/'))||!is_file($nvram)||is_link($nvram))$errors[]='UEFI NVRAM is missing or outside the verified libvirt NVRAM directories.';
+        else{$nvramDest=dirname($nvram).'/'.$cloneUuid.'_VARS.fd';if(file_exists($nvramDest)||is_link($nvramDest))$errors[]='Clone NVRAM destination already exists.';else{$plan[]=['kind'=>'nvram','source'=>$nvram,'destination'=>$nvramDest,'bytes'=>(int)filesize($nvram)];$maps[$nvram]=$nvramDest;}}
+    }
+    foreach($poolRequired as $pool=>$need){$r=unmRun(['zfs','get','-pH','-o','value','available',$pool],null,10);if($r['code']!==0)$errors[]='Unable to inspect available ZFS space in '.$pool.'.';elseif((int)trim($r['stdout'])<$need)$errors[]='Insufficient ZFS space in '.$pool.' for the clone.';}
+    $fs=unmLocalFsCapacity(rtrim((string)$cfg['image_dir'],'/'));if($required['image']>0&&(int)($fs['available']??0)<$required['image'])$errors[]='Insufficient image-directory space for the clone.';
+    $xml=unmDomainXml((string)$vm['uuid'],true);$interfaceCount=preg_match_all('~<interface\b[^>]*>.*?</interface>~s',$xml);
+    $identity=['uuid'=>$cloneUuid,'genid'=>$cloneGenid,'macs'=>unmNewDomainMacs((int)$interfaceCount),'sourceXmlSha256'=>hash('sha256',$xml)];
+    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'vm'=>$vm,'clone'=>['name'=>$cloneName,'directory'=>$cloneDir,'customization'=>$customization]+$identity,'plan'=>$plan,'pathMap'=>$maps,'capacity'=>['required'=>$required,'imageAvailable'=>(int)($fs['available']??0),'zfsPools'=>$poolRequired]];
 }
 
 function unmPeerPath(string $id, string $ext='json'): string {
@@ -1513,7 +1657,46 @@ function unmJobs(): array {
 }
 
 function unmActiveJobStates(): array {
-    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','HOST_STATE','DEFINING_DESTINATION','CANCELLING'];
+    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'];
+}
+
+function unmCleanupCloneJob(array $job,string $dir): void {
+    if(($job['jobType']??'')!=='clone')throw new InvalidArgumentException('Not a clone job.');
+    $pre=(array)($job['preflight']??[]);$clone=(array)($pre['clone']??[]);$cloneUuid=(string)($clone['uuid']??'');$cloneDir=rtrim((string)($clone['directory']??''),'/');$jobId=(string)($job['id']??'');
+    if(!preg_match('/^[a-f0-9-]{36}$/i',$cloneUuid)||!preg_match('/^[A-Za-z0-9_.-]+$/',$jobId))throw new RuntimeException('Clone cleanup identity is invalid.');
+    $cloneName=(string)($clone['name']??'');$xmlPath='/etc/libvirt/qemu/'.$cloneName.'.xml';$absentChecks=0;
+    for($attempt=0;$attempt<80;$attempt++){
+        $info=unmRun(['virsh','dominfo',$cloneUuid],null,10);
+        if($info['code']!==0&&!file_exists($xmlPath)){if(++$absentChecks>=4)break;usleep(250000);continue;}
+        $absentChecks=0;if($info['code']!==0){usleep(250000);continue;}
+        $state=trim(unmRun(['virsh','domstate',$cloneUuid],null,10)['stdout']);
+        if(!in_array($state,['shut off','no state',''],true))unmRun(['virsh','destroy',$cloneUuid],null,30);
+        else{$undef=unmRun(['virsh','undefine',$cloneUuid,'--nvram'],null,30);if($undef['code']!==0)$undef=unmRun(['virsh','undefine',$cloneUuid],null,30);}
+        usleep(250000);
+    }
+    $info=unmRun(['virsh','dominfo',$cloneUuid],null,10);if($info['code']===0||file_exists($xmlPath))throw new RuntimeException('Unable to unregister the incomplete clone or remove its persistent XML after repeated stop/undefine attempts.');
+    $zfs=[];$files=[];$dirs=[];$snapshot='unmotion-clone-'.$jobId;
+    foreach((array)($pre['plan']??[]) as $item){
+        $kind=(string)($item['kind']??'');$source=(string)($item['source']??'');$destination=(string)($item['destination']??'');
+        if(in_array($kind,['zvol','dataset'],true)){
+            if($destination===''||str_contains($destination,'@')||str_contains($destination,'..')||!str_starts_with(basename($destination),'unmotion-clone-'))throw new RuntimeException('Unsafe clone ZFS cleanup destination.');
+            $zfs[]=$destination;
+            if($source!==''&&!str_contains($source,'@')&&!str_contains($source,'..'))foreach([$source.'@'.$snapshot,$destination.'@'.$snapshot] as $snap)if(unmRun(['zfs','list','-H','-t','snapshot',$snap],null,10)['code']===0){$r=unmRun(['zfs','destroy',$snap],null,30);if($r['code']!==0)throw new RuntimeException('Unable to remove clone snapshot '.$snap.': '.trim($r['stderr']));}
+        }elseif(in_array($kind,['file','nvram'],true)){
+            $safe=$kind==='file'&&$cloneDir!==''&&unmPathWithin($destination,$cloneDir);
+            if($kind==='nvram')$safe=(str_starts_with($destination,'/etc/libvirt/qemu/nvram/')||str_starts_with($destination,'/var/lib/libvirt/qemu/nvram/'))&&str_starts_with(basename($destination),$cloneUuid.'_');
+            if(!$safe||str_contains($destination,'/../'))throw new RuntimeException('Unsafe clone file cleanup destination.');
+            $files[]=$destination;if($kind==='file'){$parent=dirname($destination);while($parent!=='.'&&$parent!=='/'&&unmPathWithin($parent,$cloneDir)){$dirs[$parent]=strlen($parent);if($parent===$cloneDir)break;$next=dirname($parent);if($next===$parent)break;$parent=$next;}}
+        }
+    }
+    foreach($files as $file){$r=unmRun(['rm','-f','--',$file],null,30);if($r['code']!==0)throw new RuntimeException('Unable to remove incomplete clone file: '.$file);}
+    foreach(array_reverse($zfs) as $dataset){
+        $last=[];for($attempt=0;$attempt<40;$attempt++){if(unmRun(['zfs','list','-H','-o','name',$dataset],null,10)['code']!==0)break;$last=unmRun(['zfs','destroy',$dataset],null,120);if($last['code']===0)break;usleep(250000);}
+        if(unmRun(['zfs','list','-H','-o','name',$dataset],null,10)['code']===0)throw new RuntimeException('Unable to remove incomplete clone ZFS object '.$dataset.': '.trim((string)($last['stderr']??'')));
+    }
+    arsort($dirs,SORT_NUMERIC);foreach(array_keys($dirs) as $directory)unmRun(['rmdir','--',$directory],null,10);
+    $cfg=unmLoadConfig();$imageDir=rtrim((string)$cfg['image_dir'],'/');
+    if($cloneDir!==''&&$cloneDir!==$imageDir&&unmPathWithin($cloneDir,$imageDir)&&!is_link($cloneDir)&&is_dir($cloneDir)){unmRun(['rmdir','--',$cloneDir],null,10);if(is_dir($cloneDir))throw new RuntimeException('Unable to remove the exact incomplete clone directory: '.$cloneDir);}
 }
 
 function unmCancelJob(string $id): array {
@@ -1522,8 +1705,9 @@ function unmCancelJob(string $id): array {
     if(!$job) throw new RuntimeException('Job not found.');
     $state=(string)($job['state']??'');
     if(in_array($state,['FAILED','INTERRUPTED'],true)) {
+        if(($job['jobType']??'migration')==='clone')unmCleanupCloneJob($job,$dir);
         $job['state']='CANCELLED';
-        $job['message']='Failed/interrupted job was abandoned; partial destination data, if any, was retained';
+        $job['message']=(($job['jobType']??'migration')==='clone')?'Failed/interrupted clone was cancelled and its exact destinations were cleaned':'Failed/interrupted job was abandoned; partial destination data, if any, was retained';
         $job['updatedAt']=date(DATE_ATOM);
         unmAtomicJson($path,$job);
         return $job;
@@ -1654,6 +1838,15 @@ function unmPathWithin(string $path, string $base): bool {
     return $path === $base || str_starts_with($path . '/', $base . '/');
 }
 
+function unmZfsObjectNameSafe(string $name): bool {
+    if ($name === '' || $name !== trim($name) || str_starts_with($name, '/') || str_ends_with($name, '/')) return false;
+    if (str_contains($name, "\0") || str_contains($name, '@') || preg_match('/[\x00-\x1F\x7F]/', $name)) return false;
+    $parts = explode('/', $name);
+    if (count($parts) < 2) return false;
+    foreach ($parts as $part) if ($part === '' || $part === '.' || $part === '..') return false;
+    return true;
+}
+
 function unmRemoteOwnershipMarker(array $peer, string $uuid): array {
     if (!preg_match('/^[A-Fa-f0-9-]{32,36}$/', $uuid)) return [];
     $path = UNM_OWNERSHIP_DIR . '/' . $uuid . '.json';
@@ -1718,7 +1911,7 @@ function unmPrepareDestinationOverwrite(array $request): array {
         $authorisedByVm = !empty($item['authorisedByVm']);
         if ($kind === 'zvol') {
             $prefix = rtrim((string)$cfg['zvol_dataset'], '/');
-            if (!preg_match('/^[A-Za-z0-9_.:-]+\/[A-Za-z0-9_.\/-]+$/', $path) || (!$authorisedByVm && ($prefix === '' || !str_starts_with($path . '/', $prefix . '/')))) {
+            if (!unmZfsObjectNameSafe($path) || (!$authorisedByVm && ($prefix === '' || $path === $prefix || !str_starts_with($path . '/', $prefix . '/')))) {
                 throw new RuntimeException('Refusing to destroy an unauthorised destination zvol: ' . $path);
             }
             $exists = unmRun(['zfs','list','-H','-o','name','-t','volume',$path], null, 15);
@@ -1729,7 +1922,7 @@ function unmPrepareDestinationOverwrite(array $request): array {
             }
         } elseif ($kind === 'dataset') {
             $prefix=(string)unmZfsDatasetForPath((string)$cfg['image_dir'],true);
-            if(!preg_match('/^[A-Za-z0-9_.:-]+\/[A-Za-z0-9_.\/-]+$/',$path)||(!$authorisedByVm&&($prefix===''||!str_starts_with($path.'/',$prefix.'/'))))throw new RuntimeException('Refusing to destroy an unauthorised destination dataset: '.$path);
+            if(!unmZfsObjectNameSafe($path)||(!$authorisedByVm&&($prefix===''||$path===$prefix||!str_starts_with($path.'/',$prefix.'/'))))throw new RuntimeException('Refusing to destroy an unauthorised destination dataset: '.$path);
             if(unmRun(['zfs','list','-H','-o','name','-t','filesystem',$path],null,15)['code']===0){$destroy=unmRun(['zfs','destroy','-r',$path],null,180);if($destroy['code']!==0)throw new RuntimeException('Unable to destroy stale destination dataset '.$path.': '.trim($destroy['stderr']));$removed[]=$path;}
         } elseif ($kind === 'image') {
             if (!$authorisedByVm && !unmPathWithin($path, (string)$cfg['image_dir'])) throw new RuntimeException('Refusing to delete an image outside the configured destination directory: ' . $path);
