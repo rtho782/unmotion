@@ -2,6 +2,7 @@
 
 ## 0.3.0-RC1 — 2026-08-09
 
+- Standardized the plugin and Community Applications author metadata as `Richard Skinner`.
 - Preserved recoverable ZFS seed and migration state when SSH returns before the destination Unraid array and ZFS datasets are available.
 - Distinguished a normally absent destination child dataset from an unavailable destination parent when probing for ZFS receive-resume state.
 - Fixed prepared-copy removal records with empty TSV fields so source holds and exact destination objects are cleaned correctly.

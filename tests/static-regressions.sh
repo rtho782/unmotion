@@ -21,4 +21,6 @@ grep -q 'if ((WARM_MODE));then args+=(--inplace --no-whole-file);else args+=(--p
 grep -q 'protect_warm_images' "$WORKER"
 grep -q 'function unmParseAvahiTxtRecordList' "$LIB"
 grep -Fq 'SAFE_VERSION="${SAFE_VERSION,,}"' "$BUILD"
+grep -Fq 'AUTHOR="Richard Skinner"' "$BUILD"
+grep -Fq '<!ENTITY author "$AUTHOR">' "$BUILD"
 echo 'Static RC1 regression markers are present.'
