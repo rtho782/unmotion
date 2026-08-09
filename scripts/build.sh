@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")}"
+AUTHOR="Richard Skinner"
 SAFE_VERSION="${VERSION//-/_}"
 # Slackware/Unraid compares package versions bytewise enough that an uppercase
 # _RC1 sorts before the recovered lowercase _beta7 package token.  Keep the
@@ -32,7 +33,7 @@ cat <<EOF
 <?xml version='1.0' standalone='yes'?>
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
-<!ENTITY author "Rich Skinner / OpenAI prototype">
+<!ENTITY author "$AUTHOR">
 <!ENTITY version "$VERSION">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
