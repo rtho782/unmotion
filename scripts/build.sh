@@ -10,7 +10,7 @@ SAFE_VERSION="${VERSION//-/_}"
 # display/plugin version unchanged, but normalize the package token so RC1 is
 # recognized as the upgrade it is.
 SAFE_VERSION="${SAFE_VERSION,,}"
-PKG="unmotion-${SAFE_VERSION}-noarch-3.txz"
+PKG="unmotion-${SAFE_VERSION}-noarch-1.txz"
 PLG="unmotion-${VERSION}.plg"
 STAGE="$ROOT/work/package-root"
 DIST="$ROOT/dist"
@@ -19,10 +19,15 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE" "$DIST"
 cp -a "$ROOT/src/rootfs/." "$STAGE/"
 
+find "$STAGE" -type d -exec chmod 0755 {} +
 chmod 0755 "$STAGE/etc/rc.d/rc.unmotion" "$STAGE/install/doinst.sh" "$STAGE/usr/local/sbin/"*
 find "$STAGE/usr/local/emhttp/plugins/unmotion" -type f -exec chmod 0644 {} +
 
 tar -C "$STAGE" --owner=0 --group=0 -cJf "$DIST/$PKG" .
+if tar -tvf "$DIST/$PKG" | awk '$1 ~ /^d/ && $1 != "drwxr-xr-x" {print "Unsafe package directory mode: " $0 > "/dev/stderr"; bad=1} END {exit bad?1:0}'; then :; else
+  rm -f "$DIST/$PKG"
+  exit 1
+fi
 MD5="$(md5sum "$DIST/$PKG" | awk '{print $1}')"
 SHA="$(sha256sum "$DIST/$PKG" | awk '{print $1}')"
 B64="$ROOT/work/payload.b64"
@@ -43,11 +48,11 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Preserve resumable ZFS state when a destination reboots before its array starts.
-- Fix prepared-copy removal when storage records contain empty TSV fields.
-- Fix Warm Move rsync cutover by keeping --partial-dir separate from --inplace.
-- Re-protect prepared image files after a pre-start cutover failure or cancellation.
-- Parse quoted Avahi TXT records independently and reset settings dirty state after save.
+- Add cold, same-host, full-copy VM cloning across zvol, dedicated-dataset, raw and qcow2 storage.
+- Generate a new libvirt UUID, genid and MAC address for every cloned NIC.
+- Keep clones stopped and network-isolated unless Ubuntu Guest Agent customization succeeds.
+- Reset Ubuntu machine identity, hostname and SSH host keys, and replace static Netplan with DHCP.
+- Remove cloned USB passthrough and block PCIe or virtual-TPM clones pending safe remapping designs.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF
