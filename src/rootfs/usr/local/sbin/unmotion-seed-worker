@@ -47,6 +47,13 @@ debug_cmd(){
 debug_remote(){ [[ "$DEBUG_LOGGING" == 1 ]] || return 0; debug "CMD remote [$REMOTE]: $(sanitize_command "$1")"; }
 FAIL_RECORDED=0
 fail(){ FAIL_RECORDED=1; state FAILED 0 "$1"; exit "${2:-1}"; }
+interrupt_seed(){
+  local progress="$1" message="$2" detail="$3"
+  FAIL_RECORDED=1
+  state INTERRUPTED "$progress" "$message"
+  log "$detail"
+  exit 75
+}
 on_seed_error(){
   local rc=$? line="${BASH_LINENO[0]:-${LINENO:-unknown}}" cmd="${BASH_COMMAND:-unknown}"
   trap - ERR
@@ -116,7 +123,11 @@ if [[ "${ACTION:-prepare}" == remove ]]; then
   fi
 
   REMOVE_ERRORS=0
-  while IFS=$'\t' read -r kind src dst snap _; do
+  while IFS= read -r row; do
+    # Tabs are shell whitespace, so read with IFS=$'\t' collapses adjacent
+    # delimiters and can shift a snapshot name into the destination field.
+    # Translate to a non-whitespace separator to preserve intentional empties.
+    IFS=$'\034' read -r kind src dst snap _ <<< "${row//$'\t'/$'\034'}"
     [[ -n "$kind" ]] || continue
     if [[ "$kind" == zvol || "$kind" == dataset ]]; then
       if [[ -n "$dst" ]]; then
@@ -149,7 +160,12 @@ if [[ "${ACTION:-prepare}" == remove ]]; then
 fi
 state PREFLIGHT 2 'Inspecting VM storage and destination capabilities'
 debug_remote '/usr/local/sbin/unmotion-agent capabilities'
-remote '/usr/local/sbin/unmotion-agent capabilities' > "$CAPS"
+if ! remote '/usr/local/sbin/unmotion-agent capabilities' > "$CAPS"; then
+  if [[ "${ACTION:-prepare}" == resume ]]; then
+    interrupt_seed 2 'Destination is temporarily unavailable; retained ZFS state was preserved' 'Start the destination array, then use Resume again or Remove failed seed.'
+  fi
+  fail 'Unable to read destination capabilities; see the log.' 10
+fi
 debug 'Remote capabilities received successfully.'
 [[ "$(json_get "$CAPS" protocolVersion)" == 5 ]] || fail 'Peer protocol is incompatible; upgrade both hosts.' 10
 [[ "$(json_get "$CAPS" hostId)" == "$PEER_HOST_ID" ]] || fail 'Peer identity changed; re-pair the hosts.' 11
@@ -288,7 +304,14 @@ run_zfs_attempt(){
   debug "PIPESTATUS: ${statuses[*]} ; selected exit=$rc"
   return "$rc"
 }
-remote_resume_token(){ local dst="$1"; remote "zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null" | tr -d '\r' || true; }
+remote_resume_token(){
+  local dst="$1" parent token
+  parent="${dst%/*}"
+  token="$(remote "if zfs list -H -o name $(sq "$dst") >/dev/null 2>&1; then zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null; elif zfs list -H -o name $(sq "$parent") >/dev/null 2>&1; then printf '%s\\n' -; else exit 75; fi")" || return $?
+  token="${token//$'\r'/}"
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token"
+}
 transfer_zfs(){
   local src="$1" dst="$2" type="$3" mount="$4" old="$5" new="$6" label="$7" base="$8" span="$9"
   local size props token srcg dstg
@@ -301,7 +324,9 @@ transfer_zfs(){
     log "$label: destination snapshot already complete; GUID verified."
     return 0
   fi
-  token="$(remote_resume_token "$dst")"
+  if ! token="$(remote_resume_token "$dst")"; then
+    interrupt_seed "$base" "$label interrupted; destination receive state is temporarily unavailable" 'The source snapshot was retained. Start the destination array, then use Resume or Remove failed seed.'
+  fi
   [[ "$token" == - ]] && token=''
   if [[ -n "$token" ]]; then debug "Destination resume token present for $dst (length ${#token})."; else debug "No destination resume token for $dst."; fi
   if [[ -n "$token" ]]; then
@@ -312,7 +337,10 @@ transfer_zfs(){
     log "$label: estimated stream $size bytes."
   fi
   if ! run_zfs_attempt "$src" "$dst" "$old" "$new" "$props" "$token" "$size" "$base" "$span" "$label"; then
-    token="$(remote_resume_token "$dst")"; [[ "$token" == - ]] && token=''
+    if ! token="$(remote_resume_token "$dst")"; then
+      interrupt_seed "$base" "$label interrupted; destination receive state is temporarily unavailable" 'The source snapshot was retained. Start the destination array, then use Resume or Remove failed seed.'
+    fi
+    [[ "$token" == - ]] && token=''
     if [[ -n "$token" ]]; then
       FAIL_RECORDED=1
       state INTERRUPTED "$base" "$label interrupted; resumable ZFS state retained"
@@ -334,8 +362,20 @@ declare -A SEED_DEST_SEEN=()
 INDEX=0; TOTAL=$(( ${#ZFS_SOURCES[@]} + ${#RSYNC_FILES[@]} )); ((TOTAL>0))||TOTAL=1
 for src in "${ZFS_SOURCES[@]}"; do
   ((INDEX+=1)); kind=zvol; mount='';
-  if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then kind=dataset; srcmount="$(zfs get -H -o value mountpoint "$src")"; [[ -n "$DEST_IMAGE_ZFS_DATASET" ]] || fail 'Destination image directory is not an exact ZFS dataset, so a dedicated image dataset cannot be received.' 20; dst="$DEST_IMAGE_ZFS_DATASET/$(basename "$src")"; mount="$DEST_IMAGE_DIR/$(basename "$srcmount")";
-  else [[ "$DEST_ZVOL_READY" == 1 && -n "$DEST_ZVOL_DATASET" ]] || fail 'Destination zvol dataset is unavailable.' 21; dst="$DEST_ZVOL_DATASET/$(basename "$src")"; fi
+  if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then
+    kind=dataset; srcmount="$(zfs get -H -o value mountpoint "$src")"
+    if [[ -z "$DEST_IMAGE_ZFS_DATASET" ]]; then
+      [[ "$ACTION" == resume ]] && interrupt_seed 8 'Destination image dataset is temporarily unavailable; retained ZFS state was preserved' 'Start the destination array, then use Resume again or Remove failed seed.'
+      fail 'Destination image directory is not an exact ZFS dataset, so a dedicated image dataset cannot be received.' 20
+    fi
+    dst="$DEST_IMAGE_ZFS_DATASET/$(basename "$src")"; mount="$DEST_IMAGE_DIR/$(basename "$srcmount")"
+  else
+    if [[ "$DEST_ZVOL_READY" != 1 || -z "$DEST_ZVOL_DATASET" ]]; then
+      [[ "$ACTION" == resume ]] && interrupt_seed 8 'Destination zvol dataset is temporarily unavailable; retained ZFS state was preserved' 'Start the destination array, then use Resume again or Remove failed seed.'
+      fail 'Destination zvol dataset is unavailable.' 21
+    fi
+    dst="$DEST_ZVOL_DATASET/$(basename "$src")"
+  fi
   [[ -n "$dst" && -z "${SEED_DEST_SEEN[$dst]:-}" ]] || fail "Multiple source disks/datasets map to destination $dst" 21
   SEED_DEST_SEEN[$dst]=1
   obj_base=$((15+(INDEX-1)*65/TOTAL)); obj_span=$((65/TOTAL)); ((obj_span<1))&&obj_span=1
@@ -373,7 +413,7 @@ for src in "${RSYNC_FILES[@]}"; do
 done
 
 if [[ -n "$OLD_SNAPSHOT" ]]; then
-  while IFS=$'\t' read -r kind src dst snap _; do [[ "$kind" == zvol || "$kind" == dataset ]] || continue; zfs release "unmotion:$SEED_ID" "$src@$OLD_SNAPSHOT" 2>/dev/null||true; zfs destroy "$src@$OLD_SNAPSHOT" 2>/dev/null||true; remote "zfs release $(sq "unmotion:$SEED_ID") $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true; zfs destroy $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true"; done < "$STORAGE_TSV"
+  while IFS= read -r row; do IFS=$'\034' read -r kind src dst snap _ <<< "${row//$'\t'/$'\034'}"; [[ "$kind" == zvol || "$kind" == dataset ]] || continue; zfs release "unmotion:$SEED_ID" "$src@$OLD_SNAPSHOT" 2>/dev/null||true; zfs destroy "$src@$OLD_SNAPSHOT" 2>/dev/null||true; remote "zfs release $(sq "unmotion:$SEED_ID") $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true; zfs destroy $(sq "$dst@$OLD_SNAPSHOT") 2>/dev/null || true"; done < "$STORAGE_TSV"
 fi
 
 php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line);$items[]=["kind"=>$p[0]??"","source"=>$p[1]??"","destination"=>$p[2]??"","snapshot"=>$p[3]??"","sourceMountpoint"=>$p[4]??"","destinationMountpoint"=>$p[5]??""];} $d=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];if(!is_array($d))$d=[];$d=array_replace($d,["id"=>$argv[3],"vmUuid"=>$argv[4],"vmName"=>$argv[5],"peerId"=>$argv[6],"peerName"=>$argv[7],"peerHostId"=>$argv[8],"state"=>"READY","progress"=>100,"message"=>"Prepared copy is current","generation"=>(int)$argv[9],"baseSnapshot"=>$argv[10],"storage"=>$items,"sourceStateAtSync"=>$argv[11],"quiesced"=>$argv[12]==="1","tpm"=>$argv[13]==="1","guestAgent"=>$argv[14]==="1","createdAt"=>$d["createdAt"]??date(DATE_ATOM),"lastSyncAt"=>date(DATE_ATOM),"updatedAt"=>date(DATE_ATOM)]);unset($d["pendingGeneration"],$d["pendingSnapshot"],$d["pendingAction"],$d["pendingQuiesced"]);$t=$argv[2].".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$argv[2]);' "$STORAGE_TSV" "$SEED_JSON" "$SEED_ID" "$VM_UUID" "$VM_NAME" "$PEER_ID" "$PEER_NAME" "$PEER_HOST_ID" "$GENERATION" "$NEW_SNAPSHOT" "$VM_STATE" "$QUIESCED" "$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo !empty($d["tpm"])?1:0;' "$VM_JSON")" "$QGA_CONNECTED"

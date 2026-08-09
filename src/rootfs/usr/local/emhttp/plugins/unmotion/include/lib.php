@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.3.0-beta7';
+const UNM_VERSION = '0.3.0-RC1';
 const UNM_PROTOCOL = 5;
 const UNM_BOOT_DIR = '/boot/config/plugins/unmotion';
 const UNM_CONFIG_JSON = UNM_BOOT_DIR . '/config.json';
@@ -1033,6 +1033,20 @@ function unmDiscoveryName(string $instance, string $target, string $address): st
     return $target !== '' ? $target : $address;
 }
 
+function unmParseAvahiTxtRecordList(string $value): array {
+    $txt = [];
+    if (!preg_match_all('/"((?:\\\\.|[^"])*)"|([^\\s]+)/', trim($value), $matches, PREG_SET_ORDER)) return $txt;
+    foreach ($matches as $match) {
+        $entry = ($match[1] ?? '') !== '' ? (string)$match[1] : (string)($match[2] ?? '');
+        $entry = unmAvahiUnescape($entry);
+        if (!str_contains($entry, '=')) continue;
+        [$key, $entryValue] = explode('=', $entry, 2);
+        $key = trim($key);
+        if ($key !== '') $txt[$key] = trim($entryValue);
+    }
+    return $txt;
+}
+
 function unmLocalIpv4Addresses(): array {
     static $cached = null;
     if (is_array($cached)) return $cached;
@@ -1105,7 +1119,10 @@ function unmParseAvahiDiscoveryOutput(string $output): array {
     $localHostId = unmHostId();
     foreach (preg_split('/\R/', $output) as $line) {
         if (!str_starts_with($line, '=')) continue;
-        $fields = str_getcsv($line, ';');
+        // Avahi emits the TXT records as space-separated quoted strings in the
+        // final semicolon-delimited field. CSV parsing combines those strings,
+        // so split the fixed header first and parse the TXT list separately.
+        $fields = explode(';', $line, 10);
         if (count($fields) < 9) continue;
 
         $family = $fields[2] ?? '';
@@ -1115,13 +1132,7 @@ function unmParseAvahiDiscoveryOutput(string $output): array {
         $port = (int)($fields[8] ?? 22);
         if ($family !== 'IPv4' || $address === '' || $port < 1 || $port > 65535) continue;
 
-        $txt = [];
-        foreach (array_slice($fields, 9) as $entry) {
-            $entry = unmAvahiUnescape((string)$entry);
-            if (!str_contains($entry, '=')) continue;
-            [$key, $value] = explode('=', $entry, 2);
-            $txt[trim($key)] = trim($value);
-        }
+        $txt = unmParseAvahiTxtRecordList((string)($fields[9] ?? ''));
 
         // Filter our own announcement by stable plugin identity first, then by all local IPv4 addresses.
         if (($txt['host_id'] ?? '') === $localHostId || unmIsLocalPeerHost($address)) continue;
@@ -1318,7 +1329,7 @@ function unmPair(array $input): array {
     $remotePublicKey = '';
     try {
         $test = unmRemote($peer, '/usr/local/sbin/unmotion-agent capabilities', 30);
-        if ($test['code'] !== 0) throw new RuntimeException('Key installed, but the remote unMotion agent could not be reached. Install unMotion 0.3.0-beta5 on the peer first. ' . trim($test['stderr']));
+        if ($test['code'] !== 0) throw new RuntimeException('Key installed, but the remote unMotion agent could not be reached. Install a protocol-compatible unMotion release on the peer first. ' . trim($test['stderr']));
         $caps = json_decode($test['stdout'], true);
         if (!is_array($caps) || ($caps['protocolVersion'] ?? null) !== UNM_PROTOCOL) throw new RuntimeException('Remote agent returned incompatible capabilities.');
         if (($caps['hostId'] ?? '') === unmHostId()) throw new RuntimeException('The discovered host is this server, not a peer.');
@@ -1486,7 +1497,9 @@ function unmResumeSeed(string $id): array {
 }
 
 function unmRemoveSeed(string $id): array {
-    $seed=unmSeed($id);$dir=unmSeedPath($id);unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$seed['vmUuid']??'','VM_NAME'=>$seed['vmName']??'','PEER_ID'=>$seed['peerId']??'','ACTION'=>'remove']);
+    $seed=unmSeed($id);$state=(string)($seed['state']??'');
+    if(!in_array($state,['READY','FAILED','INTERRUPTED'],true)) throw new RuntimeException('This prepared copy cannot be removed while another seed operation is active.');
+    $dir=unmSeedPath($id);unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$seed['vmUuid']??'','VM_NAME'=>$seed['vmName']??'','PEER_ID'=>$seed['peerId']??'','ACTION'=>'remove']);
     $seed['state']='REMOVING';$seed['message']='Removing prepared copy';$seed['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/seed.json',$seed);$seed['pid']=unmLaunchSeedWorker($id);return $seed;
 }
 
