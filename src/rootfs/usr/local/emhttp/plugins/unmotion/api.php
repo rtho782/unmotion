@@ -11,6 +11,9 @@ function reply(array $data, int $status=200): never {
 function fail(Throwable|string $e, int $status=400): never {
     reply(['success'=>false,'error'=>$e instanceof Throwable?$e->getMessage():(string)$e],$status);
 }
+function requirePostMutation(): void {
+    if(($_SERVER['REQUEST_METHOD']??'POST')!=='POST')throw new RuntimeException('This action requires a CSRF-protected POST request.');
+}
 function launchWorker(string $id, string $dir, string $worker='/usr/local/sbin/unmotion-worker'): int {
     if(!in_array($worker,['/usr/local/sbin/unmotion-worker','/usr/local/sbin/unmotion-clone-worker'],true))throw new InvalidArgumentException('Invalid worker.');
     $cmd='nohup setsid '.escapeshellarg($worker).' '.escapeshellarg($id).' >>'.escapeshellarg($dir.'/launcher.log').' 2>&1 & echo $!';
@@ -43,6 +46,26 @@ try {
             unmRemovePeer((string)($_POST['peer_id']??''));
             reply(['success'=>true]);
         case 'discover': reply(['success'=>true]+unmDiscover());
+        case 'replications': reply(['success'=>true,'replications'=>unmReplications()]);
+        case 'incomingReplicas': reply(['success'=>true,'replicas'=>unmIncomingReplicas()]);
+        case 'replicationPreflight':
+            $opts=['rpo_seconds'=>$_POST['rpo_seconds']??3600,'retention_count'=>$_POST['retention_count']??1,'tpm_initial_mode'=>$_POST['tpm_initial_mode']??'none'];
+            reply(['success'=>true,'preflight'=>unmReplicationPreflight((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),$opts)]);
+        case 'createReplication':
+            requirePostMutation();
+            reply(['success'=>true,'replication'=>unmCreateReplication(['vm_id'=>$_POST['vm_id']??'','peer_id'=>$_POST['peer_id']??'','rpo_seconds'=>$_POST['rpo_seconds']??3600,'retention_count'=>$_POST['retention_count']??1,'tpm_initial_mode'=>$_POST['tpm_initial_mode']??'none','enabled'=>$_POST['enabled']??true])]);
+        case 'updateReplication':
+            requirePostMutation();$rid=(string)($_POST['replication_id']??'');
+            reply(['success'=>true,'replication'=>unmUpdateReplication($rid,['rpo_seconds'=>$_POST['rpo_seconds']??null,'retention_count'=>$_POST['retention_count']??null,'tpm_initial_mode'=>$_POST['tpm_initial_mode']??null])]);
+        case 'setReplicationEnabled':
+            requirePostMutation();$enabled=filter_var($_POST['enabled']??null,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($enabled===null)throw new InvalidArgumentException('Invalid enabled state.');
+            reply(['success'=>true,'replication'=>unmSetReplicationEnabled((string)($_POST['replication_id']??''),$enabled)]);
+        case 'runReplicationNow':
+            requirePostMutation();reply(['success'=>true,'replication'=>unmRunReplicationNow((string)($_POST['replication_id']??''))]);
+        case 'removeReplication':
+            requirePostMutation();unmRemoveReplication((string)($_POST['replication_id']??''));reply(['success'=>true,'destinationPreserved'=>true]);
+        case 'replicationLog':
+            reply(['success'=>true,'log'=>unmReplicationLog((string)($_REQUEST['replication_id']??''))]);
         case 'seeds': reply(['success'=>true,'seeds'=>unmSeeds()]);
         case 'prepareWarm': reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'prepare')]);
         case 'updateWarm': reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'update')]);

@@ -55,7 +55,7 @@ SOAK_SECONDS="${SOAK_SECONDS:-300}"
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
 state(){ /usr/local/sbin/unmotion-state "$JOB_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
 sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
-remote(){ ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
 json_get(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(explode(".",$argv[2]) as $k){if(!is_array($d)||!array_key_exists($k,$d)){exit(3);} $d=$d[$k];} if(is_bool($d))echo $d?"1":"0";elseif(is_array($d))echo json_encode($d);elseif($d!==null)echo $d;' "$1" "$2"; }
 DEBUG_LOGGING="${DEBUG_LOGGING:-0}"
 sanitize_command(){

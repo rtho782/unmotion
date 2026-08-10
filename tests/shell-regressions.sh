@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SEED="$ROOT/src/rootfs/usr/local/sbin/unmotion-seed-worker"
 WORKER="$ROOT/src/rootfs/usr/local/sbin/unmotion-worker"
 CLONE_TRANSFORM="$ROOT/src/rootfs/usr/local/sbin/unmotion-clone-transform"
+REPLICATION_WORKER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-worker"
 
 row=$'zvol\tcache/Squid Proxy\t\tunmotion-seed-seed-test-g1\t\t'
 IFS=$'\034' read -r kind src dst snap rest <<< "${row//$'\t'/$'\034'}"
@@ -15,6 +16,9 @@ IFS=$'\034' read -r kind src dst snap rest <<< "${row//$'\t'/$'\034'}"
 
 grep -Fq 'IFS=$'"'"'\034'"'"' read -r kind src dst snap' "$SEED"
 grep -Fq 'zfs get -H -o value receive_resume_token $(sq "$dst")' "$SEED"
+grep -Fq 'remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }' "$SEED"
+grep -Fq 'remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }' "$WORKER"
+grep -Fq "awk -F '\\t' -v t=\"unmotion:\$SEED_ID\"" "$SEED"
 ! grep -F 'remote_resume_token(){' "$SEED" | grep -Fq '|| true'
 [[ "$(grep -Fc 'elif zfs list -H -o name $(sq "$parent")' "$SEED")" == 1 ]]
 [[ "$(grep -Fc 'elif zfs list -H -o name $(sq "$parent")' "$WORKER")" == 1 ]]
@@ -23,6 +27,29 @@ grep -Fq 'protect_warm_images(){' "$WORKER"
 grep -Fq 'DEST_START_ATTEMPTED == 0' "$WORKER"
 grep -Fq 'chmod 0400 $(sq "$dst")' "$WORKER"
 [[ "$(grep -Fc 'protect_warm_images; restore_source' "$WORKER")" == 3 ]]
+
+publish_line="$(grep -nF 'agent_call replication-publish' "$REPLICATION_WORKER" | tail -n1 | cut -d: -f1)"
+commit_line="$(grep -nF 'atomic_state_update commit' "$REPLICATION_WORKER" | tail -n1 | cut -d: -f1)"
+cleanup_line="$(grep -n '^cleanup_source_pending$' "$REPLICATION_WORKER" | tail -n1 | cut -d: -f1)"
+prune_line="$(grep -n '^reconcile_destination_retention$' "$REPLICATION_WORKER" | tail -n1 | cut -d: -f1)"
+[[ -n "$publish_line" && -n "$commit_line" && -n "$cleanup_line" && -n "$prune_line" ]]
+((publish_line < commit_line && commit_line < cleanup_line && cleanup_line < prune_line))
+grep -Fq 'zfs destroy "$full"' "$REPLICATION_WORKER"
+! grep -Fq 'zfs destroy -r' "$REPLICATION_WORKER"
+! grep -Fq 'zfs receive -A' "$REPLICATION_WORKER"
+grep -Fq 'remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }' "$REPLICATION_WORKER"
+[[ "$(grep -Fc "awk -F '\\t' -v t=" "$REPLICATION_WORKER")" == 3 ]]
+grep -Fq '"lastScheduledSlot"=>(int)$argv[2]]);' "$REPLICATION_WORKER"
+grep -Fq 'Committed incremental base snapshot for $src is missing on the source or destination; restore the exact base before retrying' "$REPLICATION_WORKER"
+grep -Fq 'Committed incremental base snapshot GUID for $src does not match; refusing an unsafe incremental transfer' "$REPLICATION_WORKER"
+grep -Fq 'Destination object for $src exists without the expected snapshot or resumable receive state; manual inspection is required' "$REPLICATION_WORKER"
+grep -Fq 'Destination snapshot hold verification failed for $src; no recovery point was committed' "$REPLICATION_WORKER"
+grep -Fq 'candidate="$(readlink -f -- "$candidate")"' "$REPLICATION_WORKER"
+grep -Fq 'Multiple distinct TPM state directories match this VM UUID' "$REPLICATION_WORKER"
+grep -Fq 'lastHostState.tpmCaptured' "$REPLICATION_WORKER"
+grep -Fq '$compatible=is_array($s)&&(bool)($s["tpmPresent"]??false)===$h["tpmPresent"]' "$REPLICATION_WORKER"
+grep -Fq 'if(($h["quality"]??"")==="safe")unset($h["safeFallback"])' "$REPLICATION_WORKER"
+grep -Fq 'unset($s["safeFallback"]);$h["safeFallback"]=$s' "$REPLICATION_WORKER"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
@@ -43,4 +70,4 @@ grep -Fq 'Squid Proxy - Clone/vdisk1.qcow2' "$TMP/disconnected.xml"
 php "$CLONE_TRANSFORM" "$TMP/source.xml" "$TMP/connected.xml" "$TMP/plan.json" connected
 ! grep -Fq '<link' "$TMP/connected.xml"
 
-echo 'Shell RC2 behavior regressions passed.'
+echo 'Shell migration and scheduled-replication regressions passed.'

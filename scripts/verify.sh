@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.3.1-RC2}"
+EXPECTED_VERSION="${1:-0.4.0-beta1}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -18,6 +18,7 @@ cmp "$TMP/payload.txz" "$REL/unmotion-0.3.0_beta7-noarch-1.txz"
 test "$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")" = "$EXPECTED_VERSION"
 grep -Fq "const UNM_VERSION = '$EXPECTED_VERSION';" "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/lib.php"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL[[:space:]]*=[[:space:]]*5;' "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/lib.php"
+grep -Eq 'const[[:space:]]+UNM_REPLICATION_PROTOCOL[[:space:]]*=[[:space:]]*1;' "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/lib.php"
 grep -q '<txt-record>protocol=5</txt-record>' "$ROOT/src/rootfs/etc/rc.d/rc.unmotion"
 
 if command -v php >/dev/null; then

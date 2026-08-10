@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0-beta1 - 2026-08-10
+
+- Added scheduled, resumable replication of VM zvols and raw/qcow2 images held in strictly dedicated ZFS datasets.
+- Added RPO notches from 5 minutes through 24 hours and destination-side UTC-bucket retention of up to 24 recovery points from the latest 24 hours.
+- Kept protocol-5 pairing and migration compatibility while adding an explicit scheduled-replication capability for beta1 peers.
+- Kept replica datasets read-only, unmounted or hidden, and deliberately absent from libvirt; beta1 does not activate replicas or perform automatic failover.
+- Added crash-safe pending/base generations, retained ZFS receive tokens, exact GUID verification, source holds and destination-publication-before-source-pruning ordering.
+- Added QEMU Guest Agent command/network evidence and consistency classification. Replication may proceed without the agent, but those points are explicitly ineligible for later recovery.
+- Added content-addressed TPM and UEFI NVRAM checkpoint evidence, preserving the latest verified safe checkpoint while distinguishing powered-off safe copies from running best-effort copies.
+- Rejected shared datasets, non-ZFS storage, encrypted datasets and qcow2 backing chains for replication, with guidance to use ZFS Master for storage conversion.
+- Added scheduled-policy and incoming-replica UI inventory. Recovery activation, split-brain arbitration, witness protocol, managed autostart and failback remain deferred.
+- Hardened spaced-dataset hold parsing, multi-disk SSH control calls, source base commit/cleanup ordering, launch-state reconciliation and explicit incremental-base diagnostics during destructive lab regression testing.
+- Canonicalized aliased Unraid swtpm paths while rejecting genuinely distinct TPM stores, and required safe fallback archives to cover the same TPM/NVRAM devices without nested stale fallbacks.
+- Blocked replication reservation and recovery-point publication whenever the destination already defines any VM, running or stopped, with the replica UUID.
+- Required every checkpoint labelled safe to have an exact verified archive covering each declared TPM/NVRAM device, rechecked destination UUID isolation immediately before inventory commit, and garbage-collected only hash-owned checkpoint archives no longer referenced by retained points or safe fallbacks.
+
 ## 0.3.1-RC2 — 2026-08-09
 
 - Added cold same-host VM cloning as a post-recovery feature without changing peer protocol version 5.

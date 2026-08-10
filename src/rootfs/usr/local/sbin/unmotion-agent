@@ -25,6 +25,34 @@ try {
             $exact=(string)($argv[3]??'0')==='1';
             echo json_encode(['dataset'=>unmZfsDatasetForPath($decoded,$exact)],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;
+        case 'replication-preflight':
+        case 'replication-prepare':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication preflight request.');
+            if($cmd==='replication-prepare')$request['reserve']=true;
+            echo json_encode(unmReplicaPreflight($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-publish':
+        case 'replication-commit':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication publish request.');
+            echo json_encode(unmReplicaPublish($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-prune':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication prune request.');
+            echo json_encode(unmReplicaPrune($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-inventory':
+            if(isset($argv[2])&&$argv[2]!==''){
+                $decoded=base64_decode((string)$argv[2],true);$request=$decoded===false?null:json_decode($decoded,true);
+                if(!is_array($request))throw new InvalidArgumentException('Invalid replication inventory request.');
+                echo json_encode(unmReplicaInventory($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            }else echo json_encode(['replicas'=>unmIncomingReplicas()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
         case 'reciprocal-prepare':
             $encoded=(string)($argv[2]??'');
             $decoded=base64_decode($encoded,true);

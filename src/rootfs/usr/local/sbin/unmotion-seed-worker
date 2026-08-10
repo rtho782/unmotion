@@ -26,7 +26,7 @@ RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no 
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
 state(){ /usr/local/sbin/unmotion-seed-state "$SEED_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
 sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
-remote(){ ssh "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
 json_get(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(explode(".",$argv[2]) as $k){if(!is_array($d)||!array_key_exists($k,$d))exit(3);$d=$d[$k];}if(is_bool($d))echo $d?"1":"0";elseif(is_array($d))echo json_encode($d);elseif($d!==null)echo $d;' "$1" "$2"; }
 DEBUG_LOGGING="${DEBUG_LOGGING:-0}"
 sanitize_command(){
@@ -139,7 +139,7 @@ if [[ "${ACTION:-prepare}" == remove ]]; then
       fi
       if [[ -n "$snap" && -n "$src" ]] && zfs list -H -t snapshot "$src@$snap" >/dev/null 2>&1; then
         zfs release "unmotion:$SEED_ID" "$src@$snap" >>"$LOG" 2>&1 || true
-        if zfs holds -H "$src@$snap" 2>/dev/null | awk -v t="unmotion:$SEED_ID" '$2==t{found=1}END{exit found?0:1}'; then
+        if zfs holds -H "$src@$snap" 2>/dev/null | awk -F '\t' -v t="unmotion:$SEED_ID" '$2==t{found=1}END{exit found?0:1}'; then
           log "ERROR: unMotion hold remains on $src@$snap."
           REMOVE_ERRORS=1
         elif ! zfs destroy "$src@$snap" >>"$LOG" 2>&1; then
@@ -246,7 +246,7 @@ fi
 debug "Recording pending generation=$GENERATION snapshot=$NEW_SNAPSHOT action=$ACTION quiesced=$QUIESCED"
 php -r '$p=$argv[1];$d=json_decode(file_get_contents($p),true);if(!is_array($d))$d=[];$d["pendingGeneration"]=(int)$argv[2];$d["pendingSnapshot"]=$argv[3];$d["pendingAction"]=$argv[4];$d["pendingQuiesced"]=$argv[5]==="1";$d["updatedAt"]=date(DATE_ATOM);$t=$p.".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$p);' "$SEED_JSON" "$GENERATION" "$NEW_SNAPSHOT" "$ACTION" "$QUIESCED"
 
-receive_props(){ local type="$1" mount="${2:-}" p="-o readonly=on -o dedup=$(sq "$DEST_DEDUP_REMOTE")"; [[ "$DEST_COMPRESSION_REMOTE" == inherit ]] || p+=" -o compression=$(sq "$DEST_COMPRESSION_REMOTE")"; [[ "$type" == dataset ]] && p+=" -o mountpoint=$(sq "$mount")"; printf '%s' "$p"; }
+receive_props(){ local type="$1" mount="${2:-}" p; p="-o readonly=on -o dedup=$(sq "$DEST_DEDUP_REMOTE")"; [[ "$DEST_COMPRESSION_REMOTE" == inherit ]] || p+=" -o compression=$(sq "$DEST_COMPRESSION_REMOTE")"; [[ "$type" == dataset ]] && p+=" -o mountpoint=$(sq "$mount")"; printf '%s' "$p"; }
 zfs_size(){
   local src="$1" old="$2" new="$3" out
   local -a args=(-nP -cp)

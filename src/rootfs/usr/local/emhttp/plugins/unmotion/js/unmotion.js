@@ -4,7 +4,14 @@
   
 var api='/plugins/unmotion/api.php';
   
-var peers=[],seeds=[],latestVms=[],peerHealth={},discoveredPeers=[];
+var peers=[],seeds=[],latestVms=[],peerHealth={},discoveredPeers=[],replications=[],incomingReplicas=[];
+
+var replicationRpoNotches=[
+    {seconds:300,label:'5 min'},{seconds:900,label:'15 min'},{seconds:1800,label:'30 min'},
+    {seconds:3600,label:'1 hour'},{seconds:7200,label:'2 hours'},{seconds:14400,label:'4 hours'},
+    {seconds:21600,label:'6 hours'},{seconds:28800,label:'8 hours'},{seconds:43200,label:'12 hours'},
+    {seconds:86400,label:'24 hours'}
+  ];
   
 var appSettings= {
     copy_isos_default:true,discovery:true,source_cleanup_default:'unregister',health_poll_seconds:10,debug_logging:false
@@ -12,6 +19,8 @@ var appSettings= {
   ;
   
 var activeVmId='',activeVmName='',activePreflight=null,activeWarmSeedId='',activeOperation='migration',activeCloneName='';
+var activeReplicationId='',activeReplicationVm=null,activeReplicationPreflight=null;
+var activeReplicationPreflightSerial=0;
   var activeMigrateButton=null;
   
 var discoveryTimer=null,peerRefreshTimer=null,discoveryInFlight=false,currentLogId='',currentLogType='job',logTimer=null,healthTimer=null;
@@ -40,6 +49,48 @@ function fmtRamMib(v) {
     v=Number(v||0);
     return v>=1024?(v/1024).toFixed(v%1024?2:0)+' GiB':v+' MiB';
     
+  }
+
+function fmtWhen(v) {
+    if(v===null||typeof v==='undefined'||v==='')return '—';
+    var d;
+    if(typeof v==='number'||/^\d+$/.test(String(v))) {
+      var n=Number(v);d=new Date(n<100000000000?n*1000:n);
+    } else d=new Date(v);
+    if(isNaN(d.getTime()))return String(v);
+    return d.toLocaleString();
+  }
+
+function fmtDurationSeconds(v) {
+    if(v===null||typeof v==='undefined'||v==='')return '—';
+    var seconds=Math.max(0,Number(v)||0),parts=[];
+    var days=Math.floor(seconds/86400);seconds%=86400;
+    var hours=Math.floor(seconds/3600);seconds%=3600;
+    var minutes=Math.floor(seconds/60);
+    if(days)parts.push(days+'d');
+    if(hours)parts.push(hours+'h');
+    if(minutes||!parts.length)parts.push(minutes+'m');
+    return parts.join(' ');
+  }
+
+function epochSeconds(v) {
+    if(v===null||typeof v==='undefined'||v==='')return null;
+    if(typeof v==='number'||/^\d+$/.test(String(v))){var n=Number(v);return n>100000000000?Math.floor(n/1000):n;}
+    var parsed=new Date(v).getTime();return isNaN(parsed)?null:Math.floor(parsed/1000);
+  }
+
+function rpoIndex(seconds) {
+    seconds=Number(seconds||3600);
+    for(var i=0;i<replicationRpoNotches.length;i++)if(replicationRpoNotches[i].seconds===seconds)return i;
+    return 3;
+  }
+
+function rpoLabel(seconds) {
+    return replicationRpoNotches[rpoIndex(seconds)].label;
+  }
+
+function replicationRetentionMax(seconds) {
+    return Math.min(24,Math.floor(86400/Number(seconds||3600)));
   }
   
 function post(action,data) {
@@ -210,6 +261,12 @@ function seedFor(vmUuid,peerId) {
     return seeds.find(function(x){return x.vmUuid===vmUuid&&x.peerId===peerId&&x.state!=='REMOVED'&&x.state!=='CONSUMED';})||null;
   }
 
+function replicationFor(vmUuid,peerId) {
+    return replications.find(function(x){
+      return (x.vmUuid===vmUuid||x.vmId===vmUuid)&&(!peerId||x.peerId===peerId||x.destinationPeerId===peerId);
+    })||null;
+  }
+
 function renderInventory() {
     var body=$('#unm-vm-body');if(!body.length)return;body.empty();
     var peerId=$('#unm-peer-select').val();
@@ -230,6 +287,9 @@ function renderInventory() {
           actions+='<input type="button" value="Warm Move blocked" disabled title="'+esc(warmBlockedReason(vm))+'">';
         }
       }
+      var replication=replicationFor(vm.uuid,peerId);
+      if(peerId)actions+='<input type="button" class="unm-replicate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" data-replication-id="'+esc(replication?replication.id:'')+'" value="'+(replication?'Configure replication':'Replicate')+'">';
+      else actions+='<input type="button" value="Replicate" disabled title="Select a paired destination first">';
       if((vm.pci||[]).length)actions+='<input type="button" value="Clone blocked by PCIe" disabled title="Remove PCIe passthrough before cloning">';
       else if(vm.tpm)actions+='<input type="button" value="Clone blocked by TPM" disabled title="RC2 does not clone virtual TPM identity or secrets">';
       else actions+='<input type="button" class="unm-clone" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="'+(poweredOff?'Clone locally':'Power off before clone')+'" '+(poweredOff?'':'disabled')+'>';
@@ -259,6 +319,169 @@ function loadInventory() {
 function loadSeedsOnly() {
     if(!$('#unm-seed-body').length)return;
     post('seeds').done(function(r){seeds=r.seeds||[];renderSeeds();renderInventory();});
+  }
+
+function replicationNativeEligible(vm) {
+    if(typeof vm.replicationEligible!=='undefined')return !!vm.replicationEligible;
+    return !!vm.nativeZfsWarmMove;
+  }
+
+function replicationBlockHtml(vm) {
+    var reasons=vm.replicationBlockingReasons||vm.storageBlockingReasons||vm.storageReasons||[];
+    return '<div class="unm-callout unm-callout-danger"><strong>Scheduled replication is blocked for this VM.</strong><p>Every writable disk must be a zvol or an image contained in a dedicated, unencrypted ZFS dataset. Shared datasets and rsync/file-copy fallbacks are not supported.</p>'+
+      (reasons.length?'<ul>'+reasons.map(function(reason){return '<li>'+esc(reason)+'</li>';}).join('')+'</ul>':'')+
+      '<p>unMotion does not convert datasets. Use the <strong>ZFS Master</strong> plugin to create or reorganise dedicated VM datasets, then return and recheck.</p><a class="unm-button-link" href="/Apps">Open Apps to find ZFS Master</a></div>';
+  }
+
+function updateReplicationSliders() {
+    var rpoSlider=$('#unm-rep-rpo'),retention=$('#unm-rep-retention');
+    if(!rpoSlider.length||!retention.length)return;
+    var notch=replicationRpoNotches[Number(rpoSlider.val())]||replicationRpoNotches[3];
+    var max=replicationRetentionMax(notch.seconds),count=Math.max(1,Math.min(max,Number(retention.val())||1));
+    retention.attr('max',max).val(count);
+    var retentionTicks='';for(var i=1;i<=max;i++)retentionTicks+='<option value="'+i+'"></option>';
+    $('#unm-rep-retention-notches').html(retentionTicks);
+    $('#unm-rep-rpo-value').text(notch.label);
+    $('#unm-rep-retention-value').text(count+' of '+max+' maximum');
+    var spacing=24/count;
+    $('#unm-rep-retention-help').text('Keeps the newest verified point in each UTC retention bucket, approximately '+(spacing>=10?spacing.toFixed(0):spacing.toFixed(1)).replace(/\.0$/,'')+' hours apart. The most recent point is always kept.');
+  }
+
+function replicationPreflight() {
+    var panel=$('#unm-rep-preflight'),peer=$('#unm-rep-peer').val();
+    var serial=++activeReplicationPreflightSerial;
+    activeReplicationPreflight=null;
+    $('#unm-save-replication').prop('disabled',true);
+    if(!activeReplicationVm||!replicationNativeEligible(activeReplicationVm)){
+      panel.html(replicationBlockHtml(activeReplicationVm||{}));return;
+    }
+    if(!peer){panel.html('<div class="unm-callout unm-callout-danger">Select a paired destination.</div>');return;}
+    var notch=replicationRpoNotches[Number($('#unm-rep-rpo').val())]||replicationRpoNotches[3];
+    panel.html('<p class="unm-muted"><span class="unm-spinner unm-spinner-small"></span>Checking the VM, destination, protocol, and dedicated ZFS storage…</p>');
+    post('replicationPreflight',{
+      vm_id:activeReplicationVm.uuid,
+      peer_id:peer,
+      rpo_seconds:notch.seconds,
+      retention_count:Number($('#unm-rep-retention').val())||1,
+      tpm_initial_mode:$('input[name="unm-rep-tpm-mode"]:checked').val()||'none'
+    }).done(function(r){
+      if(serial!==activeReplicationPreflightSerial)return;
+      var pre=r.preflight||r||{},errors=pre.errors||[],warnings=pre.warnings||[];
+      activeReplicationPreflight=pre;
+      var html='';
+      if(errors.length)html+='<div class="unm-callout unm-callout-danger"><strong>Replication cannot be configured.</strong><ul>'+errors.map(function(e){return '<li>'+esc(e.message||e)+'</li>';}).join('')+'</ul></div>';
+      if(warnings.length)html+='<div class="unm-callout unm-callout-warning"><strong>Review before saving.</strong><ul>'+warnings.map(function(w){return '<li>'+esc(w.message||w)+'</li>';}).join('')+'</ul></div>';
+      if(pre.ready)html+='<div class="unm-callout unm-callout-ok"><strong>Ready for scheduled replication.</strong> The destination will store read-only recovery inventory only.</div>';
+      panel.html(html||'<div class="unm-callout unm-callout-danger">The preflight did not return an eligibility result.</div>');
+      $('#unm-save-replication').prop('disabled',!pre.ready);
+    }).fail(function(xhr){
+      if(serial!==activeReplicationPreflightSerial)return;
+      var message='Replication preflight failed.';
+      try{message=JSON.parse(xhr.responseText).error||message;}catch(ignore){}
+      panel.html('<div class="unm-callout unm-callout-danger">'+esc(message)+'</div>');
+    });
+  }
+
+function showReplicationModal(vmId,vmName,replicationId) {
+    var vm=latestVms.find(function(item){return item.uuid===vmId;})||null;
+    var policy=replicationId?replications.find(function(item){return item.id===replicationId;}):null;
+    activeReplicationId=replicationId||(policy&&policy.id)||'';
+    activeReplicationVm=vm;
+    activeReplicationPreflight=null;
+    if(!vm){flash('The selected VM is no longer available.',true);return;}
+    var selectedPeer=(policy&&(policy.peerId||policy.destinationPeerId))||$('#unm-peer-select').val()||'';
+    var peerOptions=peers.map(function(peer){return '<option value="'+esc(peer.id)+'" '+(peer.id===selectedPeer?'selected':'')+'>'+esc(peer.name+' ('+peer.host+')')+'</option>';}).join('');
+    var rpoSeconds=Number((policy&&(policy.rpoSeconds||policy.rpo_seconds))||3600),rpoIdx=rpoIndex(rpoSeconds);
+    var max=replicationRetentionMax(rpoSeconds),retention=Math.max(1,Math.min(max,Number((policy&&(policy.retentionCount||policy.retention_count))||1)));
+    var tpmMode=(policy&&(policy.tpmInitialMode||policy.tpm_initial_mode))||'power-cycle';
+    var rpoTicks=replicationRpoNotches.map(function(notch,index){return '<option value="'+index+'" label="'+esc(notch.label)+'"></option>';}).join('');
+    var tickLabels=replicationRpoNotches.map(function(notch){return '<span>'+esc(notch.label.replace(' hours','h').replace(' hour','h').replace(' min','m'))+'</span>';}).join('');
+    var qga=(vm.guestAgent||{}).connected;
+    var qgaHtml=qga
+      ? '<div class="unm-callout unm-callout-ok"><strong>QEMU Guest Agent connected.</strong> Replication can quiesce filesystems and mark points as guest-agent verified.</div>'
+      : '<div class="unm-callout unm-callout-warning"><strong>Replication only:</strong> QEMU Guest Agent is not currently responding. Storage can be replicated, but points created without guest-agent verification are not eligible for a later recovery workflow.</div>';
+    var tpmHtml=vm.tpm
+      ? '<div class="unm-callout unm-callout-warning"><strong>Virtual TPM detected.</strong> Recovery is more reliable without a TPM. unMotion retains the last safe powered-off TPM copy and labels best-effort captures.</div><div class="unm-choice-list"><label><input type="radio" name="unm-rep-tpm-mode" value="power-cycle" '+(tpmMode==='power-cycle'?'checked':'')+'><strong>Power cycle (recommended)</strong><br><small>Briefly stop and restart the VM to establish an initial safe TPM and firmware checkpoint.</small></label><label><input type="radio" name="unm-rep-tpm-mode" value="best-effort" '+(tpmMode==='best-effort'?'checked':'')+'><strong>Best-effort stun</strong><br><small>Pause the VM while copying TPM files. The checkpoint is labelled best effort and may not be bootable with every disk point.</small></label></div>'
+      : '<input type="hidden" name="unm-rep-tpm-mode" value="none"><p class="unm-muted">No virtual TPM was detected; TPM checkpoint selection is not required.</p>';
+    var html='<div class="unm-callout unm-callout-info"><strong>Beta1 scope:</strong> Scheduled replication creates read-only, inert recovery inventory. It does not register or boot the replica, perform failover, or change Unraid VM autostart.</div>'+
+      '<div class="unm-form-row"><label for="unm-rep-peer">Destination</label><div><select id="unm-rep-peer" '+(activeReplicationId?'disabled':'')+'><option value="">Select a paired host</option>'+peerOptions+'</select>'+(activeReplicationId?'<small class="unm-muted">Remove and recreate the policy to use a different destination.</small>':'')+'</div></div>'+
+      '<div class="unm-form-row"><label for="unm-rep-rpo">Recovery point objective</label><div class="unm-slider-field"><input type="range" id="unm-rep-rpo" min="0" max="9" step="1" value="'+rpoIdx+'" list="unm-rep-rpo-notches"><datalist id="unm-rep-rpo-notches">'+rpoTicks+'</datalist><div class="unm-slider-value" id="unm-rep-rpo-value"></div><div class="unm-slider-notches">'+tickLabels+'</div></div></div>'+
+      '<div class="unm-form-row"><label for="unm-rep-retention">Recovery points retained in 24 hours</label><div class="unm-slider-field"><input type="range" id="unm-rep-retention" min="1" max="'+max+'" step="1" value="'+retention+'" list="unm-rep-retention-notches"><datalist id="unm-rep-retention-notches"></datalist><div class="unm-slider-value" id="unm-rep-retention-value"></div><small id="unm-rep-retention-help" class="unm-muted"></small></div></div>'+
+      '<h3>Guest consistency and TPM</h3>'+qgaHtml+tpmHtml+'<div id="unm-rep-preflight"></div>';
+    $('#unm-replication-modal-title').text((activeReplicationId?'Configure replication for ':'Replicate ')+vmName);
+    $('#unm-replication-modal-content').html(html);
+    $('#unm-replication-modal').addClass('open');
+    updateReplicationSliders();
+    replicationPreflight();
+  }
+
+function saveReplication() {
+    if(!activeReplicationPreflight||!activeReplicationPreflight.ready)return;
+    var notch=replicationRpoNotches[Number($('#unm-rep-rpo').val())]||replicationRpoNotches[3];
+    var stop=setButtonBusy($('#unm-save-replication'),'Saving');
+    post(activeReplicationId?'updateReplication':'createReplication',{
+      replication_id:activeReplicationId,
+      vm_id:activeReplicationVm.uuid,
+      peer_id:$('#unm-rep-peer').val(),
+      rpo_seconds:notch.seconds,
+      retention_count:Number($('#unm-rep-retention').val())||1,
+      tpm_initial_mode:$('input[name="unm-rep-tpm-mode"]:checked').val()||'none'
+    }).done(function(){
+      $('#unm-replication-modal').removeClass('open');
+      flash(activeReplicationId?'Replication policy updated.':'Scheduled replication configured. The initial copy will run when scheduled by unMotion.');
+      loadReplications();loadIncomingReplicas();loadInventory();
+    }).fail(err).always(stop);
+  }
+
+function replicationPointCount(item) {
+    if(Array.isArray(item.recoveryPoints))return item.recoveryPoints.length;
+    return Number(item.recoveryPointCount||item.pointCount||item.availablePoints||0);
+  }
+
+function renderReplications() {
+    var body=$('#unm-replication-body');if(!body.length)return;body.empty();
+    replications.forEach(function(policy){
+      var enabled=!(policy.enabled===false||policy.enabled===0||policy.enabled==='0');
+      var state=policy.state||policy.status||(enabled?'IDLE':'DISABLED');
+      var active=['STARTING','LOCKING','PREFLIGHT','PROBING_GUEST','QUIESCING','SNAPSHOTTING','THAWING','CAPTURING_HOST_STATE','TRANSFERRING','VERIFYING','PUBLISHING','COMMITTING','PRUNING','CLEANING'].indexOf(String(state).toUpperCase())>=0;
+      var pointCount=replicationPointCount(policy),retention=Number(policy.retentionCount||policy.retention_count||1);
+      var retentionText=pointCount>0?pointCount+' available / retain '+retention:'Retain '+retention+' / 24h';
+      var lastSuccess=policy.lastSuccessAt||policy.lastSuccessEpoch||policy.lastSuccessful||policy.lastSyncAt;
+      var lag=typeof policy.lagSeconds!=='undefined'?policy.lagSeconds:policy.replicationLagSeconds;
+      if(typeof lag==='undefined'){
+        var lastEpoch=epochSeconds(lastSuccess);lag=lastEpoch===null?null:Math.max(0,Math.floor(Date.now()/1000)-lastEpoch-Number(policy.rpoSeconds||policy.rpo_seconds||0));
+      }
+      var activeDisabled=active?' disabled title="Wait for the current replication run to finish"':'';
+      var canRemoveUnused=Number(policy.generation||0)===0&&!policy.baseSnapshot&&!policy.pending;
+      var removeAction=canRemoveUnused?'<input type="button" value="Remove unused policy" class="unm-remove-replication" data-id="'+esc(policy.id)+'"'+activeDisabled+'>':'<input type="button" value="Replica removal deferred" disabled title="Disable the policy to pause future runs while preserving destination data, recovery points, and resumable receive state">';
+      var actions='<div class="unm-action-stack"><input type="button" value="Run now" class="unm-run-replication" data-id="'+esc(policy.id)+'" '+(active||!enabled?'disabled':'')+'><input type="button" value="'+(enabled?'Disable':'Enable')+'" class="unm-toggle-replication" data-id="'+esc(policy.id)+'" data-enable="'+(enabled?'0':'1')+'"><input type="button" value="Configure" class="unm-replicate" data-vm-id="'+esc(policy.vmUuid||policy.vmId)+'" data-vm-name="'+esc(policy.vmName||policy.vm||'VM')+'" data-replication-id="'+esc(policy.id)+'"'+activeDisabled+'><input type="button" value="Log" class="unm-replication-log" data-id="'+esc(policy.id)+'">'+removeAction+'</div>';
+      body.append('<tr><td>'+esc(policy.vmName||policy.vm||policy.vmUuid)+'</td><td>'+esc(policy.peerName||policy.destinationName||policy.peerId)+'</td><td>'+esc(rpoLabel(policy.rpoSeconds||policy.rpo_seconds))+'</td><td>'+esc(retentionText)+'</td><td>'+esc(state)+'</td><td>'+esc(fmtWhen(lastSuccess))+'</td><td>'+esc(enabled?fmtWhen(policy.nextDueAt||policy.nextDueEpoch||policy.nextRunAt):'—')+'</td><td>'+esc(fmtDurationSeconds(lag))+'</td><td>'+actions+'</td></tr>');
+    });
+    if(!replications.length)body.html('<tr><td colspan="9">No scheduled replications. Choose <strong>Replicate</strong> beside an eligible VM to create one.</td></tr>');
+  }
+
+function renderIncomingReplicas() {
+    var body=$('#unm-incoming-replica-body');if(!body.length)return;body.empty();
+    incomingReplicas.forEach(function(replica){
+      var points=replica.recoveryPoints||replica.points||[],latest=replica.latestPoint||replica.latest||{},count=Array.isArray(points)?points.length:Number(replica.recoveryPointCount||replica.pointCount||0);
+      if(Array.isArray(points)&&points.length&&!Object.keys(latest).length){
+        latest=points.find(function(point){return point.id===replica.currentPointId;})||points.slice().sort(function(a,b){return (epochSeconds(b.createdAt||b.capturedAt||b.slotEpoch)||0)-(epochSeconds(a.createdAt||a.capturedAt||a.slotEpoch)||0);})[0]||{};
+      }
+      var latestAt=latest.capturedAt||latest.capturedAtEpoch||replica.latestCapturedAt||replica.lastSuccessAt;
+      var consistency=latest.consistency||replica.consistency||(latest.guestAgentVerified?'guest-agent verified':'not verified');
+      body.append('<tr><td>'+esc(replica.vmName||replica.vm||replica.vmUuid)+'</td><td>'+esc(replica.sourceName||replica.sourceHostName||replica.sourceHostId||'Unknown source')+'</td><td>'+esc(count)+'</td><td>'+esc(fmtWhen(latestAt))+'</td><td>'+esc(consistency||'—')+'</td><td>'+esc(replica.state||replica.status||'INERT')+'<br><small class="unm-muted">Not activatable in beta1</small></td></tr>');
+    });
+    if(!incomingReplicas.length)body.html('<tr><td colspan="6">No incoming replica inventory.</td></tr>');
+  }
+
+function loadReplications() {
+    var body=$('#unm-replication-body');if(!body.length)return;
+    post('replications').done(function(r){replications=r.replications||r.policies||[];renderReplications();renderInventory();}).fail(function(){body.html('<tr><td colspan="9" class="unm-bad">Scheduled replication inventory is unavailable.</td></tr>');});
+  }
+
+function loadIncomingReplicas() {
+    var body=$('#unm-incoming-replica-body');if(!body.length)return;
+    post('incomingReplicas').done(function(r){incomingReplicas=r.incomingReplicas||r.replicas||[];renderIncomingReplicas();}).fail(function(){body.html('<tr><td colspan="6" class="unm-bad">Incoming replica inventory is unavailable.</td></tr>');});
   }
 
 function startWarmOperation(vmId,action,button) {
@@ -570,10 +793,9 @@ function loadJobs() {
   
 function refreshLog() {
     if(!currentLogId)return;
-    post(currentLogType==='seed'?'seedLog':'jobLog', currentLogType==='seed'?{seed_id:currentLogId}:{
-      job_id:currentLogId
-    }
-    ).done(function(r) {
+    var action=currentLogType==='seed'?'seedLog':(currentLogType==='replication'?'replicationLog':'jobLog');
+    var data=currentLogType==='seed'?{seed_id:currentLogId}:(currentLogType==='replication'?{replication_id:currentLogId}:{job_id:currentLogId});
+    post(action,data).done(function(r) {
       var e=$('#unm-log-text');
       e.text(r.log||'(empty)');
       e.scrollTop(e[0].scrollHeight);
@@ -585,6 +807,7 @@ function refreshLog() {
   
 function showLog(id,type) {
     currentLogId=id;currentLogType=type||'job';
+    $('#unm-log-title').text(currentLogType==='seed'?'Prepared-copy log':(currentLogType==='replication'?'Replication log':'Job log'));
     refreshLog();
     $('#unm-log-modal').addClass('open');
     if(logTimer)clearInterval(logTimer);
@@ -736,6 +959,8 @@ $(function() {
     var peerRequest=loadPeers();
     loadInventory();
     loadJobs();
+    loadReplications();
+    loadIncomingReplicas();
     var settingsRequest=loadSettings();
     if($('#unm-settings-loading').length) {
       setSettingsLoading(true,'Loading settings and paired hosts…');
@@ -761,6 +986,25 @@ $(function() {
     }
     );
     $(document).on('click','.unm-clone',function(){showClonePreflight($(this).attr('data-vm-id'),$(this).attr('data-vm-name'),$(this).attr('data-vm-name')+' - Clone',this);});
+    $(document).on('click','.unm-replicate',function(){showReplicationModal($(this).attr('data-vm-id'),$(this).attr('data-vm-name'),$(this).attr('data-replication-id')||'');});
+    $(document).on('input change','#unm-rep-rpo,#unm-rep-retention',updateReplicationSliders);
+    $(document).on('change','#unm-rep-peer,#unm-rep-rpo,#unm-rep-retention,input[name="unm-rep-tpm-mode"]',replicationPreflight);
+    $('#unm-replication-recheck').on('click',replicationPreflight);
+    $('#unm-save-replication').on('click',saveReplication);
+    $(document).on('click','.unm-run-replication',function(){
+      var button=this,stop=setButtonBusy(button,'Starting');
+      post('runReplicationNow',{replication_id:$(this).data('id')}).done(function(){flash('Replication run queued.');loadReplications();}).fail(err).always(stop);
+    });
+    $(document).on('click','.unm-toggle-replication',function(){
+      var button=this,enable=String($(this).attr('data-enable'))==='1',stop=setButtonBusy(button,enable?'Enabling':'Disabling');
+      post('setReplicationEnabled',{replication_id:$(this).data('id'),enabled:enable?1:0}).done(function(){flash('Scheduled replication '+(enable?'enabled.':'disabled.'));loadReplications();}).fail(err).always(stop);
+    });
+    $(document).on('click','.unm-remove-replication',function(){
+      if(!confirm('Remove this unused generation-0 policy? It has never produced a recovery point. This removes only the local policy; no destination inventory is deleted.'))return;
+      var button=this,stop=setButtonBusy(button,'Removing');
+      post('removeReplication',{replication_id:$(this).data('id')}).done(function(){flash('Unused replication policy removed. No destination inventory was deleted.');loadReplications();loadIncomingReplicas();loadInventory();}).fail(err).always(stop);
+    });
+    $(document).on('click','.unm-replication-log',function(){showLog($(this).data('id'),'replication');});
     $(document).on('click','.unm-warm-prepare',function(){startWarmOperation($(this).attr('data-vm-id'),'prepare',this);});
     $(document).on('click','.unm-warm-update',function(){startWarmOperation($(this).attr('data-vm-id'),'update',this);});
     $(document).on('click','.unm-warm-cutover',function(){
@@ -835,6 +1079,8 @@ $(function() {
       loadPeers();
       loadInventory();
       loadJobs();
+      loadReplications();
+      loadIncomingReplicas();
       
     }
     );
@@ -874,7 +1120,7 @@ $(function() {
       
     }
     );
-    if($('#unm-job-body').length){setInterval(loadJobs,4000);setInterval(loadSeedsOnly,4000);}
+    if($('#unm-job-body').length){setInterval(loadJobs,4000);setInterval(loadSeedsOnly,4000);setInterval(loadReplications,5000);setInterval(loadIncomingReplicas,5000);}
     pollPeerHealth();healthTimer=setInterval(pollPeerHealth,Math.max(5,Number(appSettings.health_poll_seconds||10))*1000);
     document.addEventListener('visibilitychange',function(){if(!document.hidden){pollPeerHealth();if($('#unm-peer-list').length)loadPeers({skipHealth:true});}});
     

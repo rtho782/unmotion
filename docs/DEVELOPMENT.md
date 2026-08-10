@@ -15,7 +15,7 @@ The script verifies the recovered beta7 artifacts independently, checks current 
 ## Build
 
 ```bash
-./scripts/build.sh 0.3.1-RC2
+./scripts/build.sh 0.4.0-beta1
 ```
 
 The script stages `src/rootfs`, applies package permissions, creates a Slackware-style TXZ and embeds it into a PLG under `dist/`. For a new release, update the `VERSION` file and release notes first, then pass the matching version.
@@ -36,4 +36,5 @@ Repeat for `UNRAID-DEV02`, verify the installed version, restart the plugin and 
 3. Run static verification.
 4. Install on both disposable peers.
 5. Test cold and Warm Move paths, including recovery/failure cases.
-6. Record SHA-256 hashes and create a Git tag only after verification.
+6. For replication releases, test interrupted full/incremental receives, exact GUID equality, destination inertness, UTC retention, QGA-free and QGA-quiesced points, shared-storage rejection and exact cleanup.
+7. Record SHA-256 hashes and create a Git tag only after verification.
