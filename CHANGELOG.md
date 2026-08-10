@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0-beta2 - in development
+
+- Began the guarded recovery/fencing phase without exposing replica activation.
+- Added protocol-range parsing and highest-common-version negotiation tests while deliberately continuing to advertise only protocol 5.
+- Documented the manual-recovery-first state machine, Guest Agent eligibility, TPM/NVRAM selection, autostart interlock, graceful holdoffs, two-host evidence rules, optional third-host witness checks, startup fencing and failback boundary.
+
 ## 0.4.0-beta1 - 2026-08-10
 
 - Added scheduled, resumable replication of VM zvols and raw/qcow2 images held in strictly dedicated ZFS datasets.

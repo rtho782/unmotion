@@ -52,7 +52,7 @@ cat <<EOF
 - Offer notched 5-minute to 24-hour RPOs and UTC-bucketed retention within the latest 24 hours.
 - Keep destination replicas inert and undefined while recording verified recovery-point inventory.
 - Capture QEMU Guest Agent consistency/network metadata and TPM/NVRAM checkpoint evidence.
-- Preserve protocol-5 migration compatibility; activation and automatic failover remain out of beta1.
+- Preserve protocol-5 migration compatibility; activation remains disabled while beta2 fencing is developed.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF

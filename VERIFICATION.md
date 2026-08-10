@@ -62,3 +62,7 @@ Beta1 retains migration protocol `5` and adds independently negotiated scheduled
 - The rebuilt package was reinstalled on both disposable Unraid hosts. A final manual DEV01-to-DEV02 zvol generation advanced the policy from generation 19 to 20, published the new point, retained one point as configured, and completed archive cleanup with no orphan archives. The repeated two-host audit found every policy `IDLE`, every incoming manifest `READY`, all VMs powered off, both schedulers alive, no receive tokens and no defined incoming-replica UUIDs.
 
 The beta1 limitation remains deliberate: TPM/NVRAM promotion is opportunistic when a scheduled or manual run observes the VM powered off; beta1 has no libvirt lifecycle watcher, activation, failover, quorum, managed autostart or failback. All test VMs were powered off after the final regression.
+
+## 0.4.0-beta2 development verification
+
+Beta2 development began from the merged and released beta1 commit. The initial slice adds pure protocol-range parsing and highest-common-version negotiation while retaining `UNM_PROTOCOL = 5`, `UNM_PROTOCOL_MIN = 5` and `UNM_PROTOCOL_MAX = 5`; it does not advertise protocol 6, recovery activation or failover. Legacy v5, future 5-to-6 downgrade, v6-only incompatibility and future v6 selection cases have PHP behavioral coverage. `scripts/verify.sh` passed with all PHP, shell, static and syntax checks on the Linux development VM. Beta2 has not been deployed to the Unraid lab yet; both hosts remain on the released beta1 artifacts.

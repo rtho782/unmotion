@@ -1,10 +1,10 @@
-# Scheduled replication in 0.4.0-beta1
+# Scheduled replication transport
 
 ## Scope
 
 Scheduled replication maintains verified ZFS recovery points for a VM on a paired Unraid host. The source remains authoritative. The destination stores inert replica objects and metadata, but does not define, mount, expose or start the VM.
 
-Beta1 is the replication transport and inventory layer only. It does not provide recovery activation, automatic failover, witness voting, managed autostart, failback or replica promotion. Those features need an activation protocol that can prove the source copy is not running before the destination starts.
+Beta1 is the replication transport and inventory layer only. Beta2 begins the separately fenced recovery design, but replica activation remains disabled until that contract is implemented and tested. See [RECOVERY.md](RECOVERY.md).
 
 ## Storage boundary
 

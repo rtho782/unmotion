@@ -85,7 +85,14 @@ $capturedAtWins=[
 expectSame('captured-newest',unmSelectReplicationRetentionPoints($capturedAtWins,3600,1,$retentionNow)[0]['id'],'retention orders by capture time rather than manifest write time');
 
 expectSame(5,UNM_PROTOCOL,'migration protocol remains compatible');
+expectSame(5,UNM_PROTOCOL_MIN,'beta2 protocol range minimum remains v5');
+expectSame(5,UNM_PROTOCOL_MAX,'beta2 does not advertise v6 before recovery fencing exists');
 expectSame(1,UNM_REPLICATION_PROTOCOL,'replication protocol is independently capability-gated');
+expectSame(['min'=>5,'max'=>5],unmProtocolRange(['protocolVersion'=>5]),'legacy v5 capability range');
+expectSame(5,unmNegotiateProtocol(['protocolMinVersion'=>5,'protocolMaxVersion'=>5],['protocolMinVersion'=>5,'protocolMaxVersion'=>6]),'future range negotiates down to v5');
+expectSame(null,unmNegotiateProtocol(['protocolMinVersion'=>5,'protocolMaxVersion'=>5],['protocolMinVersion'=>6,'protocolMaxVersion'=>6]),'v6-only peer is incompatible until local v6 support exists');
+expectSame(6,unmNegotiateProtocol(['protocolMinVersion'=>5,'protocolMaxVersion'=>6],['protocolMinVersion'=>6,'protocolMaxVersion'=>6]),'future peers select the highest common protocol');
+try{unmProtocolRange(['protocolMinVersion'=>6,'protocolMaxVersion'=>5]);fwrite(STDERR,"Invalid peer protocol range was accepted.\n");exit(1);}catch(InvalidArgumentException $expected){}
 $replicaUuid='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 expectSame(false,unmReplicaVmUuidUndefinedInInventory("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\n".strtoupper($replicaUuid)."\n",$replicaUuid),'replica UUID collision is case insensitive');
 expectSame(true,unmReplicaVmUuidUndefinedInInventory("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\n",$replicaUuid),'unrelated destination UUID is allowed');

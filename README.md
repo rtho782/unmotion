@@ -1,10 +1,10 @@
 # unMotion
 
-unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. The current development release is `0.4.0-beta1`; the recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
+unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. The current development branch targets `0.4.0-beta2`; the latest published prerelease is `0.4.0-beta1`, and the recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
 
 > **Beta software:** migrations change VM definitions and storage. Use disposable test hosts and verified backups. Do not treat a successful preflight as a substitute for a recovery plan.
 
-## What beta1 supports
+## What the beta1 transport supports
 
 - Peer discovery and reciprocal pairing over SSH (protocol version 5).
 - Cold migration of powered-off VMs.
@@ -25,12 +25,16 @@ unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, 
 
 Replication deliberately excludes shared datasets, non-ZFS storage, encrypted datasets and qcow2 backing chains. unMotion does not convert those layouts; use the ZFS Master plugin or another storage tool before enabling replication.
 
-`0.4.0-beta1` does **not** activate a replica or implement automatic failover, quorum/witness checks, managed autostart, split-brain prevention, or failback. Those operations require a later guarded recovery protocol. A recovery point without verified Guest Agent evidence is storage-only and will not be eligible for that future activation path.
+`0.4.0-beta1` does **not** activate a replica or implement automatic failover, quorum/witness checks, managed autostart, split-brain prevention, or failback. A recovery point without verified Guest Agent evidence is storage-only and will not be eligible for a future activation path.
+
+## Beta2 development
+
+Beta2 begins the guarded recovery layer. The first committed slice adds explicit protocol-range negotiation scaffolding while continuing to advertise only protocol 5; protocol 6 will not be enabled until its fencing and witness RPCs, mixed-version behavior, and destructive lab tests exist. Recovery UI remains disabled while the state machine in [docs/RECOVERY.md](docs/RECOVERY.md) is implemented.
 
 ## Repository layout
 
 ```text
-src/rootfs/                 Current 0.4.0-beta1 package source, derived from beta7
+src/rootfs/                 Current 0.4.0-beta2 development package source, derived from beta7
 release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
@@ -79,4 +83,4 @@ Outputs are written to `dist/`. The build creates a new package from the source 
 
 Read [AGENTS.md](AGENTS.md) before changing behavior. The minimum safe workflow is documented in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and the proposed isolated lab in [docs/TEST-ENVIRONMENT.md](docs/TEST-ENVIRONMENT.md).
 
-The recovered baseline provenance remains independently verifiable. Development releases are exercised on the disposable `UNRAID-DEV01`/`02` lab, including interrupted receives and outer-VM power loss. Clone-specific behavior is documented in [docs/CLONING.md](docs/CLONING.md); scheduled replication and its beta1 safety boundary are documented in [docs/REPLICATION.md](docs/REPLICATION.md).
+The recovered baseline provenance remains independently verifiable. Development releases are exercised on the disposable `UNRAID-DEV01`/`02` lab, including interrupted receives and outer-VM power loss. Clone-specific behavior is documented in [docs/CLONING.md](docs/CLONING.md); scheduled replication is documented in [docs/REPLICATION.md](docs/REPLICATION.md), and beta2 recovery/fencing work in [docs/RECOVERY.md](docs/RECOVERY.md).

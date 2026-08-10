@@ -1,8 +1,13 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.0-beta1';
+const UNM_VERSION = '0.4.0-beta2';
 const UNM_PROTOCOL = 5;
+// Beta2 begins explicit range negotiation without advertising protocol 6 yet.
+// Raise UNM_PROTOCOL_MAX only when the v6 fencing/witness RPCs and mixed-peer
+// tests are implemented; legacy migration continues to use UNM_PROTOCOL.
+const UNM_PROTOCOL_MIN = 5;
+const UNM_PROTOCOL_MAX = 5;
 const UNM_BOOT_DIR = '/boot/config/plugins/unmotion';
 const UNM_CONFIG_JSON = UNM_BOOT_DIR . '/config.json';
 const UNM_CONFIG_CFG = UNM_BOOT_DIR . '/settings.cfg';
@@ -14,6 +19,20 @@ const UNM_REPLICATIONS_DIR = UNM_BOOT_DIR . '/replications';
 const UNM_REPLICAS_DIR = UNM_BOOT_DIR . '/replicas';
 const UNM_HOST_ID_FILE = UNM_BOOT_DIR . '/host_id';
 const UNM_REPLICATION_PROTOCOL = 1;
+
+function unmProtocolRange(array $capabilities): array {
+    $legacy=(int)($capabilities['protocolVersion']??0);
+    $minimum=array_key_exists('protocolMinVersion',$capabilities)?(int)$capabilities['protocolMinVersion']:$legacy;
+    $maximum=array_key_exists('protocolMaxVersion',$capabilities)?(int)$capabilities['protocolMaxVersion']:$legacy;
+    if($minimum<1||$maximum<1||$minimum>$maximum||$maximum>255)throw new InvalidArgumentException('Peer protocol range is invalid.');
+    return ['min'=>$minimum,'max'=>$maximum];
+}
+
+function unmNegotiateProtocol(array $localCapabilities,array $remoteCapabilities): ?int {
+    $local=unmProtocolRange($localCapabilities);$remote=unmProtocolRange($remoteCapabilities);
+    $minimum=max($local['min'],$remote['min']);$maximum=min($local['max'],$remote['max']);
+    return $maximum>=$minimum?$maximum:null;
+}
 
 function unmEnsureDirs(): void {
     foreach ([UNM_BOOT_DIR, UNM_PEERS_DIR, UNM_JOBS_DIR, UNM_OWNERSHIP_DIR, UNM_SEEDS_DIR, UNM_REPLICATIONS_DIR, UNM_REPLICAS_DIR] as $dir) {
@@ -779,7 +798,7 @@ function unmCapabilities(): array {
     $isoContaining=is_dir($cfg['iso_dir'])?unmZfsDatasetForPath($cfg['iso_dir'],false):null;
     $checks=['image_dir_exists'=>is_dir($cfg['image_dir']),'image_dir_writable'=>is_dir($cfg['image_dir'])&&is_writable($cfg['image_dir']),'iso_dir_exists'=>is_dir($cfg['iso_dir']),'iso_dir_writable'=>is_dir($cfg['iso_dir'])&&is_writable($cfg['iso_dir']),'zvol_dataset_exists'=>$zvolReady];
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
-    return ['protocolVersion'=>UNM_PROTOCOL,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
+    return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
         'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true],
