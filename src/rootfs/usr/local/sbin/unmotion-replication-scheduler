@@ -1,0 +1,103 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+BASE=/boot/config/plugins/unmotion
+POLICIES="$BASE/replications"
+RUNTIME=/var/run/unmotion/replications
+LOG_DIR=/var/log/unmotion
+PID_FILE=/var/run/unmotion-replication-scheduler.pid
+ONCE=0
+[[ "${1:-}" == --once ]] && ONCE=1
+
+mkdir -p "$POLICIES" "$RUNTIME" "$LOG_DIR"
+exec 9>/var/run/unmotion-replication-scheduler.lock
+flock -n 9 || exit 0
+printf '%s\n' "$$" > "$PID_FILE"
+trap 'rm -f -- "$PID_FILE"' EXIT
+trap 'exit 0' INT TERM
+
+declare -A RETRY_AT=()
+declare -A FAILURE_COUNT=()
+declare -A ACTIVE_PID=()
+
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+runtime_value(){
+  local id="$1" key="$2" file
+  file="$RUNTIME/$id.json"
+  [[ -f "$file" ]] || return 1
+  php -r '$d=json_decode(file_get_contents($argv[1]),true);$v=is_array($d)?($d[$argv[2]]??null):null;if(is_scalar($v))echo $v;' "$file" "$key"
+}
+policy_last_slot(){
+  php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];if(!is_array($p))exit(1);if(!is_array($s))$s=[];echo (int)($s["lastScheduledSlot"]??$s["lastSuccessfulSlot"]??0);' "$1" "$(dirname "$1")/state.json"
+}
+policy_needs_maintenance(){
+  php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];echo is_array($d)&&(!empty($d["pending"])||!empty($d["sourceCleanupPending"])||!empty($d["destinationPrunePending"])||!empty($d["destinationInventoryPending"]))?1:0;' "$(dirname "$1")/state.json"
+}
+policy_rows(){
+  php -r '
+  require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
+  foreach(glob($argv[1]."/*/policy.json")?:[] as $path){
+    $d=json_decode((string)@file_get_contents($path),true);if(!is_array($d))continue;
+    $id=(string)($d["id"]??basename(dirname($path)));
+    if(!preg_match("/^[A-Za-z0-9_.-]{8,80}$/",$id)||empty($d["enabled"]))continue;
+    $state=strtoupper((string)($d["state"]??""));if(in_array($state,["DISABLED","PAUSED","REMOVING","REMOVED"],true))continue;
+    try{$seconds=unmValidateReplicationRpo((int)($d["rpoSeconds"]??0));unmValidateReplicationRetention($seconds,(int)($d["retentionCount"]??0));unmReplicationTpmInitialMode((string)($d["tpmInitialMode"]??"none"));}catch(Throwable $ignored){continue;}
+    echo $id,"\t",$seconds,"\t",$path,"\n";
+  }' "$POLICIES"
+}
+pid_is_worker(){
+  local pid="$1" id="$2" index
+  local -a arguments=()
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/cmdline" ]] || return 1
+  mapfile -d '' -t arguments < "/proc/$pid/cmdline" || return 1
+  for ((index=0;index+1<${#arguments[@]};index++)); do
+    [[ "${arguments[index]}" == /usr/local/sbin/unmotion-replication-worker && "${arguments[index+1]}" == "$id" ]] && return 0
+  done
+  return 1
+}
+launch_worker(){
+  local id="$1" slot="$2" logfile pid
+  logfile="$LOG_DIR/replication-$id-launcher.log"
+  log "Scheduling replication $id for UTC slot $slot."
+  nohup setsid /usr/local/sbin/unmotion-replication-worker "$id" "$slot" >>"$logfile" 2>&1 &
+  pid=$!
+  ACTIVE_PID[$id]="$pid"
+  FAILURE_COUNT[$id]=$((${FAILURE_COUNT[$id]:-0}+1))
+  local exponent="${FAILURE_COUNT[$id]}" delay=60
+  if ((exponent>=6)); then delay=1800; elif ((exponent>1)); then delay=$((60 << (exponent-1))); fi
+  RETRY_AT[$id]=$(( $(date +%s) + delay ))
+}
+
+run_cycle(){
+  local now id interval path slot last maintenance runtime_pid runtime_state pid
+  now="$(date +%s)"
+  while IFS=$'\t' read -r id interval path; do
+    [[ -n "$id" && "$interval" =~ ^[0-9]+$ && -f "$path" ]] || continue
+    slot=$((now-now%interval))
+    last="$(policy_last_slot "$path" 2>/dev/null || echo 0)"
+    maintenance="$(policy_needs_maintenance "$path" 2>/dev/null || echo 0)"
+    if ((last>=slot)) && [[ "$maintenance" != 1 ]]; then
+      FAILURE_COUNT[$id]=0
+      unset 'RETRY_AT[$id]'
+      continue
+    fi
+
+    pid="${ACTIVE_PID[$id]:-}"
+    if [[ -n "$pid" ]] && pid_is_worker "$pid" "$id"; then continue; fi
+    unset 'ACTIVE_PID[$id]'
+    runtime_pid="$(runtime_value "$id" pid 2>/dev/null || true)"
+    runtime_state="$(runtime_value "$id" state 2>/dev/null || true)"
+    if [[ "$runtime_state" =~ ^(LOCKING|PREFLIGHT|PROBING_GUEST|QUIESCING|SNAPSHOTTING|THAWING|CAPTURING_HOST_STATE|TRANSFERRING|VERIFYING|PUBLISHING|COMMITTING|PRUNING)$ ]] && pid_is_worker "$runtime_pid" "$id"; then
+      ACTIVE_PID[$id]="$runtime_pid"
+      continue
+    fi
+    ((now>=${RETRY_AT[$id]:-0})) || continue
+    launch_worker "$id" "$slot"
+  done < <(policy_rows)
+}
+
+while :; do
+  run_cycle
+  ((ONCE==0)) || break
+  sleep 15 & wait $!
+done

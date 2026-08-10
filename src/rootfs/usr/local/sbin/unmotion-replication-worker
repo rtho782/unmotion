@@ -1,0 +1,581 @@
+#!/bin/bash
+set -Eeuo pipefail
+umask 077
+
+POLICY_ID="${1:-}"
+REQUESTED_SLOT="${2:-0}"
+[[ "$POLICY_ID" =~ ^[A-Za-z0-9_.-]{8,80}$ ]] || { echo 'Invalid replication id' >&2; exit 2; }
+[[ "$REQUESTED_SLOT" =~ ^[0-9]+$ ]] || { echo 'Invalid replication slot' >&2; exit 2; }
+
+BASE=/boot/config/plugins/unmotion
+DIR="$BASE/replications/$POLICY_ID"
+POLICY_JSON="$DIR/policy.json"
+DURABLE_STATE="$DIR/state.json"
+RUNTIME_ROOT="/var/lib/unmotion/replications/$POLICY_ID"
+RUN_DIR="$RUNTIME_ROOT/run"
+LOG_DIR=/var/log/unmotion
+LOG="$LOG_DIR/replication-$POLICY_ID.log"
+LOCAL_HOST_ID_FILE="$BASE/host_id"
+[[ -f "$POLICY_JSON" && -f "$LOCAL_HOST_ID_FILE" ]] || { echo 'Replication policy or local host identity is missing' >&2; exit 3; }
+mkdir -p "$RUN_DIR" "$LOG_DIR" /var/run/unmotion/replications
+touch "$LOG"; chmod 600 "$LOG"
+
+for command in php virsh zfs ssh rsync flock sha256sum tar gzip base64 timeout sort stat awk grep; do
+  command -v "$command" >/dev/null 2>&1 || { echo "Required command is unavailable: $command" >&2; exit 4; }
+done
+
+export UNM_REPLICATION_PID="$$"
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+state(){ local extra="${4:-}"; [[ -n "$extra" ]] || extra='{}'; /usr/local/sbin/unmotion-replication-state "$POLICY_ID" "$1" "$2" "$3" "$extra"; log "[$1 $2%] $3"; }
+sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
+json_get(){ php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(explode(".",$argv[2]) as $k){if(!is_array($d)||!array_key_exists($k,$d))exit(3);$d=$d[$k];}if(is_bool($d))echo $d?"1":"0";elseif(is_array($d))echo json_encode($d);elseif($d!==null)echo $d;' "$1" "$2"; }
+atomic_state_update(){
+  local mode="$1" arg="${2:-}"
+  php -r '
+  $path=$argv[1];$mode=$argv[2];$arg=$argv[3]??"";$d=is_file($path)?json_decode(file_get_contents($path),true):[];if(!is_array($d))$d=[];
+  if($mode==="pending"){$p=json_decode(file_get_contents($arg),true);if(!is_array($p))exit(2);$d["pending"]=$p;}
+  elseif($mode==="clear-source-cleanup")unset($d["sourceCleanupPending"]);
+  elseif($mode==="set-prune"){$p=json_decode(file_get_contents($arg),true);if(!is_array($p))exit(2);$d["destinationPrunePending"]=$p;}
+  elseif($mode==="clear-prune")unset($d["destinationPrunePending"]);
+  elseif($mode==="clear-inventory")unset($d["destinationInventoryPending"]);
+  elseif($mode==="commit"){
+    $p=json_decode(file_get_contents($arg),true);if(!is_array($p))exit(2);$old=(string)($d["baseSnapshot"]??"");$oldGuids=(array)($d["baseGuids"]??[]);$cleanup=[];
+    if($old!=="")foreach(($p["storage"]??[]) as $item){$src=(string)($item["source"]??"");if($src!=="")$cleanup[]=["dataset"=>$src,"snapshot"=>$old,"guid"=>(string)($oldGuids[$src]??"")];}
+    $d["generation"]=(int)$p["generation"];$d["baseSnapshot"]=(string)$p["snapshot"];$d["basePointId"]=(string)$p["id"];$d["baseStorage"]=(array)($p["storage"]??[]);$d["baseGuids"]=(array)($p["sourceGuids"]??[]);
+    $d["state"]="IDLE";$d["lastSuccessfulSlot"]=(int)$p["slotEpoch"];$d["lastScheduledSlot"]=(int)$p["slotEpoch"];$d["lastSyncAt"]=date(DATE_ATOM);$d["lastSuccessAt"]=$d["lastSyncAt"];$d["lastCapturedAt"]=(string)($p["capturedAt"]??$d["lastSyncAt"]);$d["lastCapturedAtEpoch"]=(int)($p["capturedAtEpoch"]??0);$d["nextDueAt"]=gmdate("c",(int)$p["slotEpoch"]+max(300,(int)($p["rpoSeconds"]??300)));
+    if(!empty($p["hostState"])){$d["lastHostState"]=$p["hostState"];if(($p["hostState"]["quality"]??"")==="safe")$d["lastSafeHostState"]=$p["hostState"];}
+    if($cleanup)$d["sourceCleanupPending"]=$cleanup;else unset($d["sourceCleanupPending"]);
+    $d["destinationInventoryPending"]=true;
+    unset($d["pending"]);
+  } else exit(2);
+  $d["updatedAt"]=date(DATE_ATOM);$dir=dirname($path);if(!is_dir($dir))mkdir($dir,0700,true);$tmp=$path.".tmp.".getmypid();file_put_contents($tmp,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n",LOCK_EX);chmod($tmp,0600);rename($tmp,$path);' "$DURABLE_STATE" "$mode" "$arg"
+}
+
+VM_UUID="$(json_get "$POLICY_JSON" vmUuid)"
+PEER_ID="$(json_get "$POLICY_JSON" peerId)"
+PEER_HOST_ID="$(json_get "$POLICY_JSON" peerHostId)"
+TPM_INITIAL_MODE="$(json_get "$POLICY_JSON" tpmInitialMode 2>/dev/null || echo none)"
+[[ "$TPM_INITIAL_MODE" == best-effort-stun ]] && TPM_INITIAL_MODE=best-effort
+[[ "$TPM_INITIAL_MODE" =~ ^(power-cycle|best-effort|none)$ ]] || TPM_INITIAL_MODE=none
+RPO_SECONDS="$(json_get "$POLICY_JSON" rpoSeconds 2>/dev/null || echo 0)"
+[[ "$VM_UUID" =~ ^[A-Fa-f0-9-]{32,36}$ && "$PEER_ID" =~ ^[A-Za-z0-9_.-]+$ && -n "$PEER_HOST_ID" ]] || { state FAILED 0 'Replication policy identity is invalid'; exit 5; }
+[[ "$(json_get "$POLICY_JSON" enabled 2>/dev/null || echo 0)" == 1 ]] || { state PAUSED 0 'Replication policy is paused'; exit 0; }
+PEERCFG="$BASE/peers/$PEER_ID.cfg"
+[[ -f "$PEERCFG" ]] || { state FAILED 0 'Replication peer configuration is missing'; exit 5; }
+# shellcheck disable=SC1090
+source "$PEERCFG"
+REMOTE="${PEER_USER}@${PEER_HOST}"
+SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }
+remote_regular_sha256(){ local path="$1"; remote "if [ -f $(sq "$path") ] && [ ! -L $(sq "$path") ]; then sha256sum -- $(sq "$path") 2>/dev/null | awk '{print \$1}'; fi"; }
+agent_call(){
+  local command="$1" input="$2" output="$3" encoded
+  encoded="$(base64 -w0 "$input")"
+  remote "/usr/local/sbin/unmotion-agent $(sq "$command") $(sq "$encoded")" > "$output"
+}
+
+state LOCKING 0 'Acquiring replication locks'
+exec 8>"/var/lock/unmotion-replication-$POLICY_ID.lock"
+flock -n 8 || exit 0
+exec 9>"/var/lock/unmotion-$VM_UUID.lock"
+flock -n 9 || { state WAITING 0 'Another unMotion operation is using this VM'; exit 75; }
+
+FAIL_RECORDED=0
+THAW_NEEDED=0
+RESUME_NEEDED=0
+RESTART_NEEDED=0
+qga_return(){ php -r '$d=json_decode(stream_get_contents(STDIN),true);$v=is_array($d)?($d["return"]??null):null;if(is_scalar($v))echo $v;' 2>/dev/null; }
+qga_thaw(){
+  local out='' status=''
+  ((THAW_NEEDED)) || return 0
+  for _attempt in 1 2 3; do
+    out="$(timeout 10 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-thaw"}' 2>&1 || true)"
+    status="$(timeout 5 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-status"}' 2>/dev/null | qga_return || true)"
+    if [[ "$status" == thawed ]]; then THAW_NEEDED=0; log "Guest filesystems thawed: $(printf '%s' "$out" | qga_return)."; return 0; fi
+    sleep 1
+  done
+  status="$(timeout 5 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-status"}' 2>/dev/null | qga_return || true)"
+  [[ "$status" == thawed ]] && { THAW_NEEDED=0; return 0; }
+  log "CRITICAL: guest filesystem thaw failed: $out"
+  return 1
+}
+restore_vm_state(){
+  local failed=0 current=''
+  if ((RESUME_NEEDED)); then timeout 15 virsh resume "$VM_UUID" >>"$LOG" 2>&1 && RESUME_NEEDED=0 || failed=1; fi
+  qga_thaw || failed=1
+  if ((RESTART_NEEDED)); then
+    current="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+    if [[ "$current" =~ ^(running|idle)$ ]]; then
+      for _attempt in {1..60}; do sleep 1; current="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"; [[ "$current" == 'shut off' ]] && break; done
+    fi
+    if [[ "$current" == 'shut off' ]]; then timeout 30 virsh start "$VM_UUID" >>"$LOG" 2>&1 && RESTART_NEEDED=0 || failed=1
+    elif [[ "$current" =~ ^(running|idle)$ ]]; then RESTART_NEEDED=0
+    else failed=1
+    fi
+  fi
+  return "$failed"
+}
+on_error(){
+  local rc=$? line="${BASH_LINENO[0]:-${LINENO:-unknown}}"
+  trap - ERR
+  FAIL_RECORDED=1
+  log "ERROR at line $line (exit $rc): ${BASH_COMMAND:-unknown}"
+  /usr/local/sbin/unmotion-replication-state "$POLICY_ID" FAILED 0 "Replication failed at line $line; see log" || true
+  return "$rc"
+}
+trap on_error ERR
+on_signal(){ trap - INT TERM; FAIL_RECORDED=1; state INTERRUPTED 0 'Replication interrupted by service shutdown or signal' || true; exit 75; }
+trap on_signal INT TERM
+trap 'rc=$?; restore_vm_state || rc=1; if ((rc!=0&&FAIL_RECORDED==0));then /usr/local/sbin/unmotion-replication-state "$POLICY_ID" FAILED 0 "Replication failed; see log" || true;fi;exit "$rc"' EXIT
+interrupt(){ FAIL_RECORDED=1; state INTERRUPTED "${2:-0}" "$1"; exit 75; }
+fail(){ FAIL_RECORDED=1; state FAILED 0 "$1"; exit "${2:-1}"; }
+
+state PREFLIGHT 2 'Validating policy, source storage and destination'
+PLAN_JSON="$RUN_DIR/storage.json"
+php -r '
+$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$items=$p["storage"]??[];if(!is_array($items)||!$items)exit(3);$seen=[];
+foreach($items as &$x){$kind=(string)($x["kind"]??"");$src=(string)($x["source"]??"");$dst=(string)($x["destination"]??"");if(!in_array($kind,["dataset","zvol"],true)||$src===""||$dst===""||str_contains($src,"@")||str_contains($dst,"@")||preg_match("/[\\x00-\\x1f\\x7f]/",$src.$dst)||str_contains($src,"..")||str_contains($dst,"..")||isset($seen[$src])||isset($seen["d:".$dst]))exit(4);$seen[$src]=1;$seen["d:".$dst]=1;}
+file_put_contents($argv[2],json_encode(array_values($items),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$POLICY_JSON" "$PLAN_JSON" || fail 'Replication storage plan is invalid or empty' 10
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$r=unmValidateReplicationRpo((int)($p["rpoSeconds"]??0));unmValidateReplicationRetention($r,(int)($p["retentionCount"]??0));unmReplicationTpmInitialMode((string)($p["tpmInitialMode"]??"none"));' "$POLICY_JSON" || fail 'Replication RPO, retention, or TPM policy is invalid' 10
+php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$p=json_decode(file_get_contents($argv[2]),true);if(!is_array($d)||!is_array($p))exit(2);if(!empty($d["baseSnapshot"])&&isset($d["baseStorage"])&&$d["baseStorage"]!==$p)exit(1);' "$DURABLE_STATE" "$PLAN_JSON" || fail 'The replication storage plan differs from the committed incremental base; remove and recreate this policy safely' 10
+
+PLAN_TSV="$RUN_DIR/storage.tsv"
+php -r '$a=json_decode(file_get_contents($argv[1]),true);foreach($a as $x){$v=[$x["kind"]??"",$x["source"]??"",$x["destination"]??""] ;echo implode("\t",array_map("base64_encode",$v)),"\n";}' "$PLAN_JSON" > "$PLAN_TSV"
+SOURCE_COUNT=0
+while IFS=$'\t' read -r ekind esource edestination; do
+  kind="$(printf '%s' "$ekind" | base64 -d)"; src="$(printf '%s' "$esource" | base64 -d)"; dst="$(printf '%s' "$edestination" | base64 -d)"
+  expected=filesystem; [[ "$kind" == zvol ]] && expected=volume
+  actual="$(zfs list -H -o type "$src" 2>/dev/null || true)"
+  [[ "$actual" == "$expected" ]] || fail "Source ZFS object is missing or has the wrong type: $src" 11
+  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo unavailable)" == off ]] || fail "Encrypted source ZFS objects are unsupported: $src" 11
+  ((SOURCE_COUNT+=1))
+done < "$PLAN_TSV"
+((SOURCE_COUNT>0)) || fail 'No dedicated ZFS objects were supplied by preflight' 11
+
+LOCAL_HOST_ID="$(tr -d '\r\n' < "$LOCAL_HOST_ID_FILE")"
+PREFLIGHT_REQUEST="$RUN_DIR/preflight-request.json"
+php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get_contents($argv[2]),true);$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$p["id"]??$argv[5],"vmUuid"=>$p["vmUuid"]??"","vmName"=>$p["vmName"]??"","storage"=>$s,"reserve"=>true];file_put_contents($argv[6],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$POLICY_JSON" "$PLAN_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$PREFLIGHT_REQUEST"
+REMOTE_PREFLIGHT="$RUN_DIR/remote-preflight.json"
+agent_call replication-preflight "$PREFLIGHT_REQUEST" "$REMOTE_PREFLIGHT" || interrupt 'Destination replication preflight is unavailable' 2
+[[ "$(json_get "$REMOTE_PREFLIGHT" accepted 2>/dev/null || echo 0)" == 1 ]] || fail "Destination rejected replication preflight: $(json_get "$REMOTE_PREFLIGHT" error 2>/dev/null || echo unknown)" 12
+[[ "$(json_get "$REMOTE_PREFLIGHT" hostId 2>/dev/null || true)" == "$PEER_HOST_ID" ]] || fail 'Destination host identity changed; re-pair it' 12
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$r=json_decode(file_get_contents($argv[1]),true);$p=json_decode(file_get_contents($argv[2]),true);if(!is_array($r)||!is_array($p)||(int)($r["replicationProtocolVersion"]??0)!==UNM_REPLICATION_PROTOCOL||($r["manifest"]["storage"]??null)!==$p)exit(1);' "$REMOTE_PREFLIGHT" "$PLAN_JSON" 2>>"$LOG" || fail 'Destination reservation does not exactly match the source storage plan or replication protocol' 12
+STATE_DIRECTORY="$(json_get "$REMOTE_PREFLIGHT" stateDirectory 2>/dev/null || true)"
+php -r '$p=$argv[1];if($p===""||!str_starts_with($p,"/mnt/")||str_contains($p,"/../")||str_ends_with($p,"/..")||preg_match("/[\\x00-\\x1f\\x7f]/",$p))exit(1);' "$STATE_DIRECTORY" || fail 'Destination returned an unsafe replica state directory' 12
+
+REMOTE_CAPS="$RUN_DIR/remote-capabilities.json"
+remote '/usr/local/sbin/unmotion-agent capabilities' > "$REMOTE_CAPS" || interrupt 'Destination capabilities are unavailable' 2
+DEST_DEDUP="$(json_get "$REMOTE_CAPS" storage.dedup 2>/dev/null || echo off)"
+DEST_COMPRESSION="$(json_get "$REMOTE_CAPS" storage.compression 2>/dev/null || echo inherit)"
+[[ "$DEST_DEDUP" =~ ^(off|on|verify)$ ]] || DEST_DEDUP=off
+[[ "$DEST_COMPRESSION" =~ ^(inherit|off|lz4|zstd|zstd-fast|gzip)$ ]] || DEST_COMPRESSION=inherit
+
+cleanup_source_pending(){
+  [[ -f "$DURABLE_STATE" ]] || return 0
+  local cleanup="$RUN_DIR/source-cleanup.tsv" failed=0
+  php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["sourceCleanupPending"]??[]) as $x)echo base64_encode((string)($x["dataset"]??"")),"\t",base64_encode((string)($x["snapshot"]??"")),"\t",base64_encode((string)($x["guid"]??"")),"\n";' "$DURABLE_STATE" > "$cleanup"
+  [[ -s "$cleanup" ]] || return 0
+  state PRUNING 3 'Completing exact source snapshot cleanup from the previous run'
+  while IFS=$'\t' read -r edataset esnapshot eguid; do
+    dataset="$(printf '%s' "$edataset" | base64 -d)"; snapshot="$(printf '%s' "$esnapshot" | base64 -d)"; expected_guid="$(printf '%s' "$eguid" | base64 -d)"
+    [[ -n "$dataset" && -n "$snapshot" && "$dataset" != *'@'* && "$snapshot" != *'/'* && "$expected_guid" =~ ^[0-9]+$ ]] || { failed=1; continue; }
+    full="$dataset@$snapshot"
+    zfs list -H -t snapshot "$full" >/dev/null 2>&1 || continue
+    [[ "$(zfs get -H -o value guid "$full" 2>/dev/null || true)" == "$expected_guid" ]] || { failed=1; continue; }
+    zfs release "unmotion:replication:$POLICY_ID" "$full" >>"$LOG" 2>&1 || true
+    if zfs holds -H "$full" 2>/dev/null | awk -F '\t' -v t="unmotion:replication:$POLICY_ID" '$2==t{f=1}END{exit f?0:1}'; then failed=1; continue; fi
+    zfs destroy "$full" >>"$LOG" 2>&1 || failed=1
+  done < "$cleanup"
+  ((failed==0)) || interrupt 'Exact source snapshot cleanup is incomplete; no newer generation will be created' 3
+  atomic_state_update clear-source-cleanup
+}
+retry_destination_prune(){
+  [[ -f "$DURABLE_STATE" ]] || return 0
+  local payload="$RUN_DIR/pending-prune.json" reply="$RUN_DIR/pending-prune-reply.json"
+  rm -f -- "$payload" "$reply"
+  php -r '$d=json_decode(file_get_contents($argv[1]),true);$p=$d["destinationPrunePending"]??null;if(is_array($p))file_put_contents($argv[2],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$DURABLE_STATE" "$payload"
+  [[ -s "$payload" ]] || return 0
+  state PRUNING 4 'Completing exact destination pruning from the previous run'
+  agent_call replication-prune "$payload" "$reply" || interrupt 'Destination prune is pending; no newer generation will be created' 4
+  atomic_state_update clear-prune
+}
+reconcile_destination_retention(){
+  [[ "$(json_get "$DURABLE_STATE" destinationInventoryPending 2>/dev/null || echo 0)" == 1 ]] || return 0
+  local inventory_request="$RUN_DIR/inventory-request.json" inventory_reply="$RUN_DIR/inventory-reply.json" prune_request="$RUN_DIR/prune-request.json" prune_reply="$RUN_DIR/prune-reply.json"
+  php -r '$o=["sourceHostId"=>$argv[1],"destinationHostId"=>$argv[2],"replicationId"=>$argv[3],"vmUuid"=>$argv[4]];file_put_contents($argv[5],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$inventory_request"
+  rm -f -- "$inventory_reply" "$prune_request" "$prune_reply"
+  agent_call replication-inventory "$inventory_request" "$inventory_reply" || interrupt 'Destination inventory reconciliation is pending; no newer generation will be created' 94
+  php -r '
+  require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$reply=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$policy=json_decode(file_get_contents($argv[2]),true);$points=$reply["manifest"]["points"]??$reply["points"]??[];if(!is_array($points)||!is_array($policy))exit(2);$now=time();$ids=[];foreach($points as $p){if(!is_array($p))exit(2);$id=(string)($p["id"]??"");$ts=unmReplicationPointTimestamp($p);if($id===""||isset($ids[$id])||$ts<=0)exit(2);if($ts>$now)exit(0);$ids[$id]=true;}
+  $kept=unmSelectReplicationRetentionPoints($points,(int)$policy["rpoSeconds"],(int)$policy["retentionCount"],$now);$selected=[];foreach($kept as $p){$id=(string)($p["id"]??"");if($id!=="")$selected[$id]=true;}
+  $prune=[];foreach($points as $p){$id=(string)($p["id"]??"");if($id!==""&&isset($selected[$id]))continue;$snaps=[];foreach(($p["storage"]??[]) as $s){$dataset=(string)($s["destination"]??$s["dataset"]??"");$snapshot=(string)($s["snapshot"]??$p["snapshot"]??"");if($dataset!==""&&$snapshot!=="")$snaps[]=["dataset"=>$dataset,"snapshot"=>$snapshot];}if($id!==""&&$snaps)$prune[]=["id"=>$id,"snapshots"=>$snaps];}
+  if($prune){$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$argv[5],"vmUuid"=>$argv[6],"points"=>$prune];file_put_contents($argv[7],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");}' "$inventory_reply" "$POLICY_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$prune_request" || interrupt 'Destination inventory response is invalid; no recovery point was pruned' 94
+  if [[ -s "$prune_request" ]]; then
+    atomic_state_update set-prune "$prune_request"
+    state PRUNING 96 'Pruning exact destination recovery points'
+    agent_call replication-prune "$prune_request" "$prune_reply" || interrupt 'Destination pruning is pending; the new recovery point remains valid' 96
+    atomic_state_update clear-prune
+  fi
+  atomic_state_update clear-inventory
+}
+cleanup_source_pending
+retry_destination_prune
+reconcile_destination_retention
+
+LAST_SLOT="$(json_get "$DURABLE_STATE" lastScheduledSlot 2>/dev/null || echo 0)"
+EFFECTIVE_SLOT="$REQUESTED_SLOT"; ((EFFECTIVE_SLOT>0)) || EFFECTIVE_SLOT="$(date +%s)"
+PENDING_JSON="$RUN_DIR/pending.json"
+rm -f -- "$PENDING_JSON"
+php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$p=is_array($d)?($d["pending"]??null):null;if(is_array($p))file_put_contents($argv[2],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$DURABLE_STATE" "$PENDING_JSON"
+if [[ -s "$PENDING_JSON" ]]; then
+  GENERATION="$(json_get "$PENDING_JSON" generation)"; POINT_ID="$(json_get "$PENDING_JSON" id)"; SNAPSHOT_NAME="$(json_get "$PENDING_JSON" snapshot)"; SLOT="$(json_get "$PENDING_JSON" slotEpoch)"
+  log "Resuming pending replication point $POINT_ID."
+else
+  if ((EFFECTIVE_SLOT<=LAST_SLOT)); then state IDLE 100 'Replication is current'; trap - EXIT; exit 0; fi
+  GENERATION=$(( $(json_get "$DURABLE_STATE" generation 2>/dev/null || echo 0) + 1 ))
+  SLOT="$EFFECTIVE_SLOT"
+  policy_hash="$(printf '%s' "$POLICY_ID" | sha256sum | awk '{print substr($1,1,12)}')"
+  SNAPSHOT_NAME="unmotion-rpl-${policy_hash}-g${GENERATION}"
+  POINT_ID="point-${SLOT}-g${GENERATION}"
+  php -r '$storage=json_decode(file_get_contents($argv[1]),true);$slot=(int)$argv[5];$p=["id"=>$argv[2],"generation"=>(int)$argv[3],"snapshot"=>$argv[4],"slotEpoch"=>$slot,"scheduledAt"=>gmdate("c",$slot),"rpoSeconds"=>(int)$argv[6],"createdAt"=>gmdate("c"),"consistency"=>"crash-consistent","replicationOnly"=>true,"storage"=>$storage];file_put_contents($argv[7],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PLAN_JSON" "$POINT_ID" "$GENERATION" "$SNAPSHOT_NAME" "$SLOT" "$RPO_SECONDS" "$PENDING_JSON"
+  atomic_state_update pending "$PENDING_JSON"
+fi
+php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get_contents($argv[2]),true);if(!is_array($p)||!is_array($s)||($p["storage"]??[])!==$s)exit(1);' "$PENDING_JSON" "$PLAN_JSON" || fail 'The VM storage plan changed while a replication point was pending; restore the prior plan or remove the policy safely' 13
+
+SOURCE_XML="$RUN_DIR/source.xml"
+virsh dumpxml "$VM_UUID" --inactive > "$SOURCE_XML" || fail 'Source VM is no longer defined' 13
+(( $(stat -c %s "$SOURCE_XML") <= 524288 )) || fail 'Source VM XML is too large for inert recovery metadata' 13
+php -r '
+require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
+$plan=json_decode(file_get_contents($argv[1]),true);if(!is_array($plan))exit(2);
+$expected=[];foreach($plan as $item){$source=(string)($item["source"]??"");if($source!=="")$expected[$source]=true;if(($item["kind"]??"")==="dataset"){$mount=(string)($item["sourceMountpoint"]??"");$paths=[];foreach(($item["files"]??[]) as $file){$path=(string)($file["source"]??"");if($path!=="")$paths[]=$path;}if(!$paths||!unmCloneDatasetIsolated($source,$mount,$paths)){fwrite(STDERR,"Dataset is no longer dedicated to this VM: ".$source."\n");exit(4);}}elseif(($item["kind"]??"")==="zvol"&&unmReplicationZvolUsedByOtherVm($source,$argv[2])){fwrite(STDERR,"Zvol is referenced by another VM or ownership could not be proven: ".$source."\n");exit(5);}}
+$expected=array_keys($expected);sort($expected,SORT_STRING);$actual=unmVmReplicationSources(unmParseVm($argv[2]));
+if($expected!==$actual){fwrite(STDERR,"VM disk layout changed after replication was configured.\n");exit(3);}' "$PLAN_JSON" "$VM_UUID" || fail 'Source storage no longer matches its validated dedicated replication plan' 13
+SOURCE_XML_SHA256="$(sha256sum "$SOURCE_XML" | awk '{print $1}')"
+verify_source_xml_unchanged(){
+  local check="$RUN_DIR/source-check.xml" hash
+  virsh dumpxml "$VM_UUID" --inactive > "$check" || return 1
+  hash="$(sha256sum "$check" | awk '{print $1}')"
+  [[ "$hash" == "$SOURCE_XML_SHA256" ]]
+}
+PENDING_XML_SHA256="$(json_get "$PENDING_JSON" sourceXmlSha256 2>/dev/null || true)"
+if [[ -n "$PENDING_XML_SHA256" ]]; then
+  [[ "$PENDING_XML_SHA256" == "$SOURCE_XML_SHA256" ]] || fail 'Source VM XML changed while this replication point was pending; refusing to publish mismatched recovery material' 13
+else
+  php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$p["sourceXmlSha256"]=$argv[2];file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$SOURCE_XML_SHA256"
+  atomic_state_update pending "$PENDING_JSON"
+fi
+VM_STATE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+QGA_INFO="$RUN_DIR/qga-info.json"; QGA_NETWORK_RAW="$RUN_DIR/qga-network-raw.json"; QGA_NETWORK="$RUN_DIR/qga-network.json"
+QGA_AVAILABLE=0; QGA_NETWORK_OK=0; QUIESCED=0; POWERED_OFF_POINT=0; PENDING_GUEST_RECORDED=0
+[[ "$VM_STATE" == 'shut off' ]] && POWERED_OFF_POINT=1
+qga_has_commands(){
+  php -r '$d=json_decode(file_get_contents($argv[1]),true);$need=array_slice($argv,2);$have=[];foreach(($d["return"]["supported_commands"]??[]) as $x)if(!empty($x["enabled"]))$have[(string)($x["name"]??"")]=1;foreach($need as $n)if(empty($have[$n]))exit(1);' "$QGA_INFO" "$@"
+}
+normalise_network(){
+  php -r '
+  $d=json_decode(file_get_contents($argv[1]),true);$out=["observedAt"=>gmdate("c"),"interfaces"=>[],"selectedProbeAddress"=>""];
+  foreach(($d["return"]??[]) as $i){$mac=strtolower((string)($i["hardware-address"]??""));$addresses=[];foreach(($i["ip-addresses"]??[]) as $a){$ip=(string)($a["ip-address"]??"");$family=(string)($a["ip-address-type"]??"");if(!filter_var($ip,FILTER_VALIDATE_IP))continue;$packed=@inet_pton($ip);if($packed===false)continue;$unusable=false;if(strlen($packed)===4){$first=ord($packed[0]);$second=ord($packed[1]);$unusable=$ip==="0.0.0.0"||$first===127||($first===169&&$second===254)||($first>=224&&$first<=239);}elseif(strlen($packed)===16){$unusable=$packed===str_repeat("\0",16)||$packed===str_repeat("\0",15)."\1"||ord($packed[0])===255||(ord($packed[0])===254&&(ord($packed[1])&192)===128);}if($unusable)continue;$addresses[]=["address"=>$ip,"family"=>$family,"prefix"=>(int)($a["prefix"]??0)];if($out["selectedProbeAddress"]===""&&$family==="ipv4")$out["selectedProbeAddress"]=$ip;}
+    if($addresses)$out["interfaces"][]=["guestName"=>(string)($i["name"]??""),"mac"=>$mac,"addresses"=>$addresses];}
+  if($out["selectedProbeAddress"]===""&&!empty($out["interfaces"][0]["addresses"][0]["address"]))$out["selectedProbeAddress"]=$out["interfaces"][0]["addresses"][0]["address"];
+  file_put_contents($argv[2],json_encode($out,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");exit($out["selectedProbeAddress"]===""?1:0);' "$QGA_NETWORK_RAW" "$QGA_NETWORK"
+}
+
+if [[ "$(json_get "$PENDING_JSON" guestAgent.observedAt 2>/dev/null || true)" == '' ]]; then
+  rm -f -- "$QGA_INFO" "$QGA_NETWORK_RAW" "$QGA_NETWORK"
+  state PROBING_GUEST 6 'Checking QEMU Guest Agent capabilities and network metadata'
+  if [[ "$VM_STATE" =~ ^(running|idle)$ ]] && timeout 7 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-info"}' > "$QGA_INFO" 2>>"$LOG" &&
+     qga_has_commands guest-ping guest-network-get-interfaces guest-fsfreeze-status guest-fsfreeze-freeze guest-fsfreeze-thaw; then
+    QGA_AVAILABLE=1
+    if timeout 7 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-network-get-interfaces"}' > "$QGA_NETWORK_RAW" 2>>"$LOG" && normalise_network; then QGA_NETWORK_OK=1; fi
+  fi
+else
+  PENDING_GUEST_RECORDED=1
+fi
+
+TPM_PRESENT=0; grep -qE '<tpm([[:space:]>])' "$SOURCE_XML" && TPM_PRESENT=1
+PENDING_SOURCE_SNAPSHOT=0
+while IFS=$'\t' read -r _kind_b src_b _dst_b; do src="$(printf '%s' "$src_b" | base64 -d)"; if zfs list -H -t snapshot "$src@$SNAPSHOT_NAME" >/dev/null 2>&1; then PENDING_SOURCE_SNAPSHOT=1; fi; break; done < "$PLAN_TSV"
+if ((TPM_PRESENT&&PENDING_SOURCE_SNAPSHOT==0)) && [[ "$TPM_INITIAL_MODE" == power-cycle ]] &&
+   { [[ "$(json_get "$DURABLE_STATE" lastHostState.quality 2>/dev/null || true)" != safe ]] || [[ "$(json_get "$DURABLE_STATE" lastHostState.tpmPresent 2>/dev/null || true)" != 1 ]] || [[ "$(json_get "$DURABLE_STATE" lastHostState.tpmCaptured 2>/dev/null || true)" != 1 ]]; } &&
+   { [[ "$(json_get "$PENDING_JSON" hostState.quality 2>/dev/null || true)" != safe ]] || [[ "$(json_get "$PENDING_JSON" hostState.tpmPresent 2>/dev/null || true)" != 1 ]] || [[ "$(json_get "$PENDING_JSON" hostState.tpmCaptured 2>/dev/null || true)" != 1 ]]; } &&
+   [[ "$VM_STATE" =~ ^(running|idle)$ ]]; then
+  state QUIESCING 7 'Powering down VM for the initial safe TPM checkpoint'
+  RESTART_NEEDED=1
+  if ! virsh shutdown "$VM_UUID" >>"$LOG" 2>&1; then RESTART_NEEDED=0; fail 'Unable to request the initial TPM power cycle' 14; fi
+  waited=0
+  while ((waited<300)); do
+    [[ "$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r')" == 'shut off' ]] && break
+    sleep 2; ((waited+=2))
+  done
+  [[ "$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r')" == 'shut off' ]] || fail 'Initial TPM power-cycle shutdown timed out; no force-stop was attempted' 14
+  VM_STATE='shut off'; POWERED_OFF_POINT=1
+fi
+
+snapshot_count=0; SNAPSHOT_REUSED=0
+while IFS=$'\t' read -r _kind_b src_b _dst_b; do src="$(printf '%s' "$src_b" | base64 -d)"; zfs list -H -t snapshot "$src@$SNAPSHOT_NAME" >/dev/null 2>&1 && ((snapshot_count+=1)); done < "$PLAN_TSV"
+if ((snapshot_count==0)); then
+  if [[ "$VM_STATE" =~ ^(running|idle)$ ]] && ((QGA_AVAILABLE)); then
+    state QUIESCING 8 'Freezing guest filesystems'
+    pre_status="$(timeout 5 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-status"}' 2>/dev/null | qga_return || true)"
+    if [[ "$pre_status" == thawed ]]; then
+      THAW_NEEDED=1
+      freeze_out="$(timeout 8 virsh qemu-agent-command "$VM_UUID" '{"execute":"guest-fsfreeze-freeze"}' 2>>"$LOG" || true)"
+      freeze_count="$(printf '%s' "$freeze_out" | qga_return || true)"
+      if [[ "$freeze_count" =~ ^[1-9][0-9]*$ ]]; then QUIESCED=1; else log 'Guest freeze did not produce a usable quiesced state; continuing replication-only.'; fi
+    else log "Guest was not in a safely thawed state ($pre_status); continuing replication-only."; fi
+  fi
+  state SNAPSHOTTING 10 'Creating exact non-recursive consistency-group snapshot'
+  snaps=(); while IFS=$'\t' read -r _kind_b src_b _dst_b; do src="$(printf '%s' "$src_b" | base64 -d)"; snaps+=("$src@$SNAPSHOT_NAME"); done < "$PLAN_TSV"
+  zfs snapshot -o "com.unmotion:replication=$POLICY_ID" -o "com.unmotion:point=$POINT_ID" "${snaps[@]}"
+elif ((snapshot_count!=SOURCE_COUNT)); then
+  fail 'Only part of the pending multi-disk snapshot exists; refusing to create a mismatched generation' 15
+else
+  SNAPSHOT_REUSED=1
+  state SNAPSHOTTING 10 'Reusing retained pending snapshots'
+fi
+verify_source_xml_unchanged || fail 'Source VM XML changed across snapshot capture; the pending point was retained but will not be published' 13
+
+if ((SNAPSHOT_REUSED)); then
+  CAPTURED_EPOCH=0
+  while IFS=$'\t' read -r _kind_b src_b _dst_b; do src="$(printf '%s' "$src_b" | base64 -d)"; created="$(zfs get -Hp -o value creation "$src@$SNAPSHOT_NAME" 2>/dev/null || echo 0)"; [[ "$created" =~ ^[0-9]+$ ]] && ((created>CAPTURED_EPOCH)) && CAPTURED_EPOCH="$created"; done < "$PLAN_TSV"
+  ((CAPTURED_EPOCH>0)) || CAPTURED_EPOCH="$(date +%s)"
+else CAPTURED_EPOCH="$(date +%s)"
+fi
+CAPTURED_AT="$(date -u -d "@$CAPTURED_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);if(empty($p["capturedAt"])){$p["capturedAt"]=$argv[2];$p["capturedAtEpoch"]=(int)$argv[3];}file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$CAPTURED_AT" "$CAPTURED_EPOCH"
+atomic_state_update pending "$PENDING_JSON"
+
+HOLD_TAG="unmotion:replication:$POLICY_ID"
+SOURCE_SNAPSHOT_TSV="$RUN_DIR/source-snapshot-guids.tsv"; : > "$SOURCE_SNAPSHOT_TSV"
+while IFS=$'\t' read -r _kind_b src_b _dst_b; do
+  src="$(printf '%s' "$src_b" | base64 -d)"
+  [[ "$(zfs get -H -o value com.unmotion:replication "$src@$SNAPSHOT_NAME" 2>/dev/null || true)" == "$POLICY_ID" && "$(zfs get -H -o value com.unmotion:point "$src@$SNAPSHOT_NAME" 2>/dev/null || true)" == "$POINT_ID" ]] || fail "Source snapshot ownership metadata does not match pending point: $src@$SNAPSHOT_NAME" 15
+  zfs hold "$HOLD_TAG" "$src@$SNAPSHOT_NAME" 2>>"$LOG" || true
+  zfs holds -H "$src@$SNAPSHOT_NAME" 2>/dev/null | awk -F '\t' -v t="$HOLD_TAG" '$2==t{f=1}END{exit f?0:1}' || fail "Unable to hold source snapshot $src@$SNAPSHOT_NAME" 15
+  guid="$(zfs get -H -o value guid "$src@$SNAPSHOT_NAME")"; [[ "$guid" =~ ^[0-9]+$ ]] || fail "Source snapshot GUID is invalid: $src@$SNAPSHOT_NAME" 15
+  printf '%s\t%s\n' "$src_b" "$(printf '%s' "$guid" | base64 -w0)" >> "$SOURCE_SNAPSHOT_TSV"
+done < "$PLAN_TSV"
+php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$g=[];foreach(file($argv[2],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$x=explode("\t",$line);$s=base64_decode($x[0]??"",true);$v=base64_decode($x[1]??"",true);if($s===false||$v===false||!preg_match("/^\\d+$/",$v))exit(3);$g[$s]=$v;}if(isset($p["snapshotGuids"])&&$p["snapshotGuids"]!==$g)exit(4);$p["snapshotGuids"]=$g;file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$SOURCE_SNAPSHOT_TSV" || fail 'Pending source snapshot GUIDs changed; refusing to continue this generation' 15
+atomic_state_update pending "$PENDING_JSON"
+state THAWING 12 'Restoring guest filesystem state'
+qga_thaw || fail 'Guest filesystem thaw failed; manual guest inspection is required' 16
+
+if ((PENDING_GUEST_RECORDED==0)); then
+  if ((SNAPSHOT_REUSED)); then CONSISTENCY=crash-consistent
+  elif ((POWERED_OFF_POINT)); then CONSISTENCY=powered-off
+  elif ((QUIESCED)); then CONSISTENCY=filesystem-quiesced
+  else CONSISTENCY=crash-consistent
+  fi
+  RECOVERY_VERIFIED=0; ((SNAPSHOT_REUSED==0&&QGA_AVAILABLE&&QGA_NETWORK_OK&&(QUIESCED||POWERED_OFF_POINT))) && RECOVERY_VERIFIED=1
+  php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$network=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];$p["consistency"]=$argv[3];$p["replicationOnly"]=$argv[4]!=="1";$p["guestAgent"]=["verified"=>$argv[4]==="1","observedAt"=>gmdate("c"),"network"=>is_array($network)?$network:[]];file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$QGA_NETWORK" "$CONSISTENCY" "$RECOVERY_VERIFIED"
+  atomic_state_update pending "$PENDING_JSON"
+fi
+
+state CAPTURING_HOST_STATE 14 'Hashing TPM and UEFI state'
+HOST_STATE_JSON="$RUN_DIR/host-state.json"; : > "$HOST_STATE_JSON"
+if [[ "$(json_get "$PENDING_JSON" hostState.capturedAt 2>/dev/null || true)" != '' ]]; then
+  php -r '$p=json_decode(file_get_contents($argv[1]),true);$h=$p["hostState"]??null;if(!is_array($h))exit(2);file_put_contents($argv[2],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$HOST_STATE_JSON"
+  if [[ "$(json_get "$HOST_STATE_JSON" transferred 2>/dev/null || echo 0)" == 1 ]]; then
+    PENDING_CHECKPOINT_ID="$(json_get "$HOST_STATE_JSON" checkpointId 2>/dev/null || true)"; PENDING_ARCHIVE_HASH="$(json_get "$HOST_STATE_JSON" archiveSha256 2>/dev/null || true)"; PENDING_ARCHIVE_PATH="$(json_get "$HOST_STATE_JSON" archivePath 2>/dev/null || true)"
+    [[ "$PENDING_CHECKPOINT_ID" =~ ^state-[a-f0-9]{24}$ && "$PENDING_ARCHIVE_HASH" =~ ^[a-f0-9]{64}$ && "$PENDING_CHECKPOINT_ID" == "state-${PENDING_ARCHIVE_HASH:0:24}" && "$PENDING_ARCHIVE_PATH" == "${STATE_DIRECTORY%/}/$PENDING_CHECKPOINT_ID.tar.gz" ]] || fail 'Pending host-state archive metadata is unsafe or inconsistent' 17
+    REMOTE_HASH="$(remote_regular_sha256 "$PENDING_ARCHIVE_PATH" || true)"
+    if [[ "$REMOTE_HASH" != "$PENDING_ARCHIVE_HASH" ]]; then
+      ARCHIVE="$RUN_DIR/host-state.tar.gz"
+      if [[ -f "$ARCHIVE" && ! -L "$ARCHIVE" && "$(sha256sum "$ARCHIVE" | awk '{print $1}')" == "$PENDING_ARCHIVE_HASH" ]]; then
+        rsync -a --protect-args -e "$RSYNC_RSH" -- "$ARCHIVE" "$REMOTE:$PENDING_ARCHIVE_PATH" >>"$LOG" 2>&1 || fail 'Unable to restore the exact pending host-state archive on the destination' 17
+        REMOTE_HASH="$(remote_regular_sha256 "$PENDING_ARCHIVE_PATH" || true)"
+        [[ "$REMOTE_HASH" == "$PENDING_ARCHIVE_HASH" ]] || fail 'Restored pending host-state archive failed destination SHA-256 verification' 17
+      else
+        SAFE_FALLBACK_OK=0; SAFE_ID="$(json_get "$HOST_STATE_JSON" safeFallback.checkpointId 2>/dev/null || true)"; SAFE_HASH="$(json_get "$HOST_STATE_JSON" safeFallback.archiveSha256 2>/dev/null || true)"; SAFE_PATH="$(json_get "$HOST_STATE_JSON" safeFallback.archivePath 2>/dev/null || true)"
+        if [[ "$SAFE_ID" =~ ^state-[a-f0-9]{24}$ && "$SAFE_HASH" =~ ^[a-f0-9]{64}$ && "$SAFE_ID" == "state-${SAFE_HASH:0:24}" && "$SAFE_PATH" == "${STATE_DIRECTORY%/}/$SAFE_ID.tar.gz" ]]; then
+          [[ "$(remote_regular_sha256 "$SAFE_PATH" || true)" == "$SAFE_HASH" ]] && SAFE_FALLBACK_OK=1
+        fi
+        php -r '$p=json_decode(file_get_contents($argv[1]),true);$h=json_decode(file_get_contents($argv[2]),true);if(!is_array($p)||!is_array($h))exit(2);$h["quality"]="missing";$h["transferred"]=false;$h["archivePath"]="";$h["degradedAt"]=gmdate("c");if($argv[3]!=="1")unset($h["safeFallback"]);$p["hostState"]=$h;$p["replicationOnly"]=true;file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");file_put_contents($argv[2],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$HOST_STATE_JSON" "$SAFE_FALLBACK_OK"
+        atomic_state_update pending "$PENDING_JSON"
+        log 'Pending host-state archive was unavailable on both hosts; publishing this point as storage-only replication material.'
+      fi
+    fi
+  fi
+else
+NVRAM_PATH="$(php -r '$x=file_get_contents($argv[1]);if(preg_match("~<nvram\\b[^>]*>(.*?)</nvram>~s",$x,$m))echo trim(html_entity_decode(strip_tags($m[1]),ENT_QUOTES|ENT_XML1));' "$SOURCE_XML")"
+NVRAM_PRESENT=0; [[ -n "$NVRAM_PATH" ]] && NVRAM_PRESENT=1
+if [[ -n "$NVRAM_PATH" ]]; then
+  [[ "$NVRAM_PATH" == /etc/libvirt/qemu/nvram/* || "$NVRAM_PATH" == /var/lib/libvirt/qemu/nvram/* ]] && [[ -f "$NVRAM_PATH" && ! -L "$NVRAM_PATH" ]] || NVRAM_PATH=''
+fi
+TPM_DIR=''
+if ((TPM_PRESENT)) && [[ "$TPM_INITIAL_MODE" != none ]]; then
+  for candidate in "/etc/libvirt/qemu/swtpm/tpm-states/$VM_UUID" "/var/lib/libvirt/swtpm/$VM_UUID" "/var/lib/libvirt/qemu/swtpm/$VM_UUID" "/etc/libvirt/swtpm/$VM_UUID"; do
+    if [[ -d "$candidate" && ! -L "$candidate" ]]; then
+      candidate="$(readlink -f -- "$candidate")"
+      [[ -n "$candidate" && -d "$candidate" && ! -L "$candidate" ]] || fail 'TPM state directory could not be resolved safely' 17
+      if [[ -n "$TPM_DIR" && "$TPM_DIR" != "$candidate" ]]; then fail 'Multiple distinct TPM state directories match this VM UUID' 17; fi
+      TPM_DIR="$candidate"
+    fi
+  done
+fi
+TPM_CAPTURED=0; [[ -n "$TPM_DIR" ]] && TPM_CAPTURED=1
+NVRAM_CAPTURED=0; [[ -n "$NVRAM_PATH" ]] && NVRAM_CAPTURED=1
+STATE_PATHS=(); [[ -n "$NVRAM_PATH" ]] && STATE_PATHS+=("$NVRAM_PATH"); [[ -n "$TPM_DIR" ]] && STATE_PATHS+=("$TPM_DIR")
+hash_host_state(){
+  local output="$1" path file rel hash size list unsupported path_index=0
+  : > "$output"
+  for path in "${STATE_PATHS[@]}"; do
+    if [[ -d "$path" ]]; then
+      ((path_index+=1)); unsupported="$RUN_DIR/host-state-unsupported-$path_index.list"; list="$RUN_DIR/host-state-files-$path_index.list"
+      find -P "$path" -xdev -mindepth 1 ! -type d ! -type f -print0 > "$unsupported" || return 1
+      [[ ! -s "$unsupported" ]] || return 1
+      find -P "$path" -xdev -type f -print0 | sort -z > "$list" || return 1
+      while IFS= read -r -d '' file; do
+        [[ "$file" != *$'\n'* && "$file" != *$'\t'* ]] || return 1
+        rel="${file#"$path"/}"; hash="$(sha256sum -- "$file" | awk '{print $1}')"; size="$(stat -c %s -- "$file")"
+        printf 'tpm\t%s\t%s\t%s\n' "$hash" "$size" "$rel" >> "$output"
+      done < "$list"
+    else
+      hash="$(sha256sum -- "$path" | awk '{print $1}')"; size="$(stat -c %s -- "$path")"; printf 'nvram\t%s\t%s\t%s\n' "$hash" "$size" "$(basename "$path")" >> "$output"
+    fi
+  done
+  sha256sum "$output" | awk '{print $1}'
+}
+
+if ((${#STATE_PATHS[@]}>0)); then
+  CURRENT_MANIFEST="$RUN_DIR/host-state-current.sha256"
+  HASH_STATE_BEFORE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+  CURRENT_HASH="$(hash_host_state "$CURRENT_MANIFEST" || true)"
+  HASH_STATE_AFTER="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+  LAST_HASH="$(json_get "$DURABLE_STATE" lastHostState.contentSha256 2>/dev/null || true)"
+  LAST_TRANSFERRED="$(json_get "$DURABLE_STATE" lastHostState.transferred 2>/dev/null || echo 0)"
+  if [[ -n "$CURRENT_HASH" && "$CURRENT_HASH" == "$LAST_HASH" && "$LAST_TRANSFERRED" == 1 ]]; then
+    php -r '$d=json_decode(file_get_contents($argv[1]),true);$h=$d["lastHostState"]??[];if(!is_array($h))exit(2);if($argv[2]==="shut off"&&$argv[3]==="shut off"){$h["quality"]="safe";$h["safeObservedAt"]=gmdate("c");$h["capturedAt"]=$h["safeObservedAt"];unset($h["safeFallback"]);}file_put_contents($argv[4],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$DURABLE_STATE" "$HASH_STATE_BEFORE" "$HASH_STATE_AFTER" "$HOST_STATE_JSON"
+  else
+    CAPTURE_STATE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"; QUALITY=unstable; STUNNED=0
+    if [[ "$CAPTURE_STATE" =~ ^(running|idle)$ ]]; then
+      if virsh suspend "$VM_UUID" >>"$LOG" 2>&1; then RESUME_NEEDED=1; STUNNED=1; else log 'Unable to stun VM for host-state capture; the observed checkpoint is unstable.'; fi
+    fi
+    BEFORE_MANIFEST="$RUN_DIR/host-state-before.sha256"; AFTER_MANIFEST="$RUN_DIR/host-state-after.sha256"
+    STAGING_STATE_BEFORE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+    BEFORE_HASH="$(hash_host_state "$BEFORE_MANIFEST" || true)"
+    ARCHIVE="$RUN_DIR/host-state.tar.gz"; rel=(); for path in "${STATE_PATHS[@]}"; do rel+=("${path#/}"); done
+    tar --xattrs --acls --numeric-owner -C / -czf "$ARCHIVE" "${rel[@]}"; gzip -t "$ARCHIVE"
+    AFTER_HASH="$(hash_host_state "$AFTER_MANIFEST" || true)"
+    STAGING_STATE_AFTER="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
+    if [[ -n "$BEFORE_HASH" && "$BEFORE_HASH" == "$AFTER_HASH" && "$STAGING_STATE_BEFORE" == 'shut off' && "$STAGING_STATE_AFTER" == 'shut off' ]]; then QUALITY=safe
+    elif [[ -n "$BEFORE_HASH" && "$BEFORE_HASH" == "$AFTER_HASH" && "$STUNNED" == 1 && "$STAGING_STATE_BEFORE" == paused && "$STAGING_STATE_AFTER" == paused ]]; then QUALITY=best-effort
+    else QUALITY=unstable
+    fi
+    if ((RESUME_NEEDED)); then virsh resume "$VM_UUID" >>"$LOG" 2>&1 && RESUME_NEEDED=0 || fail 'Unable to resume VM after best-effort TPM capture' 17; fi
+    ARCHIVE_HASH="$(sha256sum "$ARCHIVE" | awk '{print $1}')"; CHECKPOINT_ID="state-${ARCHIVE_HASH:0:24}"; REMOTE_ARCHIVE=''
+    if [[ "$STATE_DIRECTORY" == /mnt/* ]]; then
+      REMOTE_ARCHIVE="${STATE_DIRECTORY%/}/$CHECKPOINT_ID.tar.gz"
+      rsync -a --protect-args -e "$RSYNC_RSH" -- "$ARCHIVE" "$REMOTE:$REMOTE_ARCHIVE" >>"$LOG" 2>&1 || QUALITY=unstable
+      REMOTE_HASH="$(remote_regular_sha256 "$REMOTE_ARCHIVE" || true)"
+      [[ "$REMOTE_HASH" == "$ARCHIVE_HASH" ]] || { QUALITY=unstable; REMOTE_ARCHIVE=''; }
+    fi
+    php -r '$h=["checkpointId"=>$argv[1],"quality"=>$argv[2],"contentSha256"=>$argv[3],"archiveSha256"=>$argv[4],"archivePath"=>$argv[5],"capturedAt"=>gmdate("c"),"tpmPresent"=>$argv[6]==="1","tpmCaptured"=>$argv[7]==="1","nvramPresent"=>$argv[8]==="1","nvramCaptured"=>$argv[9]==="1"];$h["transferred"]=$argv[5]!=="";$d=is_file($argv[10])?json_decode(file_get_contents($argv[10]),true):[];$s=is_array($d)?($d["lastSafeHostState"]??null):null;$compatible=is_array($s)&&(bool)($s["tpmPresent"]??false)===$h["tpmPresent"]&&(bool)($s["nvramPresent"]??false)===$h["nvramPresent"]&&(!$h["tpmPresent"]||!empty($s["tpmCaptured"]))&&(!$h["nvramPresent"]||!empty($s["nvramCaptured"]));if($compatible&&$h["quality"]!=="safe")$h["safeFallback"]=$s;file_put_contents($argv[11],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$CHECKPOINT_ID" "$QUALITY" "$AFTER_HASH" "$ARCHIVE_HASH" "$REMOTE_ARCHIVE" "$TPM_PRESENT" "$TPM_CAPTURED" "$NVRAM_PRESENT" "$NVRAM_CAPTURED" "$DURABLE_STATE" "$HOST_STATE_JSON"
+  fi
+else
+  php -r '$required=$argv[1]==="1"||$argv[2]==="1";$h=["quality"=>$required?"missing":"not-required","capturedAt"=>gmdate("c"),"tpmPresent"=>$argv[1]==="1","tpmCaptured"=>false,"nvramPresent"=>$argv[2]==="1","nvramCaptured"=>false,"transferred"=>false];$d=is_file($argv[3])?json_decode(file_get_contents($argv[3]),true):[];if($required&&is_array($d)&&is_array($d["lastSafeHostState"]??null))$h["safeFallback"]=$d["lastSafeHostState"];file_put_contents($argv[4],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$TPM_PRESENT" "$NVRAM_PRESENT" "$DURABLE_STATE" "$HOST_STATE_JSON"
+fi
+fi
+php -r '$h=json_decode(file_get_contents($argv[1]),true);if(!is_array($h))exit(2);if(($h["quality"]??"")==="safe")unset($h["safeFallback"]);elseif(isset($h["safeFallback"])){$s=$h["safeFallback"];$compatible=is_array($s)&&($s["quality"]??"")==="safe"&&!empty($s["transferred"])&&(bool)($s["tpmPresent"]??false)===(bool)($h["tpmPresent"]??false)&&(bool)($s["nvramPresent"]??false)===(bool)($h["nvramPresent"]??false)&&(!($h["tpmPresent"]??false)||!empty($s["tpmCaptured"]))&&(!($h["nvramPresent"]??false)||!empty($s["nvramCaptured"]));if($compatible){unset($s["safeFallback"]);$h["safeFallback"]=$s;}else unset($h["safeFallback"]);}file_put_contents($argv[1],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$HOST_STATE_JSON"
+SAFE_ID="$(json_get "$HOST_STATE_JSON" safeFallback.checkpointId 2>/dev/null || true)"
+if [[ -n "$SAFE_ID" ]]; then
+  SAFE_HASH="$(json_get "$HOST_STATE_JSON" safeFallback.archiveSha256 2>/dev/null || true)"; SAFE_PATH="$(json_get "$HOST_STATE_JSON" safeFallback.archivePath 2>/dev/null || true)"; SAFE_FALLBACK_OK=0
+  if [[ "$SAFE_ID" =~ ^state-[a-f0-9]{24}$ && "$SAFE_HASH" =~ ^[a-f0-9]{64}$ && "$SAFE_ID" == "state-${SAFE_HASH:0:24}" && "$SAFE_PATH" == "${STATE_DIRECTORY%/}/$SAFE_ID.tar.gz" && "$(remote_regular_sha256 "$SAFE_PATH" || true)" == "$SAFE_HASH" ]]; then SAFE_FALLBACK_OK=1; fi
+  if ((SAFE_FALLBACK_OK==0)); then php -r '$h=json_decode(file_get_contents($argv[1]),true);if(!is_array($h))exit(2);unset($h["safeFallback"]);file_put_contents($argv[1],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$HOST_STATE_JSON"; log 'Discarded an unavailable safe TPM/NVRAM fallback reference from this point.'; fi
+fi
+php -r '$p=json_decode(file_get_contents($argv[1]),true);$h=json_decode(file_get_contents($argv[2]),true);if(!is_array($p))exit(2);$p["hostState"]=is_array($h)?$h:[];$required=($h["tpmPresent"]??false)||($h["nvramPresent"]??false);$unsafe=$required&&(in_array((string)($h["quality"]??""),["missing","unstable"],true)||(($h["tpmPresent"]??false)&&empty($h["tpmCaptured"]))||(($h["nvramPresent"]??false)&&empty($h["nvramCaptured"]))||empty($h["transferred"]));if($unsafe)$p["replicationOnly"]=true;file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$HOST_STATE_JSON"
+atomic_state_update pending "$PENDING_JSON"
+if ((RESTART_NEEDED)); then state CAPTURING_HOST_STATE 16 'Restarting VM after safe TPM checkpoint'; virsh start "$VM_UUID" >>"$LOG" 2>&1 || fail 'Safe TPM checkpoint was captured, but the VM could not be restarted' 18; RESTART_NEEDED=0; fi
+
+receive_properties(){ local type="$1" p; p="-o readonly=on -o dedup=$(sq "$DEST_DEDUP")"; [[ "$DEST_COMPRESSION" == inherit ]] || p+=" -o compression=$(sq "$DEST_COMPRESSION")"; if [[ "$type" == dataset ]]; then p+=' -o canmount=off -o mountpoint=none'; else p+=' -o volmode=none -o snapdev=hidden'; fi; printf '%s' "$p"; }
+remote_resume_token(){
+  local dst="$1" parent token; parent="${dst%/*}"
+  token="$(remote "if zfs list -H -o name $(sq "$dst") >/dev/null 2>&1; then zfs get -H -o value receive_resume_token $(sq "$dst") 2>/dev/null; elif zfs list -H -o name $(sq "$parent") >/dev/null 2>&1; then printf '%s\\n' -; else exit 75; fi")" || return $?
+  token="${token//$'\r'/}"; [[ -n "$token" ]] || return 1; printf '%s' "$token"
+}
+ensure_destination_hold(){
+  local full="$1"
+  remote "zfs hold $(sq "$HOLD_TAG") $(sq "$full") 2>/dev/null || true"
+  remote "zfs holds -H $(sq "$full")" | awk -F '\t' -v t="$HOLD_TAG" '$2==t{f=1}END{exit f?0:1}'
+}
+transfer_object(){
+  local kind="$1" src="$2" dst="$3" index="$4" token='' props receive_cmd rc x src_guid dst_guid base='' incremental=0 attempt
+  attempt="$RUN_DIR/receive-$index.log"
+  local -a statuses=()
+  base="$(json_get "$DURABLE_STATE" baseSnapshot 2>/dev/null || true)"
+  if [[ -n "$base" ]]; then
+    zfs list -H -t snapshot "$src@$base" >/dev/null 2>&1 || return 77
+    remote "zfs list -H -t snapshot $(sq "$dst@$base") >/dev/null 2>&1" || return 77
+    src_guid="$(zfs get -H -o value guid "$src@$base")"; dst_guid="$(remote "zfs get -H -o value guid $(sq "$dst@$base")")"
+    [[ -n "$src_guid" && "$src_guid" == "$dst_guid" ]] || return 78
+    incremental=1
+  fi
+  if remote "zfs list -H -t snapshot $(sq "$dst@$SNAPSHOT_NAME") >/dev/null 2>&1"; then
+    src_guid="$(zfs get -H -o value guid "$src@$SNAPSHOT_NAME")"; dst_guid="$(remote "zfs get -H -o value guid $(sq "$dst@$SNAPSHOT_NAME")")"; [[ "$src_guid" == "$dst_guid" ]] || return 40; ensure_destination_hold "$dst@$SNAPSHOT_NAME" || return 79; return 0
+  fi
+  token="$(remote_resume_token "$dst")" || return 75; [[ "$token" == - ]] && token=''
+  props="$(receive_properties "$kind")"; if [[ -n "$token" ]]; then receive_cmd="zfs receive -su $(sq "$dst")"; else receive_cmd="zfs receive -su $props $(sq "$dst")"; fi
+  : > "$attempt"; set +e
+  if [[ -n "$token" ]]; then zfs send -t "$token" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt" 2>&1
+  else
+    if ((incremental==0)) && remote "zfs list -H -o name $(sq "$dst") >/dev/null 2>&1"; then set -e; return 76
+    fi
+    if ((incremental)); then zfs send -cp -i "$src@$base" "$src@$SNAPSHOT_NAME" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt" 2>&1
+    else zfs send -cp "$src@$SNAPSHOT_NAME" 2>>"$LOG" | ssh "${SSH_OPTS[@]}" "$REMOTE" "$receive_cmd" >"$attempt" 2>&1; fi
+  fi
+  statuses=("${PIPESTATUS[@]}"); rc=0; for x in "${statuses[@]}"; do ((x==0)) || rc=$x; done; set -e; cat "$attempt" >> "$LOG"
+  ((rc==0)) || { token="$(remote_resume_token "$dst" 2>/dev/null || true)"; [[ -n "$token" && "$token" != - ]] && return 75; return "$rc"; }
+  src_guid="$(zfs get -H -o value guid "$src@$SNAPSHOT_NAME")"; dst_guid="$(remote "zfs get -H -o value guid $(sq "$dst@$SNAPSHOT_NAME")")"; [[ "$src_guid" == "$dst_guid" ]] || return 40
+  ensure_destination_hold "$dst@$SNAPSHOT_NAME" || return 79
+}
+
+state TRANSFERRING 18 'Transferring scheduled ZFS deltas'
+VERIFIED_TSV="$RUN_DIR/verified-storage.tsv"; : > "$VERIFIED_TSV"; index=0
+while IFS=$'\t' read -r kind_b src_b dst_b; do
+  kind="$(printf '%s' "$kind_b" | base64 -d)"; src="$(printf '%s' "$src_b" | base64 -d)"; dst="$(printf '%s' "$dst_b" | base64 -d)"; ((index+=1)); pct=$((18+(index-1)*62/SOURCE_COUNT))
+  state TRANSFERRING "$pct" "Replicating $src"
+  set +e
+  transfer_object "$kind" "$src" "$dst" "$index"
+  rc=$?
+  set -e
+  if ((rc!=0)); then
+    ((rc==75)) && interrupt "Replication of $src was interrupted; resumable state was retained" "$pct"
+    ((rc==76)) && fail "Destination object for $src exists without the expected snapshot or resumable receive state; manual inspection is required" 76
+    ((rc==77)) && fail "Committed incremental base snapshot for $src is missing on the source or destination; restore the exact base before retrying" 77
+    ((rc==78)) && fail "Committed incremental base snapshot GUID for $src does not match; refusing an unsafe incremental transfer" 78
+    ((rc==79)) && fail "Destination snapshot hold verification failed for $src; no recovery point was committed" 79
+    fail "Replication of $src failed" "$rc"
+  fi
+  guid="$(zfs get -H -o value guid "$src@$SNAPSHOT_NAME")"; printf '%s\t%s\t%s\t%s\n' "$kind_b" "$src_b" "$dst_b" "$(printf '%s' "$guid"|base64 -w0)" >> "$VERIFIED_TSV"
+done < "$PLAN_TSV"
+
+php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$g=[];foreach(file($argv[2],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$x=explode("\t",$line);if(count($x)<4)exit(3);$source=base64_decode($x[1],true);$guid=base64_decode($x[3],true);if($source===false||$guid===false||!preg_match("/^\\d+$/",$guid))exit(3);$g[$source]=$guid;}if(($p["snapshotGuids"]??[])!==$g)exit(4);$p["sourceGuids"]=$g;file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$VERIFIED_TSV"
+atomic_state_update pending "$PENDING_JSON"
+
+state VERIFYING 82 'Verifying complete recovery point'
+verify_source_xml_unchanged || fail 'Source VM XML changed before point publication; the pending point was retained but will not be published' 13
+POINT_JSON="$RUN_DIR/point.json"
+php -r '
+$p=json_decode(file_get_contents($argv[1]),true);$h=json_decode(file_get_contents($argv[2]),true);$storage=[];foreach(file($argv[3],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$x=explode("\t",$line);$storage[]=["kind"=>base64_decode($x[0]),"source"=>base64_decode($x[1]),"destination"=>base64_decode($x[2]),"snapshot"=>$p["snapshot"],"guid"=>base64_decode($x[3])];}
+$xml=file_get_contents($argv[4]);if($xml===false||hash("sha256",$xml)!==$argv[5])exit(3);
+$point=["id"=>$p["id"],"generation"=>(int)$p["generation"],"snapshot"=>$p["snapshot"],"slotEpoch"=>(int)$p["slotEpoch"],"scheduledAt"=>($p["scheduledAt"]??$p["createdAt"]),"createdAt"=>($p["capturedAt"]??$p["createdAt"]),"capturedAt"=>($p["capturedAt"]??$p["createdAt"]),"capturedAtEpoch"=>(int)($p["capturedAtEpoch"]??0),"consistency"=>$p["consistency"],"replicationOnly"=>!empty($p["replicationOnly"]),"storage"=>$storage,"guestAgent"=>$p["guestAgent"]??[],"sourceXmlSha256"=>$argv[5],"sourceXml"=>$xml];
+if(is_array($h)){if(!empty($h["tpmPresent"]))$point["tpm"]=$h;if(!empty($h["nvramPresent"]))$point["nvram"]=$h;$point["hostState"]=$h;}
+file_put_contents($argv[6],json_encode($point,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$HOST_STATE_JSON" "$VERIFIED_TSV" "$SOURCE_XML" "$SOURCE_XML_SHA256" "$POINT_JSON"
+PUBLISH_REQUEST="$RUN_DIR/publish-request.json"
+php -r '$p=json_decode(file_get_contents($argv[1]),true);$point=json_decode(file_get_contents($argv[2]),true);$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$p["id"]??$argv[5],"vmUuid"=>$p["vmUuid"]??"","vmName"=>$p["vmName"]??"","point"=>$point];file_put_contents($argv[6],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$POLICY_JSON" "$POINT_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$PUBLISH_REQUEST"
+PUBLISH_REPLY="$RUN_DIR/publish-reply.json"
+state PUBLISHING 86 'Publishing verified destination recovery point'
+rm -f -- "$PUBLISH_REPLY"
+agent_call replication-publish "$PUBLISH_REQUEST" "$PUBLISH_REPLY" || interrupt 'Destination point publish failed; snapshots and receive state were retained' 86
+php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):null;if(!is_array($d)||array_key_exists("success",$d)&&empty($d["success"])||array_key_exists("accepted",$d)&&empty($d["accepted"]))exit(1);' "$PUBLISH_REPLY" || interrupt 'Destination returned an invalid point publish confirmation; source state was not committed' 86
+
+state COMMITTING 90 'Committing new source incremental base'
+atomic_state_update commit "$PENDING_JSON"
+cleanup_source_pending
+reconcile_destination_retention
+
+state IDLE 100 'Scheduled replication is current' "$(php -r 'echo json_encode(["generation"=>(int)$argv[1],"lastSyncAt"=>date(DATE_ATOM),"lastScheduledSlot"=>(int)$argv[2]]);' "$GENERATION" "$SLOT")"
+log "Replication point $POINT_ID committed; destination VM remains undefined and stopped."
+trap - EXIT

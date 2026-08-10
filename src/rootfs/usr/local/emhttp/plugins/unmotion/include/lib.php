@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.3.1-RC2';
+const UNM_VERSION = '0.4.0-beta1';
 const UNM_PROTOCOL = 5;
 const UNM_BOOT_DIR = '/boot/config/plugins/unmotion';
 const UNM_CONFIG_JSON = UNM_BOOT_DIR . '/config.json';
@@ -10,10 +10,13 @@ const UNM_PEERS_DIR = UNM_BOOT_DIR . '/peers';
 const UNM_JOBS_DIR = UNM_BOOT_DIR . '/jobs';
 const UNM_OWNERSHIP_DIR = UNM_BOOT_DIR . '/ownership';
 const UNM_SEEDS_DIR = UNM_BOOT_DIR . '/seeds';
+const UNM_REPLICATIONS_DIR = UNM_BOOT_DIR . '/replications';
+const UNM_REPLICAS_DIR = UNM_BOOT_DIR . '/replicas';
 const UNM_HOST_ID_FILE = UNM_BOOT_DIR . '/host_id';
+const UNM_REPLICATION_PROTOCOL = 1;
 
 function unmEnsureDirs(): void {
-    foreach ([UNM_BOOT_DIR, UNM_PEERS_DIR, UNM_JOBS_DIR, UNM_OWNERSHIP_DIR, UNM_SEEDS_DIR] as $dir) {
+    foreach ([UNM_BOOT_DIR, UNM_PEERS_DIR, UNM_JOBS_DIR, UNM_OWNERSHIP_DIR, UNM_SEEDS_DIR, UNM_REPLICATIONS_DIR, UNM_REPLICAS_DIR] as $dir) {
         if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new RuntimeException("Unable to create $dir");
         }
@@ -776,10 +779,10 @@ function unmCapabilities(): array {
     $isoContaining=is_dir($cfg['iso_dir'])?unmZfsDatasetForPath($cfg['iso_dir'],false):null;
     $checks=['image_dir_exists'=>is_dir($cfg['image_dir']),'image_dir_writable'=>is_dir($cfg['image_dir'])&&is_writable($cfg['image_dir']),'iso_dir_exists'=>is_dir($cfg['iso_dir']),'iso_dir_writable'=>is_dir($cfg['iso_dir'])&&is_writable($cfg['iso_dir']),'zvol_dataset_exists'=>$zvolReady];
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
-    return ['protocolVersion'=>UNM_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
+    return ['protocolVersion'=>UNM_PROTOCOL,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true],
+        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -1526,6 +1529,12 @@ function unmPair(array $input): array {
 
 function unmRemovePeer(string $id): void {
     $peer = unmPeer($id);
+    foreach (glob(UNM_REPLICATIONS_DIR.'/*/policy.json') ?: [] as $policyPath) {
+        $replication=unmLoadJson($policyPath);
+        if ((string)($replication['peerId'] ?? '') === $id) {
+            throw new RuntimeException('This pairing is used by replication policy '.(string)($replication['id'] ?? basename(dirname($policyPath))).'. Remove the pristine policy first; policies with recovery state require a future explicit replica-cleanup workflow.');
+        }
+    }
     $reciprocalId = (string)($peer['reciprocalPeerId'] ?? '');
     if ($reciprocalId !== '') {
         try { unmRemote($peer, '/usr/local/sbin/unmotion-agent reciprocal-forget ' . escapeshellarg($reciprocalId), 25); }
@@ -1556,6 +1565,712 @@ function unmDiscover(): array {
     if (!unmTool('avahi-browse')) return ['supported'=>false,'peers'=>[],'message'=>'avahi-browse is not installed on this Unraid release.'];
     $r=unmRun("timeout 5 avahi-browse -rtp _unmotion._tcp 2>/dev/null",null,8);
     return ['supported'=>true,'peers'=>unmParseAvahiDiscoveryOutput($r['stdout'])];
+}
+
+function unmReplicationRpoOptions(): array {
+    return [300,900,1800,3600,7200,14400,21600,28800,43200,86400];
+}
+
+function unmValidateReplicationRpo(int $rpoSeconds): int {
+    if(!in_array($rpoSeconds,unmReplicationRpoOptions(),true))throw new InvalidArgumentException('Invalid replication RPO.');
+    return $rpoSeconds;
+}
+
+function unmReplicationMaxRetention(int $rpoSeconds): int {
+    $rpoSeconds=unmValidateReplicationRpo($rpoSeconds);
+    return max(1,min(24,(int)floor(86400/$rpoSeconds)));
+}
+
+function unmValidateReplicationRetention(int $rpoSeconds,int $retentionCount): int {
+    $maximum=unmReplicationMaxRetention($rpoSeconds);
+    if($retentionCount<1||$retentionCount>$maximum)throw new InvalidArgumentException("Retention must be between 1 and $maximum recovery points for this RPO.");
+    return $retentionCount;
+}
+
+function unmReplicationPointTimestamp(array $point): int {
+    foreach(['capturedAt','completedAt','createdAt','timestamp','lastSyncAt'] as $key){
+        $value=$point[$key]??null;
+        if(is_int($value)||is_float($value))return (int)$value;
+        if(is_string($value)&&trim($value)!==''){$parsed=strtotime($value);if($parsed!==false)return $parsed;}
+    }
+    return 0;
+}
+
+/** Select the newest point in each UTC epoch-aligned retention bucket. */
+function unmSelectReplicationRetentionPoints(array $points,int $rpoSeconds,int $retentionCount,?int $now=null): array {
+    unmValidateReplicationRetention($rpoSeconds,$retentionCount);
+    $now=$now??time();
+    $normalised=[];
+    foreach($points as $index=>$point){
+        if(!is_array($point))continue;
+        $timestamp=unmReplicationPointTimestamp($point);
+        if($timestamp<=0)continue;
+        $normalised[]=['point'=>$point,'timestamp'=>$timestamp,'index'=>$index];
+    }
+    usort($normalised,static fn(array $a,array $b):int=>$b['timestamp']<=>$a['timestamp']?:$b['index']<=>$a['index']);
+    if(!$normalised)return [];
+    // A future-dated point indicates clock skew. Preserve everything rather
+    // than allowing uncertain wall-clock ordering to delete recovery data.
+    foreach($normalised as $entry)if($entry['timestamp']>$now)return array_column($normalised,'point');
+    $selected=[];$seenBuckets=[];$latest=$normalised[0];
+    $selected[]=$latest['point'];$seenBuckets[intdiv($latest['timestamp']*$retentionCount,86400)]=true;
+    foreach(array_slice($normalised,1) as $entry){
+        if(count($selected)>=$retentionCount)break;
+        if($entry['timestamp']<$now-86400||$entry['timestamp']>$now)continue;
+        $bucket=intdiv($entry['timestamp']*$retentionCount,86400);
+        if(isset($seenBuckets[$bucket]))continue;
+        $seenBuckets[$bucket]=true;$selected[]=$entry['point'];
+    }
+    return $selected;
+}
+
+function unmReplicationId(string $vmUuid,string $destinationHostId): string {
+    if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM UUID.');
+    $destinationHostId=unmReplicaIdentityPart($destinationHostId,'destination host identity');
+    return 'repl-'.substr(hash('sha256',strtolower($vmUuid).'|'.$destinationHostId),0,24);
+}
+
+function unmReplicationPath(string $id): string {
+    if(!preg_match('/^repl-[a-f0-9]{24}$/',$id))throw new InvalidArgumentException('Invalid replication id.');
+    return UNM_REPLICATIONS_DIR.'/'.$id;
+}
+
+function unmReplicaIdentityPart(string $value,string $label='identity'): string {
+    $value=trim($value);
+    if(!preg_match('/^[A-Za-z0-9_.-]{8,80}$/',$value))throw new InvalidArgumentException('Invalid replica '.$label.'.');
+    return $value;
+}
+
+function unmReplicaPath(string $sourceHostId,string $replicationId): string {
+    $sourceHostId=unmReplicaIdentityPart($sourceHostId,'source host identity');
+    unmReplicationPath($replicationId);
+    return UNM_REPLICAS_DIR.'/'.$sourceHostId.'/'.$replicationId;
+}
+
+function unmReplicationRuntimePath(string $id): string {
+    unmReplicationPath($id);
+    return '/var/run/unmotion/replications/'.$id.'.json';
+}
+
+function unmAcquireReplicationPolicyLock(string $id,bool $wait=false) {
+    unmReplicationPath($id);$path='/var/lock/unmotion-replication-'.$id.'.lock';$handle=fopen($path,'c');
+    if($handle===false)throw new RuntimeException('Unable to open the replication policy lock.');
+    @chmod($path,0600);
+    if(!flock($handle,LOCK_EX|($wait?0:LOCK_NB))){fclose($handle);throw new RuntimeException('The replication policy is busy with another run or mutation.');}
+    return $handle;
+}
+
+function unmReleaseReplicationPolicyLock($handle): void {
+    if(is_resource($handle)){flock($handle,LOCK_UN);fclose($handle);}
+}
+
+function unmReplicationPolicy(string $id): array {
+    $policy=unmLoadJson(unmReplicationPath($id).'/policy.json');
+    if(!$policy)throw new RuntimeException('Replication policy not found.');
+    $expectedId=unmReplicationId((string)($policy['vmUuid']??''),(string)($policy['peerHostId']??''));if(!hash_equals($id,$expectedId))throw new RuntimeException('Replication policy identity does not match its VM and destination host.');
+    return $policy;
+}
+
+function unmReplicationDurableState(string $id): array {
+    return unmLoadJson(unmReplicationPath($id).'/state.json');
+}
+
+function unmReplicationActiveStates(): array {
+    return ['QUEUED','STARTING','LOCKING','PREFLIGHT','PROBING_GUEST','QUIESCING','SNAPSHOTTING','THAWING','CAPTURING_HOST_STATE','TRANSFERRING','VERIFYING','PUBLISHING','COMMITTING','PRUNING'];
+}
+
+function unmReplicationStateIsActive(string $state): bool {
+    return in_array(strtoupper(trim($state)),unmReplicationActiveStates(),true);
+}
+
+function unmReplicationRuntimeWorkerAlive(string $id,array $runtime): bool {
+    unmReplicationPath($id);$pid=(int)($runtime['pid']??0);if($pid<=1)return false;$path='/proc/'.$pid.'/cmdline';if(!is_readable($path))return false;
+    $command=(string)@file_get_contents($path);if($command==='')return false;$arguments=array_values(array_filter(explode("\0",trim($command,"\0")),static fn(string $value):bool=>$value!==''));
+    return in_array('/usr/local/sbin/unmotion-replication-worker',$arguments,true)&&in_array($id,$arguments,true);
+}
+
+function unmReplication(string $id): array {
+    $policy=unmReplicationPolicy($id);$durable=unmReplicationDurableState($id);$runtime=unmLoadJson(unmReplicationRuntimePath($id));
+    $record=array_replace($policy,$durable,$runtime);
+    $record['state']=(string)($record['state']??($policy['enabled']?'IDLE':'PAUSED'));
+    if(!$runtime&&$record['state']==='QUEUED'){
+        $queuedAt=strtotime((string)($durable['updatedAt']??''));
+        if($queuedAt===false||$queuedAt<time()-120)$record['state']=is_array($durable['pending']??null)?'INTERRUPTED':'IDLE';
+    }
+    if($runtime&&unmReplicationStateIsActive($record['state'])&&!unmReplicationRuntimeWorkerAlive($id,$runtime))$record['state']=is_array($durable['pending']??null)?'INTERRUPTED':'FAILED';
+    if(empty($policy['enabled'])&&!unmReplicationStateIsActive($record['state']))$record['state']='PAUSED';
+    $record['status']=$record['state'];
+    $record['pointCount']=(int)($record['pointCount']??count((array)($record['recoveryPoints']??[])));
+    $pending=is_array($durable['pending']??null);
+    $generation=(int)($durable['generation']??0);
+    $lastScheduledSlot=(int)($durable['lastScheduledSlot']??$durable['lastSuccessfulSlot']??0);
+    $nextDueEpoch=null;
+    if(!empty($policy['enabled'])&&!$pending){
+        $nextDueEpoch=($generation===0||$lastScheduledSlot<=0)?time():$lastScheduledSlot+(int)$policy['rpoSeconds'];
+    }
+    $record['nextDueEpoch']=$nextDueEpoch;
+    $record['nextDueAt']=$nextDueEpoch===null?null:gmdate('c',$nextDueEpoch);
+    $record['policy']=$policy;$record['durable']=$durable;$record['runtime']=$runtime;
+    return $record;
+}
+
+function unmReplications(): array {
+    unmEnsureDirs();$out=[];
+    foreach(glob(UNM_REPLICATIONS_DIR.'/*/policy.json')?:[] as $path){
+        $id=basename(dirname($path));
+        try{$out[]=unmReplication($id);}catch(Throwable $ignored){}
+    }
+    usort($out,static fn(array $a,array $b):int=>strcasecmp((string)($a['vmName']??''),(string)($b['vmName']??''))?:strcmp((string)($a['id']??''),(string)($b['id']??'')));
+    return $out;
+}
+
+function unmReplicationTpmInitialMode(string $mode): string {
+    $mode=strtolower(trim($mode));
+    if($mode==='best-effort-stun')$mode='best-effort';
+    if(!in_array($mode,['power-cycle','best-effort','none'],true))throw new InvalidArgumentException('Invalid initial TPM capture mode.');
+    return $mode;
+}
+
+function unmReplicationDatasetIsolationErrors(string $dataset,string $mountpoint,array $declaredFiles): array {
+    return unmCloneDatasetIsolated($dataset,$mountpoint,$declaredFiles)
+        ? []
+        : ['Dataset '.$dataset.' contains a child dataset, unrelated entry, symbolic link, mount escape, or missing VM image and is treated as shared storage.'];
+}
+
+function unmReplicationZvolUsedByOtherVm(string $dataset,string $excludeUuid): bool {
+    $r=unmRun(['virsh','list','--all','--uuid'],null,30);if($r['code']!==0)return true;
+    foreach(preg_split('/\R/',trim($r['stdout']))?:[] as $uuid){
+        $uuid=trim($uuid);if($uuid===''||strcasecmp($uuid,$excludeUuid)===0)continue;
+        try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){return true;}
+        if(preg_match('~<source\b[^>]*\bdev=(["\'])'.preg_quote('/dev/zvol/'.$dataset,'~').'\1~s',$xml))return true;
+    }
+    return false;
+}
+
+function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $options=[]): array {
+    if($vmIdentifier==='')throw new InvalidArgumentException('Select a VM.');
+    $rpo=unmValidateReplicationRpo((int)($options['rpoSeconds']??$options['rpo_seconds']??3600));
+    $retention=unmValidateReplicationRetention($rpo,(int)($options['retentionCount']??$options['retention_count']??1));
+    $tpmMode=unmReplicationTpmInitialMode((string)($options['tpmInitialMode']??$options['tpm_initial_mode']??'none'));
+    $vm=unmParseVm($vmIdentifier);$peer=unmTestPeer($peerId);$caps=(array)($peer['lastCapabilities']??[]);
+    $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)($peer['hostId']??'')),0,16);
+    if((string)($peer['pairingState']??'paired')!=='paired')$errors[]='Scheduled replication requires a completed reciprocal pairing.';
+    if((int)($caps['replicationProtocolVersion']??$caps['features']['replicationProtocolVersion']??0)!==UNM_REPLICATION_PROTOCOL||empty($caps['features']['scheduledReplication']))$errors[]='Destination does not support scheduled replication protocol 1. Upgrade it to unMotion 0.4 or later.';
+    if(empty($vm['disks']))$errors[]='The VM has no writable disks to replicate.';
+    if(!empty($vm['tpm']))$warnings[]='This VM uses a virtual TPM. Replication is more reliable without TPM; recovery points will identify safe and best-effort TPM captures.';
+    if($tpmMode!=='none'&&empty($vm['tpm']))$warnings[]='An initial TPM capture mode was selected, but this VM does not report a virtual TPM.';
+    $destStorage=(array)($caps['storage']??[]);$destFeatures=(array)($caps['features']??[]);$destChecks=(array)($caps['checks']??[]);
+    $destZvolRoot=rtrim((string)($destStorage['zvolDataset']??''),'/');$destImageRoot=rtrim((string)($destStorage['imageZfsDataset']??''),'/');$destImageDir=rtrim((string)($destStorage['imageDirectory']??''),'/');
+    $datasetGroups=[];$diskNumber=0;
+    foreach((array)($vm['disks']??[]) as $disk){
+        $diskNumber++;
+        $class=(string)($disk['transferClass']??'');
+        if($class==='zvol'){
+            $source=substr((string)$disk['source'],strlen('/dev/zvol/'));
+            if(isset($sourceDatasets[$source])){$errors[]='The same source zvol is attached more than once and cannot form an unambiguous replication plan: '.$source.'.';continue;}
+            if(!unmZfsObjectNameSafe($source)||unmRun(['zfs','list','-H','-t','volume',$source],null,15)['code']!==0){$errors[]='Source zvol is missing or unsafe: '.$source;continue;}
+            if(unmReplicationZvolUsedByOtherVm($source,(string)($vm['uuid']??''))){$errors[]='Source zvol is referenced by another VM or its ownership could not be proven: '.$source.'.';continue;}
+            $encryption=unmRun(['zfs','get','-H','-o','value','encryption',$source],null,15);
+            if($encryption['code']!==0||trim($encryption['stdout'])!=='off')$errors[]='Encrypted zvols are not supported for scheduled replication: '.$source.'.';
+            if($destZvolRoot===''||empty($destFeatures['zvol'])||empty($destChecks['zvol_dataset_exists'])){$errors[]='Destination zvol storage is unavailable; scheduled replication does not convert zvols to image files.';continue;}
+            $storage[]=['kind'=>'zvol','source'=>$source,'destination'=>$destZvolRoot.'/unmotion-replica-'.$short.'-disk'.$diskNumber,'sourceMountpoint'=>'','destinationMountpoint'=>'','files'=>[]];$sourceDatasets[$source]=true;
+            continue;
+        }
+        if($class!=='zfs-dataset-image'){
+            $reason=(string)($disk['storageReason']??'Storage is shared, non-ZFS, encrypted, or otherwise unsupported.');
+            $errors[]=$reason.' Scheduled replication requires an isolated, unencrypted ZFS dataset or zvol. Use the ZFS Master plugin to prepare suitable storage.';
+            continue;
+        }
+        $format=strtolower((string)($disk['format']??''));
+        if(!in_array($format,['','raw','qcow','qcow2'],true)){$errors[]='Unsupported image format for scheduled replication: '.($format?:'unknown').'.';continue;}
+        if(!empty($disk['sourceViaFuse'])){$errors[]='Scheduled replication requires direct pool paths and does not support /mnt/user VM images.';continue;}
+        $dataset=(string)($disk['zfsDataset']??'');$mount=rtrim((string)($disk['zfsMountpoint']??''),'/');$source=(string)($disk['resolvedSource']??$disk['source']??'');
+        if($dataset===''||$mount===''||empty($disk['dedicatedDataset'])){$errors[]='VM image dataset could not be proven isolated. Use the ZFS Master plugin to place this VM in a dedicated dataset.';continue;}
+        $datasetGroups[$dataset]['mountpoint']=$mount;$datasetGroups[$dataset]['files'][]=['source'=>$source,'relativePath'=>ltrim((string)($disk['relativePath']??basename($source)),'/')];
+    }
+    foreach($datasetGroups as $dataset=>$group){
+        $encryption=unmRun(['zfs','get','-H','-o','value','encryption',$dataset],null,15);
+        if($encryption['code']!==0||trim($encryption['stdout'])!=='off')$errors[]='Encrypted datasets are not supported for scheduled replication: '.$dataset.'.';
+        $files=array_column($group['files'],'source');
+        foreach(unmReplicationDatasetIsolationErrors($dataset,(string)$group['mountpoint'],$files) as $error)$errors[]=$error.' Use the ZFS Master plugin to prepare a dedicated dataset.';
+        if($destImageRoot===''||$destImageDir===''||empty($destFeatures['dedicatedDatasetImages'])){$errors[]='Destination image directory is not an exact writable ZFS dataset, so it cannot receive an isolated VM dataset.';continue;}
+        $diskNumber++;$destination=$destImageRoot.'/unmotion-replica-'.$short.'-disk'.$diskNumber;$destinationMount=$destImageDir.'/.unmotion-replicas/'.$short.'/disk'.$diskNumber;$mapped=[];
+        foreach($group['files'] as $file)$mapped[]=$file+['destination'=>$destinationMount.'/'.ltrim((string)$file['relativePath'],'/')];
+        $storage[]=['kind'=>'dataset','source'=>$dataset,'destination'=>$destination,'sourceMountpoint'=>$group['mountpoint'],'destinationMountpoint'=>$destinationMount,'files'=>$mapped];
+        $sourceDatasets[$dataset]=true;
+    }
+    if(count($storage)===0)$errors[]='No scheduled-replication-compatible storage was found.';
+    $replicationId=empty($vm['uuid'])?'':unmReplicationId((string)$vm['uuid'],(string)($peer['hostId']??''));
+    $proposal=['sourceHostId'=>unmHostId(),'destinationHostId'=>(string)($peer['hostId']??''),'replicationId'=>$replicationId,'vmUuid'=>(string)($vm['uuid']??''),'vmName'=>(string)($vm['name']??''),'storage'=>$storage,'reserve'=>false];
+    $destination=[];
+    if(!$errors){
+        $encoded=base64_encode(json_encode($proposal,JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR));$remote=unmRemote($peer,'/usr/local/sbin/unmotion-agent replication-preflight '.escapeshellarg($encoded),45);
+        if($remote['code']!==0)$errors[]='Destination replication preflight failed: '.(trim($remote['stderr'])?:'unknown error');
+        else{$destination=json_decode($remote['stdout'],true);if(!is_array($destination)||empty($destination['accepted']))$errors[]='Destination returned an invalid replication preflight response.';}
+    }
+    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'id'=>$replicationId,'vm'=>$vm,'peer'=>$peer,'rpoSeconds'=>$rpo,'retentionCount'=>$retention,'maxRetention'=>unmReplicationMaxRetention($rpo),'tpmInitialMode'=>$tpmMode,'storage'=>$storage,'destination'=>$destination];
+}
+
+function unmCreateReplication(array $input): array {
+    $vmId=(string)($input['vm_id']??$input['vmUuid']??'');$peerId=(string)($input['peer_id']??$input['peerId']??'');
+    $pre=unmReplicationPreflight($vmId,$peerId,$input);if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
+    $id=(string)$pre['id'];$policyLock=unmAcquireReplicationPolicyLock($id,true);$dir=unmReplicationPath($id);if(is_file($dir.'/policy.json'))throw new RuntimeException('A replication policy already exists for this VM and destination.');
+    if(!is_dir($dir)&&!mkdir($dir,0700,true)&&!is_dir($dir))throw new RuntimeException('Unable to create replication policy directory.');
+    $enabled=filter_var($input['enabled']??true,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($enabled===null)throw new InvalidArgumentException('Invalid replication enabled state.');
+    $now=date(DATE_ATOM);$policy=['id'=>$id,'enabled'=>$enabled,'vmUuid'=>(string)$pre['vm']['uuid'],'vmName'=>(string)$pre['vm']['name'],'peerId'=>$peerId,'peerName'=>(string)($pre['peer']['name']??$pre['peer']['host']??''),'peerHostId'=>(string)($pre['peer']['hostId']??''),'rpoSeconds'=>(int)$pre['rpoSeconds'],'retentionCount'=>(int)$pre['retentionCount'],'tpmInitialMode'=>(string)$pre['tpmInitialMode'],'storage'=>$pre['storage'],'createdAt'=>$now,'updatedAt'=>$now];
+    unmAtomicJson($dir.'/policy.json',$policy);unmAtomicJson($dir.'/state.json',['id'=>$id,'state'=>$policy['enabled']?'IDLE':'PAUSED','generation'=>0,'baseSnapshot'=>'','basePointId'=>'','pending'=>null,'lastSuccessAt'=>null,'nextDueAt'=>$policy['enabled']?$now:null,'updatedAt'=>$now]);
+    unmWriteCfg($dir.'/request.cfg',['REPLICATION_ID'=>$id,'VM_UUID'=>$policy['vmUuid'],'VM_NAME'=>$policy['vmName'],'PEER_ID'=>$peerId]);
+    return unmReplication($id);
+}
+
+function unmReplicationStorageFingerprint(array $storage): string {
+    usort($storage,static fn(array $a,array $b):int=>strcmp((string)($a['destination']??''),(string)($b['destination']??'')));
+    return hash('sha256',json_encode($storage,JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR));
+}
+
+function unmUpdateReplication(string $id,array $input): array {
+    $policyLock=unmAcquireReplicationPolicyLock($id);$record=unmReplication($id);$existing=(array)$record['policy'];$durable=(array)$record['durable'];$vmId=(string)$existing['vmUuid'];$peerId=(string)$existing['peerId'];
+    if(unmReplicationStateIsActive((string)($record['state']??''))||is_array($durable['pending']??null))throw new RuntimeException('Wait for the active or pending replication generation to finish before changing this policy.');
+    $merged=['rpoSeconds'=>$input['rpo_seconds']??$input['rpoSeconds']??$existing['rpoSeconds'],'retentionCount'=>$input['retention_count']??$input['retentionCount']??$existing['retentionCount'],'tpmInitialMode'=>$input['tpm_initial_mode']??$input['tpmInitialMode']??$existing['tpmInitialMode']];
+    $pre=unmReplicationPreflight($vmId,$peerId,$merged);if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
+    $hasBase=(int)($durable['generation']??0)>0||(string)($durable['baseSnapshot']??'')!==''||(string)($durable['basePointId']??'')!=='';
+    if($hasBase&&unmReplicationStorageFingerprint((array)($existing['storage']??[]))!==unmReplicationStorageFingerprint((array)$pre['storage']))throw new RuntimeException('The VM storage mapping changed after the incremental replication chain was established. This policy cannot be updated in place.');
+    $existing['rpoSeconds']=(int)$pre['rpoSeconds'];$existing['retentionCount']=(int)$pre['retentionCount'];$existing['tpmInitialMode']=(string)$pre['tpmInitialMode'];$existing['storage']=$pre['storage'];$existing['vmName']=(string)$pre['vm']['name'];$existing['peerName']=(string)($pre['peer']['name']??$pre['peer']['host']??'');$existing['peerHostId']=(string)($pre['peer']['hostId']??'');$existing['updatedAt']=date(DATE_ATOM);
+    unmAtomicJson(unmReplicationPath($id).'/policy.json',$existing);return unmReplication($id);
+}
+
+function unmSetReplicationEnabled(string $id,bool $enabled): array {
+    $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);$policy['enabled']=$enabled;$policy['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/policy.json',$policy);
+    $state=unmReplicationDurableState($id);$state['state']=$enabled?'IDLE':'PAUSED';$state['nextDueAt']=$enabled?date(DATE_ATOM):null;$state['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/state.json',$state);
+    return unmReplication($id);
+}
+
+function unmLaunchReplicationWorker(string $id,string $reason='manual'): int {
+    $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);if(empty($policy['enabled']))throw new RuntimeException('Replication policy is paused.');
+    $runtime=unmLoadJson(unmReplicationRuntimePath($id));if(unmReplicationStateIsActive((string)($runtime['state']??''))&&unmReplicationRuntimeWorkerAlive($id,$runtime))throw new RuntimeException('A replication run is already active.');
+    $durable=unmReplicationDurableState($id);$durableState=(string)($durable['state']??'');$durableUpdated=strtotime((string)($durable['updatedAt']??''));$staleQueued=$durableState==='QUEUED'&&($durableUpdated===false||$durableUpdated<time()-120)&&!unmReplicationRuntimeWorkerAlive($id,$runtime);
+    if(unmReplicationStateIsActive($durableState)&&!$staleQueued)throw new RuntimeException('A replication run is already queued or active.');
+    @unlink(unmReplicationRuntimePath($id));
+    $dir=unmReplicationPath($id);unmWriteCfg($dir.'/request.cfg',['REPLICATION_ID'=>$id,'VM_UUID'=>$policy['vmUuid'],'VM_NAME'=>$policy['vmName'],'PEER_ID'=>$policy['peerId'],'RUN_REASON'=>$reason]);
+    $state=$durable;$state['state']='QUEUED';$state['message']='Replication run queued';$state['runReason']=$reason;$state['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/state.json',$state);
+    if(!is_dir('/var/log/unmotion')&&!mkdir('/var/log/unmotion',0755,true)&&!is_dir('/var/log/unmotion'))throw new RuntimeException('Unable to create the runtime replication log directory.');
+    unmReleaseReplicationPolicyLock($policyLock);$policyLock=null;
+    $launcherLog='/var/log/unmotion/replication-'.$id.'-launcher.log';$cmd='nohup setsid /usr/local/sbin/unmotion-replication-worker '.escapeshellarg($id).' >>'.escapeshellarg($launcherLog).' 2>&1 & echo $!';$result=unmRun($cmd,null,10);$pid=(int)trim($result['stdout']);
+    if($result['code']!==0||$pid<=0){
+        try{$failureLock=unmAcquireReplicationPolicyLock($id);$failed=unmReplicationDurableState($id);if((string)($failed['state']??'')==='QUEUED'){$failed['state']='FAILED';$failed['message']='Unable to launch replication worker';$failed['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/state.json',$failed);}}catch(Throwable $ignored){}
+        throw new RuntimeException('Unable to launch replication worker: '.trim($result['stderr']));
+    }
+    return $pid;
+}
+
+function unmRunReplicationNow(string $id): array {
+    $pid=unmLaunchReplicationWorker($id,'manual');$record=unmReplication($id);$record['pid']=$pid;return $record;
+}
+
+function unmRemoveReplication(string $id): void {
+    $policyLock=unmAcquireReplicationPolicyLock($id);$record=unmReplication($id);$durable=(array)($record['durable']??[]);$state=(string)($record['state']??'');
+    if(unmReplicationStateIsActive($state))throw new RuntimeException('Pause and wait for the active replication run before removing this policy.');
+    $unsafe=(int)($durable['generation']??0)!==0
+        ||is_array($durable['pending']??null)
+        ||(string)($durable['baseSnapshot']??'')!==''
+        ||(string)($durable['basePointId']??'')!==''
+        ||!empty($durable['baseStorage'])
+        ||!empty($durable['sourceCleanupPending'])
+        ||!empty($durable['destinationPrunePending'])
+        ||!empty($durable['receiveResumeToken'])
+        ||!empty($durable['resumeToken']);
+    if($unsafe)throw new RuntimeException('This policy has replication or cleanup state and cannot be removed without an explicit destination replica-cleanup workflow. No replica data was removed.');
+    $dir=unmReplicationPath($id);$real=realpath($dir);$base=realpath(UNM_REPLICATIONS_DIR);
+    if($real===false||$base===false||dirname($real)!==$base)throw new RuntimeException('Unsafe replication policy directory.');
+    $result=unmRun(['rm','-rf','--',$real],null,30);if($result['code']!==0)throw new RuntimeException('Unable to remove replication policy: '.trim($result['stderr']));
+    @unlink(unmReplicationRuntimePath($id));
+}
+
+function unmReplicationLog(string $id): string {
+    unmReplicationPath($id);$path='/var/log/unmotion/replication-'.$id.'.log';return is_file($path)?(string)file_get_contents($path):'';
+}
+
+function unmReplicaManifest(string $sourceHostId,string $replicationId): array {
+    return unmLoadJson(unmReplicaPath($sourceHostId,$replicationId).'/manifest.json');
+}
+
+function unmIncomingReplicas(bool $includeRecoveryMaterial=false): array {
+    unmEnsureDirs();$out=[];
+    foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $path){
+        $manifest=unmLoadJson($path);if(!$manifest)continue;
+        $manifest['id']=(string)($manifest['replicationId']??$manifest['id']??'');$manifest['pointCount']=count((array)($manifest['points']??[]));$manifest['status']=(string)($manifest['state']??'UNKNOWN');
+        if(!$includeRecoveryMaterial){
+            foreach($manifest['points']??[] as &$point){
+                if(array_key_exists('sourceXml',$point)){$point['sourceXmlAvailable']=(string)$point['sourceXml']!=='';unset($point['sourceXml']);}
+                if(array_key_exists('sourceXmlPath',$point)){$point['sourceXmlAvailable']=(string)$point['sourceXmlPath']!=='';unset($point['sourceXmlPath']);}
+            }
+            unset($point);
+        }
+        $out[]=$manifest;
+    }
+    usort($out,static fn(array $a,array $b):int=>strcmp((string)($b['updatedAt']??''),(string)($a['updatedAt']??'')));
+    return $out;
+}
+
+function unmValidateReplicaRequestIdentity(array $request,bool $requireVmName=true): array {
+    $sourceHostId=unmReplicaIdentityPart((string)($request['sourceHostId']??''),'source host identity');
+    $destinationHostId=unmReplicaIdentityPart((string)($request['destinationHostId']??''),'destination host identity');
+    if($sourceHostId===unmHostId())throw new InvalidArgumentException('Replica source host cannot be this destination host.');
+    if($destinationHostId!==unmHostId())throw new InvalidArgumentException('Replica request targets a different destination host.');
+    $sourcePeer=unmFindPeerByHostId($sourceHostId);if((string)($sourcePeer['pairingState']??'paired')!=='paired')throw new RuntimeException('Replica requests require a completed reciprocal pairing.');
+    $replicationId=(string)($request['replicationId']??$request['id']??'');unmReplicationPath($replicationId);
+    $vmUuid=trim((string)($request['vmUuid']??''));if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid replica VM UUID.');
+    if(!hash_equals(unmReplicationId($vmUuid,$destinationHostId),$replicationId))throw new InvalidArgumentException('Replica id does not match the VM UUID and destination host identity.');
+    $vmName=trim((string)($request['vmName']??''));if(($requireVmName&&$vmName==='')||preg_match('~[/\r\n\t]~',$vmName))throw new InvalidArgumentException('Invalid replica VM name.');
+    return compact('sourceHostId','destinationHostId','replicationId','vmUuid','vmName');
+}
+
+function unmReplicaVmUuidUndefinedInInventory(string $inventory,string $vmUuid): bool {
+    foreach(preg_split('/\R/',trim($inventory))?:[] as $definedUuid){
+        if($definedUuid!==''&&strcasecmp(trim($definedUuid),$vmUuid)===0)return false;
+    }
+    return true;
+}
+
+function unmAssertReplicaVmUuidUndefined(string $vmUuid): void {
+    $domains=unmRun(['virsh','list','--all','--uuid'],null,30);
+    if($domains['code']!==0)throw new RuntimeException('Destination libvirt inventory is unavailable; replica UUID isolation cannot be verified.');
+    if(!unmReplicaVmUuidUndefinedInInventory((string)$domains['stdout'],$vmUuid))
+        throw new RuntimeException('Destination already defines a VM with the replica UUID. Remove or migrate the stopped conflicting definition before replicating.');
+}
+
+function unmNormaliseReplicaStoragePlan(array $items): array {
+    if(!$items)throw new InvalidArgumentException('Replica storage plan is empty.');
+    $cfg=unmLoadConfig();$zvolRoot=rtrim((string)$cfg['zvol_dataset'],'/');$imageRoot=(string)unmZfsDatasetForPath((string)$cfg['image_dir'],true);$imageDir=rtrim((string)$cfg['image_dir'],'/');$out=[];$destinations=[];$sources=[];
+    foreach($items as $item){
+        if(!is_array($item))throw new InvalidArgumentException('Invalid replica storage item.');
+        $kind=(string)($item['kind']??'');$source=trim((string)($item['source']??''));$destination=trim((string)($item['destination']??''));
+        if(!in_array($kind,['zvol','dataset'],true)||!unmZfsObjectNameSafe($source)||!unmZfsObjectNameSafe($destination))throw new InvalidArgumentException('Invalid replica ZFS storage mapping.');
+        $sourceKey=$kind.'|'.$source;if(isset($sources[$sourceKey]))throw new InvalidArgumentException('Duplicate replica source mapping: '.$source);$sources[$sourceKey]=true;
+        $root=$kind==='zvol'?$zvolRoot:$imageRoot;
+        if($root===''||$destination===$root||!str_starts_with($destination,$root.'/')||str_contains(substr($destination,strlen($root)+1),'/'))throw new InvalidArgumentException('Replica destination is outside the configured exact ZFS receive root: '.$destination);
+        if(isset($destinations[$destination]))throw new InvalidArgumentException('Duplicate replica destination: '.$destination);$destinations[$destination]=true;
+        $sourceMount=(string)($item['sourceMountpoint']??'');$destinationMount=(string)($item['destinationMountpoint']??'');$files=[];
+        if($kind==='dataset'){
+            if($destinationMount===''||!str_starts_with(rtrim($destinationMount,'/').'/', $imageDir.'/.unmotion-replicas/'))throw new InvalidArgumentException('Invalid replica dataset mountpoint.');
+            foreach((array)($item['files']??[]) as $file){
+                if(!is_array($file))throw new InvalidArgumentException('Invalid replica dataset file mapping.');
+                $relative=ltrim((string)($file['relativePath']??''),'/');$destFile=(string)($file['destination']??'');
+                if($relative===''||str_contains($relative,'..')||str_contains($relative,"\0")||$destFile!==rtrim($destinationMount,'/').'/'.$relative)throw new InvalidArgumentException('Invalid replica dataset file path.');
+                $files[]=['source'=>(string)($file['source']??''),'relativePath'=>$relative,'destination'=>$destFile];
+            }
+            if(!$files)throw new InvalidArgumentException('Replica dataset storage must declare at least one VM image file.');
+        }
+        $out[]=['kind'=>$kind,'source'=>$source,'destination'=>$destination,'sourceMountpoint'=>$sourceMount,'destinationMountpoint'=>$destinationMount,'files'=>$files];
+    }
+    return $out;
+}
+
+function unmReplicaPreflight(array $request): array {
+    $identity=unmValidateReplicaRequestIdentity($request);$storage=unmNormaliseReplicaStoragePlan((array)($request['storage']??[]));$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$existing=unmLoadJson($dir.'/manifest.json');
+    unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
+    if($existing&&(($existing['sourceHostId']??'')!==$identity['sourceHostId']||($existing['destinationHostId']??'')!==$identity['destinationHostId']||($existing['vmUuid']??'')!==$identity['vmUuid']))throw new RuntimeException('Existing replica reservation has a different identity.');
+    if($existing&&!empty($existing['storage'])&&unmReplicationStorageFingerprint((array)$existing['storage'])!==unmReplicationStorageFingerprint($storage))throw new RuntimeException('Existing replica reservation has a different storage mapping. Explicit cleanup is required before remapping it.');
+    $owned=[];$ownedByOther=[];foreach((array)($existing['storage']??[]) as $item)$owned[(string)($item['destination']??'')]=true;
+    foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $manifestPath){
+        if($manifestPath===$dir.'/manifest.json')continue;$other=unmLoadJson($manifestPath);
+        foreach((array)($other['storage']??[]) as $item)$ownedByOther[(string)($item['destination']??'')]=true;
+    }
+    foreach($storage as $item){
+        $destination=(string)$item['destination'];
+        if(isset($ownedByOther[$destination]))throw new RuntimeException('Replica destination is owned by another policy: '.$destination);
+        $root=dirname($destination);if(unmRun(['zfs','list','-H','-o','name',$root],null,15)['code']!==0)throw new RuntimeException('Destination ZFS receive root is unavailable: '.$root);
+        $destinationExists=unmRun(['zfs','list','-H','-o','name',$destination],null,15)['code']===0;
+        if($destinationExists&&!isset($owned[$destination]))throw new RuntimeException('Destination ZFS object already exists without matching replica ownership: '.$destination);
+        if($destinationExists&&isset($owned[$destination]))unmVerifyReplicaDestinationInert($item);
+    }
+    $cfg=unmLoadConfig();$stateDirectory=rtrim((string)$cfg['image_dir'],'/').'/.unmotion-replicas/'.substr(hash('sha256',$identity['sourceHostId']),0,16).'/'.$identity['vmUuid'];
+    $reserve=true;if(array_key_exists('reserve',$request)){$reserve=filter_var($request['reserve'],FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($reserve===null)throw new InvalidArgumentException('Invalid replica reservation mode.');}
+    if($reserve){
+        if(!is_dir($dir)&&!mkdir($dir,0700,true)&&!is_dir($dir))throw new RuntimeException('Unable to create replica reservation directory.');
+        if(!is_dir($stateDirectory)&&!mkdir($stateDirectory,0700,true)&&!is_dir($stateDirectory))throw new RuntimeException('Unable to create replica state directory.');
+        $now=date(DATE_ATOM);$manifest=array_replace($existing,['replicationId'=>$identity['replicationId'],'sourceHostId'=>$identity['sourceHostId'],'destinationHostId'=>$identity['destinationHostId'],'vmUuid'=>$identity['vmUuid'],'vmName'=>$identity['vmName'],'state'=>(string)($existing['state']??'RESERVED'),'storage'=>$storage,'stateDirectory'=>$stateDirectory,'points'=>(array)($existing['points']??[]),'currentPointId'=>$existing['currentPointId']??null,'createdAt'=>$existing['createdAt']??$now,'updatedAt'=>$now]);
+        unmAtomicJson($dir.'/manifest.json',$manifest);$existing=$manifest;
+    }
+    return ['accepted'=>true,'hostId'=>unmHostId(),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'stateDirectory'=>$stateDirectory,'manifest'=>$existing?:null];
+}
+
+function unmReplicaSnapshotName(string $value): string {
+    $value=trim($value);if(!preg_match('/^unmotion-(?:repl|rpl)-[A-Za-z0-9_.:-]+$/',$value))throw new InvalidArgumentException('Invalid replica snapshot name.');return $value;
+}
+
+function unmReplicaExpectedSnapshotName(string $replicationId,int $generation): string {
+    unmReplicationPath($replicationId);if($generation<1)throw new InvalidArgumentException('Invalid recovery point generation.');
+    return 'unmotion-rpl-'.substr(hash('sha256',$replicationId),0,12).'-g'.$generation;
+}
+
+function unmReplicaZfsProperty(string $object,string $property): string {
+    $result=unmRun(['zfs','get','-H','-o','value',$property,$object],null,15);
+    if($result['code']!==0)throw new RuntimeException('Unable to verify ZFS property '.$property.' on '.$object.': '.trim($result['stderr']));
+    return trim($result['stdout']);
+}
+
+function unmVerifyReplicaDestinationInert(array $storage): void {
+    $destination=(string)($storage['destination']??'');$kind=(string)($storage['kind']??'');
+    $type=unmReplicaZfsProperty($destination,'type');
+    if($kind==='dataset'&&$type!=='filesystem')throw new RuntimeException('Replica destination is not a filesystem: '.$destination);
+    if($kind==='zvol'&&$type!=='volume')throw new RuntimeException('Replica destination is not a volume: '.$destination);
+    if(unmReplicaZfsProperty($destination,'readonly')!=='on')throw new RuntimeException('Replica destination is not readonly: '.$destination);
+    if($kind==='dataset'){
+        if(unmReplicaZfsProperty($destination,'canmount')!=='off'||unmReplicaZfsProperty($destination,'mountpoint')!=='none')throw new RuntimeException('Replica dataset is not inert (canmount=off, mountpoint=none): '.$destination);
+    }elseif($kind==='zvol'){
+        if(unmReplicaZfsProperty($destination,'volmode')!=='none'||unmReplicaZfsProperty($destination,'snapdev')!=='hidden')throw new RuntimeException('Replica zvol is not inert (volmode=none, snapdev=hidden): '.$destination);
+    }else throw new InvalidArgumentException('Invalid replica destination kind.');
+}
+
+function unmValidateReplicaCheckpoint(array $checkpoint,string $stateDirectory,int $depth=0): array {
+    if($depth>1)throw new InvalidArgumentException('Replica checkpoint fallback nesting is too deep.');
+    foreach(['contentSha256','archiveSha256'] as $hashKey){
+        $hash=strtolower(trim((string)($checkpoint[$hashKey]??'')));
+        if($hash!==''&&!preg_match('/^[a-f0-9]{64}$/',$hash))throw new InvalidArgumentException('Replica checkpoint contains an invalid '.$hashKey.'.');
+        if($hash!=='')$checkpoint[$hashKey]=$hash;
+    }
+    $checkpointId=trim((string)($checkpoint['checkpointId']??''));
+    if($checkpointId!==''&&!preg_match('/^state-[a-f0-9]{24}$/',$checkpointId))throw new InvalidArgumentException('Replica checkpoint id is invalid.');
+    $archivePath=(string)($checkpoint['archivePath']??'');$transferred=!empty($checkpoint['transferred']);
+    if($transferred||$archivePath!==''){
+        if(!$transferred||$archivePath===''||str_contains($archivePath,"\0")||str_contains($archivePath,"\n"))throw new InvalidArgumentException('Transferred replica checkpoint archive metadata is incomplete.');
+        $stateReal=realpath($stateDirectory);$archiveReal=realpath($archivePath);
+        if($stateReal===false||$archiveReal===false||!is_file($archiveReal)||is_link($archivePath)||dirname($archiveReal)!==$stateReal)throw new RuntimeException('Replica checkpoint archive is outside its exact reserved state directory or is not a regular file.');
+        $archiveHash=(string)($checkpoint['archiveSha256']??'');
+        if($archiveHash===''||!hash_equals($archiveHash,(string)hash_file('sha256',$archiveReal)))throw new RuntimeException('Replica checkpoint archive failed SHA-256 verification.');
+        if($checkpointId===''||!hash_equals($checkpointId,'state-'.substr($archiveHash,0,24))||basename($archiveReal)!==$checkpointId.'.tar.gz')throw new RuntimeException('Replica checkpoint id or filename does not match its archive SHA-256.');
+        $checkpoint['archivePath']=$archiveReal;$checkpoint['transferred']=true;
+    }else{
+        $checkpoint['archivePath']='';$checkpoint['transferred']=false;
+    }
+    $quality=(string)($checkpoint['quality']??'');if(!in_array($quality,['safe','best-effort','unstable','missing','not-required'],true))throw new InvalidArgumentException('Replica checkpoint quality is invalid.');
+    $tpmPresent=!empty($checkpoint['tpmPresent']);$nvramPresent=!empty($checkpoint['nvramPresent']);
+    if($quality==='safe'&&(!$transferred||$archivePath===''||($tpmPresent&&empty($checkpoint['tpmCaptured']))||($nvramPresent&&empty($checkpoint['nvramCaptured']))))
+        throw new InvalidArgumentException('A safe replica checkpoint requires a transferred archive covering every declared TPM and NVRAM device.');
+    foreach(['capturedAt','safeObservedAt'] as $timeKey)if(isset($checkpoint[$timeKey])&&((string)$checkpoint[$timeKey]===''||strlen((string)$checkpoint[$timeKey])>64||strtotime((string)$checkpoint[$timeKey])===false))throw new InvalidArgumentException('Replica checkpoint contains an invalid '.$timeKey.'.');
+    if(isset($checkpoint['safeFallback'])){
+        if(!is_array($checkpoint['safeFallback']))throw new InvalidArgumentException('Replica safe checkpoint fallback is invalid.');
+        $checkpoint['safeFallback']=unmValidateReplicaCheckpoint($checkpoint['safeFallback'],$stateDirectory,$depth+1);
+        $fallback=$checkpoint['safeFallback'];
+        if($quality==='safe')throw new InvalidArgumentException('A safe replica checkpoint must not contain a fallback checkpoint.');
+        $compatible=($fallback['quality']??'')==='safe'&&!empty($fallback['transferred'])&&!empty($fallback['archivePath'])&&
+            !empty($fallback['tpmPresent'])===$tpmPresent&&!empty($fallback['nvramPresent'])===$nvramPresent&&
+            (!$tpmPresent||!empty($fallback['tpmCaptured']))&&(!$nvramPresent||!empty($fallback['nvramCaptured']));
+        if(!$compatible)throw new InvalidArgumentException('Replica safe checkpoint fallback does not cover the same TPM and NVRAM devices.');
+    }
+    $normalised=['checkpointId'=>$checkpointId,'quality'=>$quality,'contentSha256'=>(string)($checkpoint['contentSha256']??''),'archiveSha256'=>(string)($checkpoint['archiveSha256']??''),'archivePath'=>(string)$checkpoint['archivePath'],'capturedAt'=>(string)($checkpoint['capturedAt']??''),'tpmPresent'=>!empty($checkpoint['tpmPresent']),'tpmCaptured'=>!empty($checkpoint['tpmCaptured']),'nvramPresent'=>!empty($checkpoint['nvramPresent']),'nvramCaptured'=>!empty($checkpoint['nvramCaptured']),'transferred'=>!empty($checkpoint['transferred'])];
+    if(isset($checkpoint['safeObservedAt']))$normalised['safeObservedAt']=(string)$checkpoint['safeObservedAt'];
+    if(isset($checkpoint['safeFallback']))$normalised['safeFallback']=$checkpoint['safeFallback'];
+    return $normalised;
+}
+
+function unmCanonicalReplicationValue(mixed $value): mixed {
+    if(!is_array($value))return $value;
+    if(array_is_list($value))return array_map('unmCanonicalReplicationValue',$value);
+    ksort($value,SORT_STRING);foreach($value as $key=>$item)$value[$key]=unmCanonicalReplicationValue($item);return $value;
+}
+
+function unmReplicaPointImmutableFingerprint(array $point): string {
+    $keys=['id','generation','snapshot','slotEpoch','scheduledAt','createdAt','capturedAt','capturedAtEpoch','consistency','replicationOnly','storage','guestAgent','sourceXmlPath','sourceXmlSha256','hostState','tpm','nvram'];$immutable=[];
+    foreach($keys as $key)$immutable[$key]=$point[$key]??null;
+    return hash('sha256',json_encode(unmCanonicalReplicationValue($immutable),JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR));
+}
+
+function unmStoreReplicaSourceXml(string $sourceXml,string $sourceXmlSha256,string $stateDirectory): string {
+    $stateReal=realpath($stateDirectory);if($stateReal===false||!is_dir($stateReal)||is_link($stateDirectory))throw new RuntimeException('Replica state directory is unavailable or unsafe.');
+    $target=$stateReal.'/xml-'.$sourceXmlSha256.'.xml';
+    if(file_exists($target)||is_link($target)){
+        $targetReal=realpath($target);
+        if($targetReal===false||dirname($targetReal)!==$stateReal||!is_file($targetReal)||is_link($target)||!hash_equals($sourceXmlSha256,(string)hash_file('sha256',$targetReal)))throw new RuntimeException('Existing replica source XML recovery material failed path or SHA-256 verification.');
+        if(!chmod($targetReal,0600))throw new RuntimeException('Unable to secure existing replica source XML recovery material.');
+        return $targetReal;
+    }
+    $temporary=tempnam($stateReal,'.unmotion-xml-');if($temporary===false)throw new RuntimeException('Unable to create a temporary source XML recovery file.');
+    try{
+        if(file_put_contents($temporary,$sourceXml,LOCK_EX)!==strlen($sourceXml)||!chmod($temporary,0600)||!hash_equals($sourceXmlSha256,(string)hash_file('sha256',$temporary)))throw new RuntimeException('Unable to write verified source XML recovery material.');
+        if(!rename($temporary,$target))throw new RuntimeException('Unable to commit source XML recovery material.');
+        $temporary='';
+        if(!chmod($target,0600)||is_link($target)||!is_file($target)||!hash_equals($sourceXmlSha256,(string)hash_file('sha256',$target)))throw new RuntimeException('Committed source XML recovery material failed verification.');
+        return $target;
+    }finally{if($temporary!==''&&is_file($temporary))@unlink($temporary);}
+}
+
+function unmParseReplicaSnapshotHoldTags(string $output): array {
+    $tags=[];foreach(preg_split('/\R/',trim($output))?:[] as $line){
+        if(trim($line)==='')continue;$columns=explode("\t",$line,3);if(isset($columns[1])&&$columns[1]!=='')$tags[]=(string)$columns[1];
+    }
+    return array_values(array_unique($tags));
+}
+
+function unmReplicaSnapshotHoldTags(string $snapshot): array {
+    $result=unmRun(['zfs','holds','-H',$snapshot],null,15);
+    if($result['code']!==0)throw new RuntimeException('Unable to inspect holds for '.$snapshot.': '.trim($result['stderr']));
+    return unmParseReplicaSnapshotHoldTags($result['stdout']);
+}
+
+function unmReplicaPublish(array $request): array {
+    $identity=unmValidateReplicaRequestIdentity($request);$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica must be reserved before publishing a recovery point.');
+    unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
+    if(($manifest['sourceHostId']??'')!==$identity['sourceHostId']||($manifest['destinationHostId']??'')!==$identity['destinationHostId']||($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica reservation identity does not match the publish request.');
+    $point=is_array($request['point']??null)?$request['point']:[];$pointId=trim((string)($point['id']??''));if(!preg_match('/^[A-Za-z0-9_.-]{8,100}$/',$pointId))throw new InvalidArgumentException('Invalid recovery point id.');
+    $generation=(int)($point['generation']??0);if($generation<1)throw new InvalidArgumentException('Invalid recovery point generation.');
+    $sourceXml=(string)($point['sourceXml']??$request['sourceXml']??'');$encodedXml=$point['sourceXmlBase64']??$request['sourceXmlBase64']??null;
+    if($encodedXml!==null){$decoded=base64_decode((string)$encodedXml,true);if($decoded===false)throw new InvalidArgumentException('Source XML recovery material is not valid base64.');if($sourceXml!==''&&!hash_equals($sourceXml,$decoded))throw new InvalidArgumentException('Source XML string and base64 recovery material differ.');$sourceXml=$decoded;}
+    unset($point['sourceXmlBase64']);
+    $sourceXmlSha256=strtolower(trim((string)($point['sourceXmlSha256']??$request['sourceXmlSha256']??'')));
+    if($sourceXml===''||strlen($sourceXml)>2097152||!preg_match('/^[a-f0-9]{64}$/',$sourceXmlSha256)||!hash_equals($sourceXmlSha256,hash('sha256',$sourceXml)))throw new InvalidArgumentException('Every recovery point requires source XML recovery material with a valid size and SHA-256.');
+    if(!str_contains($sourceXml,'<domain')||strcasecmp(unmXmlValue($sourceXml,'uuid'),$identity['vmUuid'])!==0)throw new InvalidArgumentException('Source XML recovery material does not match the replica VM UUID.');
+    $point['sourceXmlSha256']=$sourceXmlSha256;
+    $expected=[];foreach((array)$manifest['storage'] as $item)$expected[(string)$item['destination']]=$item;
+    $pointSnapshot=unmReplicaSnapshotName((string)($point['snapshot']??''));if(!hash_equals(unmReplicaExpectedSnapshotName($identity['replicationId'],$generation),$pointSnapshot))throw new InvalidArgumentException('Recovery point snapshot name does not match its policy and generation.');$verified=[];$ownHold='unmotion:replication:'.$identity['replicationId'];
+    foreach((array)($point['storage']??[]) as $item){
+        if(!is_array($item))throw new InvalidArgumentException('Invalid recovery point storage item.');
+        $destination=(string)($item['destination']??$item['dataset']??'');if(!isset($expected[$destination]))throw new InvalidArgumentException('Recovery point references an unowned destination: '.$destination);
+        $snapshot=unmReplicaSnapshotName((string)($item['snapshot']??''));if($snapshot!==$pointSnapshot)throw new RuntimeException('Recovery point storage snapshots do not form one exact consistency group.');$full=$destination.'@'.$snapshot;
+        unmVerifyReplicaDestinationInert($expected[$destination]);
+        $guidResult=unmRun(['zfs','get','-H','-o','value','guid',$full],null,15);if($guidResult['code']!==0)throw new RuntimeException('Recovery point snapshot is unavailable: '.$full);
+        $guid=trim($guidResult['stdout']);$claimed=trim((string)($item['guid']??''));if(!preg_match('/^\d+$/',$claimed)||!hash_equals($claimed,$guid))throw new RuntimeException('Recovery point snapshot GUID does not match: '.$full);
+        if(!in_array($ownHold,unmReplicaSnapshotHoldTags($full),true))throw new RuntimeException('Recovery point snapshot does not have its exact unMotion replication hold: '.$full);
+        $verified[$destination]=['kind'=>$expected[$destination]['kind'],'source'=>$expected[$destination]['source'],'destination'=>$destination,'snapshot'=>$snapshot,'guid'=>$guid];
+    }
+    if(count($verified)!==count($expected))throw new RuntimeException('Recovery point does not include every replica storage object.');
+    $stateDirectory=(string)($manifest['stateDirectory']??'');if($stateDirectory===''||realpath($stateDirectory)===false)throw new RuntimeException('Replica state directory is unavailable.');
+    foreach(['hostState','tpm','nvram'] as $checkpointKey)if(isset($point[$checkpointKey])){
+        if(!is_array($point[$checkpointKey]))throw new InvalidArgumentException('Invalid '.$checkpointKey.' checkpoint metadata.');
+        $point[$checkpointKey]=unmValidateReplicaCheckpoint($point[$checkpointKey],$stateDirectory);
+    }
+    $consistency=(string)($point['consistency']??'');if(!in_array($consistency,['powered-off','filesystem-quiesced','crash-consistent'],true))throw new InvalidArgumentException('Invalid recovery point consistency classification.');
+    $capturedAt=(string)($point['capturedAt']??'');$capturedAtEpoch=(int)($point['capturedAtEpoch']??0);$parsedCapture=strtotime($capturedAt);
+    if($capturedAt===''||strlen($capturedAt)>64||$parsedCapture===false||$capturedAtEpoch<=0||$capturedAtEpoch!==$parsedCapture)throw new InvalidArgumentException('Recovery point capture timestamp is invalid or inconsistent.');
+    $slotEpoch=(int)($point['slotEpoch']??0);if($slotEpoch<=0)throw new InvalidArgumentException('Recovery point UTC slot is invalid.');
+    if(!hash_equals('point-'.$slotEpoch.'-g'.$generation,$pointId))throw new InvalidArgumentException('Recovery point id does not match its UTC slot and generation.');
+    $scheduledAt=(string)($point['scheduledAt']??'');if($scheduledAt!==''&&(strlen($scheduledAt)>64||strtotime($scheduledAt)===false))throw new InvalidArgumentException('Recovery point scheduled timestamp is invalid.');
+    $createdAt=(string)($point['createdAt']??$capturedAt);if($createdAt===''||strlen($createdAt)>64||strtotime($createdAt)===false)throw new InvalidArgumentException('Recovery point created timestamp is invalid.');
+    $guestAgent=$point['guestAgent']??[];if(!is_array($guestAgent))throw new InvalidArgumentException('Recovery point guest-agent metadata is invalid.');
+    $guestObservedAt=(string)($guestAgent['observedAt']??'');if($guestObservedAt!==''&&(strlen($guestObservedAt)>64||strtotime($guestObservedAt)===false))throw new InvalidArgumentException('Recovery point guest-agent observation timestamp is invalid.');
+    $guestNetwork=$guestAgent['network']??[];if(!is_array($guestNetwork)||strlen(json_encode($guestNetwork,JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR))>131072)throw new InvalidArgumentException('Recovery point guest-agent network metadata is invalid or too large.');
+    $guestAgent=['verified'=>!empty($guestAgent['verified']),'observedAt'=>$guestObservedAt,'network'=>$guestNetwork];
+    $normalisedPoint=['id'=>$pointId,'generation'=>$generation,'snapshot'=>$pointSnapshot,'slotEpoch'=>$slotEpoch,'scheduledAt'=>$scheduledAt,'createdAt'=>$createdAt,'capturedAt'=>$capturedAt,'capturedAtEpoch'=>$capturedAtEpoch,'consistency'=>$consistency,'replicationOnly'=>!empty($point['replicationOnly']),'storage'=>array_values($verified),'guestAgent'=>$guestAgent,'sourceXmlPath'=>unmStoreReplicaSourceXml($sourceXml,$sourceXmlSha256,$stateDirectory),'sourceXmlSha256'=>$sourceXmlSha256,'completedAt'=>date(DATE_ATOM),'state'=>'AVAILABLE'];
+    foreach(['hostState','tpm','nvram'] as $checkpointKey)if(isset($point[$checkpointKey]))$normalisedPoint[$checkpointKey]=$point[$checkpointKey];
+    $point=$normalisedPoint;
+    $points=(array)($manifest['points']??[]);$replaced=false;$maximumGeneration=0;
+    foreach($points as $index=>$existing){
+        $maximumGeneration=max($maximumGeneration,(int)($existing['generation']??0));
+        if(($existing['id']??'')!==$pointId)continue;
+        if(unmReplicaPointImmutableFingerprint($existing)!==unmReplicaPointImmutableFingerprint($point))throw new RuntimeException('Recovery point id already exists with different recovery material or consistency metadata.');
+        $point=$existing;$replaced=true;break;
+    }
+    if($replaced)return ['published'=>true,'accepted'=>true,'idempotent'=>true,'point'=>$point,'points'=>$points,'manifest'=>$manifest,'pointCount'=>count($points),'currentPointId'=>$manifest['currentPointId']??null];
+    if($generation!==$maximumGeneration+1)throw new RuntimeException('Recovery point generation is not the next destination inventory generation.');
+    $points[]=$point;
+    usort($points,static fn(array $a,array $b):int=>unmReplicationPointTimestamp($b)<=>unmReplicationPointTimestamp($a));
+    unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
+    $manifest['points']=$points;$manifest['currentPointId']=$pointId;$manifest['state']='READY';$manifest['lastSuccessAt']=$point['completedAt'];$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);
+    return ['published'=>true,'accepted'=>true,'idempotent'=>false,'point'=>$point,'points'=>$points,'manifest'=>$manifest,'pointCount'=>count($points),'currentPointId'=>$pointId];
+}
+
+function unmGarbageCollectReplicaCheckpointArchives(array $points,string $stateDirectory): array {
+    $stateReal=realpath($stateDirectory);
+    if($stateReal===false||!is_dir($stateReal)||is_link($stateDirectory))throw new RuntimeException('Replica state directory is unavailable for exact checkpoint cleanup.');
+    $referenced=[];
+    $collect=static function(array $checkpoint)use(&$referenced,$stateReal):void{
+        $validated=unmValidateReplicaCheckpoint($checkpoint,$stateReal);
+        while(true){
+            if(!empty($validated['transferred']))$referenced[(string)$validated['archivePath']]=true;
+            if(!isset($validated['safeFallback'])||!is_array($validated['safeFallback']))break;
+            // The outer validation already validated and normalised the exact
+            // fallback chain. Do not revalidate its optional empty timestamps.
+            $validated=$validated['safeFallback'];
+        }
+    };
+    foreach($points as $point){
+        if(!is_array($point))throw new RuntimeException('Replica inventory contains invalid recovery point metadata; checkpoint cleanup was refused.');
+        foreach(['hostState','tpm','nvram'] as $key)if(isset($point[$key])){
+            if(!is_array($point[$key]))throw new RuntimeException('Replica inventory contains invalid checkpoint metadata; checkpoint cleanup was refused.');
+            $collect($point[$key]);
+        }
+    }
+    try{$entries=new DirectoryIterator($stateReal);}catch(Throwable $e){throw new RuntimeException('Unable to enumerate the exact replica checkpoint directory.',0,$e);}
+    $candidates=[];
+    foreach($entries as $entry){
+        if($entry->isDot())continue;$name=$entry->getFilename();
+        if(!preg_match('/^state-([a-f0-9]{24})\.tar\.gz$/',$name,$match))continue;
+        $path=$stateReal.DIRECTORY_SEPARATOR.$name;
+        if($entry->isLink()||!$entry->isFile())throw new RuntimeException('Unsafe checkpoint archive entry was preserved during cleanup: '.$name);
+        $real=realpath($path);if($real===false||dirname($real)!==$stateReal)throw new RuntimeException('Checkpoint archive escaped its exact replica state directory; cleanup was refused.');
+        if(isset($referenced[$real]))continue;
+        $hash=hash_file('sha256',$real);if($hash===false||!hash_equals($match[1],substr($hash,0,24)))throw new RuntimeException('Unreferenced checkpoint archive failed its ownership hash check and was preserved: '.$name);
+        $candidates[$real]=['name'=>$name,'sha256'=>$hash];
+    }
+    $removed=[];
+    foreach($candidates as $real=>$candidate){
+        if(is_link($real)||!is_file($real)||dirname((string)realpath($real))!==$stateReal||!hash_equals($candidate['sha256'],(string)hash_file('sha256',$real)))
+            throw new RuntimeException('Unreferenced checkpoint archive changed during exact cleanup and was preserved: '.$candidate['name']);
+        if(!unlink($real))throw new RuntimeException('Unable to remove exact unreferenced checkpoint archive: '.$candidate['name']);
+        $removed[]=$candidate['name'];
+    }
+    sort($removed,SORT_STRING);return $removed;
+}
+
+function unmReplicaPrune(array $request): array {
+    $identity=unmValidateReplicaRequestIdentity($request,false);$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica inventory not found.');
+    if(($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica inventory VM identity does not match.');
+    $requested=(array)($request['points']??[]);if(!$requested&&isset($request['pointIds']))foreach((array)$request['pointIds'] as $id)$requested[]=['id'=>$id];
+    $points=(array)($manifest['points']??[]);$byId=[];foreach($points as $point)$byId[(string)($point['id']??'')]=$point;$pruned=[];$seen=[];$ownHold='unmotion:replication:'.$identity['replicationId'];
+    foreach($requested as $entry){
+        if(!is_array($entry))throw new InvalidArgumentException('Invalid prune entry.');$id=(string)($entry['id']??'');
+        if($id===''||isset($seen[$id]))throw new InvalidArgumentException('Invalid or duplicate recovery point prune id.');$seen[$id]=true;
+        if(!isset($byId[$id]))continue;if($id===(string)($manifest['currentPointId']??''))throw new RuntimeException('The current recovery point cannot be pruned.');
+        $point=$byId[$id];$allowMissing=in_array((string)($point['state']??'AVAILABLE'),['DELETING','CLEANUP_FAILED'],true);$allowed=[];foreach((array)($point['storage']??[]) as $item){$full=(string)$item['destination'].'@'.(string)$item['snapshot'];$allowed[$full]=$item;}
+        $snapshots=(array)($entry['snapshots']??[]);if(!$snapshots)$snapshots=(array)($point['storage']??[]);
+        $requestedSnapshots=[];
+        foreach($snapshots as $snapshot){
+            if(!is_array($snapshot))throw new InvalidArgumentException('Invalid prune snapshot.');$dataset=(string)($snapshot['dataset']??$snapshot['destination']??'');$snap=unmReplicaSnapshotName((string)($snapshot['snapshot']??''));$full=$dataset.'@'.$snap;
+            if(!isset($allowed[$full])||isset($requestedSnapshots[$full]))throw new RuntimeException('Prune request references an unowned or duplicate recovery snapshot: '.$full);$requestedSnapshots[$full]=true;
+        }
+        if(count($requestedSnapshots)!==count($allowed))throw new RuntimeException('Prune request must name every exact storage snapshot in the recovery point.');
+        foreach($manifest['points'] as &$manifestPoint)if((string)($manifestPoint['id']??'')===$id){$manifestPoint['state']='DELETING';$manifestPoint['cleanupError']=null;break;}unset($manifestPoint);
+        $manifest['state']='CLEANING';$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);
+        try{
+            $existingSnapshots=[];
+            foreach($allowed as $full=>$stored){
+                $exists=unmRun(['zfs','list','-H','-t','snapshot','-o','name',$full],null,15);
+                if($exists['code']!==0){if($allowMissing)continue;throw new RuntimeException('Available recovery snapshot is missing before prune: '.$full);}
+                $existingSnapshots[$full]=$stored;
+                $guidResult=unmRun(['zfs','get','-H','-o','value','guid',$full],null,15);if($guidResult['code']!==0)throw new RuntimeException('Unable to verify recovery snapshot GUID before prune: '.$full);
+                $currentGuid=trim($guidResult['stdout']);$manifestGuid=trim((string)($stored['guid']??''));if($manifestGuid===''||!hash_equals($manifestGuid,$currentGuid))throw new RuntimeException('Recovery snapshot GUID changed; refusing prune: '.$full);
+                $tags=unmReplicaSnapshotHoldTags($full);if(!$allowMissing&&!in_array($ownHold,$tags,true))throw new RuntimeException('Available recovery snapshot lost its exact unMotion hold and was preserved: '.$full);
+                $foreign=array_values(array_diff($tags,[$ownHold]));if($foreign)throw new RuntimeException('Recovery snapshot has a foreign hold and was preserved: '.$full);
+            }
+            foreach($existingSnapshots as $full=>$stored){
+                $tags=unmReplicaSnapshotHoldTags($full);
+                if(in_array($ownHold,$tags,true)){
+                    $release=unmRun(['zfs','release',$ownHold,$full],null,15);if($release['code']!==0)throw new RuntimeException('Unable to release the exact unMotion hold on '.$full.': '.trim($release['stderr']));
+                }
+                if(unmReplicaSnapshotHoldTags($full))throw new RuntimeException('Recovery snapshot gained another hold and was preserved: '.$full);
+                $currentGuid=unmReplicaZfsProperty($full,'guid');if(!hash_equals((string)$stored['guid'],$currentGuid))throw new RuntimeException('Recovery snapshot GUID changed immediately before prune: '.$full);
+                $destroy=unmRun(['zfs','destroy',$full],null,60);if($destroy['code']!==0)throw new RuntimeException('Unable to prune recovery snapshot '.$full.': '.trim($destroy['stderr']));
+            }
+        }catch(Throwable $e){
+            foreach($manifest['points'] as &$manifestPoint)if((string)($manifestPoint['id']??'')===$id){$manifestPoint['state']='CLEANUP_FAILED';$manifestPoint['cleanupError']=$e->getMessage();break;}unset($manifestPoint);
+            $manifest['state']='CLEANUP_FAILED';$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);throw $e;
+        }
+        unset($byId[$id]);$manifest['points']=array_values($byId);usort($manifest['points'],static fn(array $a,array $b):int=>unmReplicationPointTimestamp($b)<=>unmReplicationPointTimestamp($a));$manifest['state']='READY';unset($manifest['checkpointCleanupError']);$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);$pruned[]=$id;
+    }
+    try{
+        unmGarbageCollectReplicaCheckpointArchives((array)($manifest['points']??[]),(string)($manifest['stateDirectory']??''));
+        if(isset($manifest['checkpointCleanupError'])){unset($manifest['checkpointCleanupError']);$manifest['state']='READY';$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);}
+    }catch(Throwable $e){
+        $manifest['state']='CLEANUP_FAILED';$manifest['checkpointCleanupError']=$e->getMessage();$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);throw $e;
+    }
+    return ['pruned'=>$pruned,'pointCount'=>count((array)($manifest['points']??[])),'currentPointId'=>$manifest['currentPointId']??null,'manifest'=>$manifest];
+}
+
+function unmReplicaInventory(array $request): array {
+    $identity=unmValidateReplicaRequestIdentity($request,false);$manifest=unmReplicaManifest($identity['sourceHostId'],$identity['replicationId']);if(!$manifest)throw new RuntimeException('Replica inventory not found.');
+    if(($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica inventory VM identity does not match.');
+    return ['manifest'=>$manifest,'points'=>(array)($manifest['points']??[]),'pointCount'=>count((array)($manifest['points']??[])),'currentPointId'=>$manifest['currentPointId']??null];
 }
 
 

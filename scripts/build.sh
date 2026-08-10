@@ -48,11 +48,11 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Add cold, same-host, full-copy VM cloning across zvol, dedicated-dataset, raw and qcow2 storage.
-- Generate a new libvirt UUID, genid and MAC address for every cloned NIC.
-- Keep clones stopped and network-isolated unless Ubuntu Guest Agent customization succeeds.
-- Reset Ubuntu machine identity, hostname and SSH host keys, and replace static Netplan with DHCP.
-- Remove cloned USB passthrough and block PCIe or virtual-TPM clones pending safe remapping designs.
+- Add scheduled, resumable replication of dedicated ZFS VM storage to a paired host.
+- Offer notched 5-minute to 24-hour RPOs and UTC-bucketed retention within the latest 24 hours.
+- Keep destination replicas inert and undefined while recording verified recovery-point inventory.
+- Capture QEMU Guest Agent consistency/network metadata and TPM/NVRAM checkpoint evidence.
+- Preserve protocol-5 migration compatibility; activation and automatic failover remain out of beta1.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF

@@ -2,8 +2,11 @@
 # shellcheck disable=SC2016 # Embedded PHP snippets intentionally use single-quoted shell strings.
 PLUGIN=/boot/config/plugins/unmotion
 SERVICE=/etc/avahi/services/unmotion.service
+REPLICATION_SCHEDULER=/usr/local/sbin/unmotion-replication-scheduler
+REPLICATION_PID=/var/run/unmotion-replication-scheduler.pid
+REPLICATION_RUNTIME=/var/run/unmotion/replications
 init_config(){
-  mkdir -p "$PLUGIN" "$PLUGIN/peers" "$PLUGIN/jobs" "$PLUGIN/ownership" "$PLUGIN/seeds"
+  mkdir -p "$PLUGIN" "$PLUGIN/peers" "$PLUGIN/jobs" "$PLUGIN/ownership" "$PLUGIN/seeds" "$PLUGIN/replications" "$PLUGIN/replicas" "$REPLICATION_RUNTIME" /var/log/unmotion
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; unmWriteRuntimeConfig(unmLoadConfig()); unmHostId();' >/dev/null 2>&1 || true
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmJobs() as $j){if(in_array($j["state"]??"",array_merge(unmActiveJobStates(),["STARTING_DESTINATION","OWNERSHIP_HANDOFF"]),true)){ $p=UNM_JOBS_DIR."/".$j["id"]."/job.json"; $j["state"]="INTERRUPTED";$j["message"]=(($j["jobType"]??"migration")==="clone"?"Host or plugin restarted; cancel this job to clean its exact clone destinations, then start a new clone":"Host or plugin restarted; job may be resumed");$j["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$j);}}' >/dev/null 2>&1 || true
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmSeeds() as $seed){if(in_array($seed["state"]??"",["STARTING","PREFLIGHT","SNAPSHOTTING","TRANSFERRING","REMOVING"],true)){ $p=unmSeedPath((string)$seed["id"])."/seed.json"; $seed["state"]="INTERRUPTED";$seed["message"]="Host or plugin restarted; run Update or Remove after checking the destination";$seed["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$seed);}}' >/dev/null 2>&1 || true
@@ -11,6 +14,44 @@ init_config(){
     [[ -f "$request" ]] || continue
     state=$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo $d["state"]??"";' "$request" 2>/dev/null)
     case "$state" in scheduled|watching|validating|requesting_source_cleanup) job=$(basename "$(dirname "$request")"); nohup setsid /usr/local/sbin/unmotion-soak-cleanup "$job" >>"$(dirname "$request")/source-cleanup-launcher.log" 2>&1 & ;; esac
+  done
+}
+pid_matches(){
+  local pid="$1" script="$2" expected_arg="${3:-}" index
+  local -a arguments=()
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 1 && -r "/proc/$pid/cmdline" ]] || return 1
+  mapfile -d '' -t arguments < "/proc/$pid/cmdline" || return 1
+  for ((index=0;index<${#arguments[@]};index++)); do
+    [[ "${arguments[index]}" == "$script" ]] || continue
+    [[ -z "$expected_arg" ]] && return 0
+    ((index+1<${#arguments[@]})) && [[ "${arguments[index+1]}" == "$expected_arg" ]] && return 0
+  done
+  return 1
+}
+start_replication_scheduler(){
+  local pid=''
+  [[ -x "$REPLICATION_SCHEDULER" ]] || return 0
+  [[ -f "$REPLICATION_PID" ]] && read -r pid < "$REPLICATION_PID"
+  pid_matches "$pid" "$REPLICATION_SCHEDULER" && return 0
+  rm -f -- "$REPLICATION_PID"
+  nohup setsid "$REPLICATION_SCHEDULER" >>/var/log/unmotion/replication-scheduler.log 2>&1 &
+}
+stop_replication_process(){
+  local pid="$1" script="$2" expected_arg="${3:-}"
+  pid_matches "$pid" "$script" "$expected_arg" || return 0
+  kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for _ in {1..40}; do [[ -d "/proc/$pid" ]] || return 0; sleep 0.25; done
+  return 0
+}
+stop_replication_runtime(){
+  local pid='' runtime id
+  if [[ -f "$REPLICATION_PID" ]]; then read -r pid < "$REPLICATION_PID"; stop_replication_process "$pid" "$REPLICATION_SCHEDULER"; fi
+  rm -f -- "$REPLICATION_PID"
+  for runtime in "$REPLICATION_RUNTIME"/*.json; do
+    [[ -f "$runtime" ]] || continue
+    id=$(basename "$runtime" .json)
+    pid=$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo is_array($d)?(int)($d["pid"]??0):0;' "$runtime" 2>/dev/null || echo 0)
+    stop_replication_process "$pid" /usr/local/sbin/unmotion-replication-worker "$id"
   done
 }
 advertise(){
@@ -29,8 +70,8 @@ EOF
   pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true
 }
 case "${1:-start}" in
-  start) init_config; advertise ;;
-  stop) rm -f "$SERVICE"; pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true ;;
+  start) init_config; advertise; start_replication_scheduler ;;
+  stop) stop_replication_runtime; rm -f "$SERVICE"; pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true ;;
   restart) "$0" stop; "$0" start ;;
   *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
 esac

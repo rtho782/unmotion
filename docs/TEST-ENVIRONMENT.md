@@ -23,6 +23,13 @@ Suggested fixtures:
 - interrupted SSH/ZFS receive with a resume token;
 - held source/destination snapshots;
 - source and destination running different plugin versions.
+- dedicated-dataset and zvol VMs with scheduled replication policies at multiple RPO/retention settings;
+- shared datasets, encrypted datasets and qcow2 backing chains that scheduled replication must reject;
+- QEMU Guest Agent enabled, disabled and freeze-command-disabled guests;
+- interrupted full and incremental replica receives with retained tokens and holds;
+- multi-disk replica generations that must not become visible until every GUID is verified;
+- destination reboot proving replica filesystems stay unmounted, zvol devices stay hidden and no replica domain is defined;
+- TPM/NVRAM mutation during best-effort capture and a later powered-off safe checkpoint;
+- foreign destination holds and exact retention cleanup failures.
 
 Snapshot both outer Unraid VMs before destructive cases. Never reuse production VM disks. Confirm the target dataset/path immediately before every manual cleanup command.
-
