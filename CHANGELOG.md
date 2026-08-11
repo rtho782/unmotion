@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0-beta2 - in development
+## 0.4.0-beta2 - 2026-08-11
 
 - Added a separately negotiated protocol-6 recovery control plane while preserving protocol 5 for pairing, migration, cloning and scheduled replication.
 - Added authenticated, replay-safe recovery RPCs using per-pair HMAC keys bootstrapped by the existing reciprocal Ed25519 pairing identities.
