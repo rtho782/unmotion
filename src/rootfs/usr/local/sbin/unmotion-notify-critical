@@ -1,0 +1,17 @@
+#!/bin/bash
+set -Eeuo pipefail
+
+subject="${1:-unMotion safety interlock}"
+description="${2:-A managed VM safety interlock requires attention.}"
+subject="${subject//$'\r'/ }"; subject="${subject//$'\n'/ }"
+description="${description//$'\r'/ }"; description="${description//$'\n'/ }"
+subject="${subject:0:180}"; description="${description:0:1500}"
+
+command -v logger >/dev/null 2>&1 && logger -t unmotion -- "CRITICAL: $subject: $description" 2>/dev/null || true
+notify=/usr/local/emhttp/webGui/scripts/notify
+if [[ -x "$notify" ]]; then
+  command -v timeout >/dev/null 2>&1 || exit 75
+  timeout 15 "$notify" -e 'unMotion' -s "$subject" -d "$description" -i alert >/dev/null 2>&1
+  exit $?
+fi
+exit 75

@@ -2,9 +2,19 @@
 
 ## 0.4.0-beta2 - in development
 
-- Began the guarded recovery/fencing phase without exposing replica activation.
-- Added protocol-range parsing and highest-common-version negotiation tests while deliberately continuing to advertise only protocol 5.
-- Documented the manual-recovery-first state machine, Guest Agent eligibility, TPM/NVRAM selection, autostart interlock, graceful holdoffs, two-host evidence rules, optional third-host witness checks, startup fencing and failback boundary.
+- Added a separately negotiated protocol-6 recovery control plane while preserving protocol 5 for pairing, migration, cloning and scheduled replication.
+- Added authenticated, replay-safe recovery RPCs using per-pair HMAC keys bootstrapped by the existing reciprocal Ed25519 pairing identities.
+- Added two-phase recovery arming/disarming, verified native-autostart control, a persistent lifecycle/fencing daemon and fail-closed source-start authorization.
+- Added coordinated manual recovery of Guest-Agent-eligible points. Activation creates exact, activation-owned ZFS clones, defines the VM stopped, revalidates source fencing, and requires Guest Agent boot health before recording it running.
+- Added durable graceful holdoffs, including bounded host-shutdown/reboot preparation, reply-loss reconciliation and startup fencing until the destination agrees.
+- Added stopped activation removal, exact authorized TPM/NVRAM checkpoint reinstall with crash-safe rollback, and read-only cold-failback preflight.
+- Added exact-claim renewal, crash-journalled activation phases and destination lifecycle reconciliation for interrupted define/start operations and reboots.
+- Enforced one armed recovery destination per VM and blocked legacy Move, Warm Move, Clone and replication-policy mutations while recovery authority or an activation-owned domain exists.
+- Kept retained replica datasets read-only and inert. Replication publication, base advancement and pruning are blocked whenever recovery authority is uncertain or belongs to the destination.
+- Preserved one extra eligible or repairable recovery point while recovery is armed if normal retention would otherwise leave only replication-only points.
+- Replaced native browser confirmation boxes with accessible in-page confirmation dialogs and locked recovery mutation controls while a durable operation is queued or running.
+- Restarted the exact lifecycle daemon and scheduler during in-place plugin upgrades so an older running process cannot outlive newly installed fencing code.
+- Deliberately kept automatic failover, unreachable-source two-host claims, witness voting, alternate-checkpoint selection and failback transfer disabled in beta2.
 
 ## 0.4.0-beta1 - 2026-08-10
 

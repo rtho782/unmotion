@@ -14,6 +14,9 @@ function fail(Throwable|string $e, int $status=400): never {
 function requirePostMutation(): void {
     if(($_SERVER['REQUEST_METHOD']??'POST')!=='POST')throw new RuntimeException('This action requires a CSRF-protected POST request.');
 }
+function requireRecoveryDirection(string $expected): void {
+    if(!hash_equals($expected,(string)($_POST['direction']??'')))throw new RuntimeException('Recovery source/destination direction does not match this action.');
+}
 function launchWorker(string $id, string $dir, string $worker='/usr/local/sbin/unmotion-worker'): int {
     if(!in_array($worker,['/usr/local/sbin/unmotion-worker','/usr/local/sbin/unmotion-clone-worker'],true))throw new InvalidArgumentException('Invalid worker.');
     $cmd='nohup setsid '.escapeshellarg($worker).' '.escapeshellarg($id).' >>'.escapeshellarg($dir.'/launcher.log').' 2>&1 & echo $!';
@@ -36,11 +39,11 @@ try {
             $payload=json_decode((string)($_POST['payload']??''),true); if(!is_array($payload)) throw new InvalidArgumentException('Invalid settings payload.');
             $cfg=unmSaveConfig($payload); @exec('/etc/rc.d/rc.unmotion restart >/dev/null 2>&1 &');
             reply(['success'=>true,'settings'=>$cfg]);
-        case 'peers': reply(['success'=>true,'peers'=>unmPeers()]);
+        case 'peers': reply(['success'=>true,'peers'=>unmPublicPeers(unmPeers())]);
         case 'pairPeer':
             $peer=unmPair(['host'=>$_POST['host']??'','port'=>$_POST['port']??22,'password'=>$_POST['password']??'']);
-            reply(['success'=>true,'peer'=>$peer]);
-        case 'testPeer': reply(['success'=>true,'peer'=>unmTestPeer((string)($_POST['peer_id']??''))]);
+            reply(['success'=>true,'peer'=>unmPublicPeer($peer)]);
+        case 'testPeer': reply(['success'=>true,'peer'=>unmPublicPeer(unmTestPeer((string)($_POST['peer_id']??'')))]);
         case 'removePeer':
         case 'breakPairing':
             unmRemovePeer((string)($_POST['peer_id']??''));
@@ -48,6 +51,31 @@ try {
         case 'discover': reply(['success'=>true]+unmDiscover());
         case 'replications': reply(['success'=>true,'replications'=>unmReplications()]);
         case 'incomingReplicas': reply(['success'=>true,'replicas'=>unmIncomingReplicas()]);
+        case 'recoveryStatus': reply(['success'=>true]+unmRecoveryStatus((string)($_REQUEST['replication_id']??'')));
+        case 'recoveryArm':
+            requirePostMutation();requireRecoveryDirection('source');$desired=filter_var($_POST['desired_autostart']??false,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($desired===null)throw new InvalidArgumentException('Invalid managed autostart setting.');$witnesses=json_decode((string)($_POST['witness_peer_ids']??'[]'),true);if(!is_array($witnesses))throw new InvalidArgumentException('Invalid recovery witness selection.');$record=unmRecoveryArm((string)($_POST['replication_id']??''),$desired,array_values(array_map('strval',$witnesses)));reply(['success'=>true,'message'=>'Recovery is armed; source startup is managed by unMotion.','recovery'=>unmRecoveryPublicRecord($record)]);
+        case 'recoveryDisarm':
+            requirePostMutation();requireRecoveryDirection('source');$record=unmRecoveryDisarm((string)($_POST['replication_id']??''));reply(['success'=>true,'message'=>'Recovery was disarmed on both hosts and native autostart was restored.','recovery'=>unmRecoveryPublicRecord($record)]);
+        case 'recoveryHold':
+            requirePostMutation();requireRecoveryDirection('source');$record=unmRecoverySetHold((string)($_POST['replication_id']??''),(string)($_POST['reason']??''),(string)($_POST['hold_until']??''));reply(['success'=>true,'message'=>'The destination durably acknowledged the recovery hold.','recovery'=>unmRecoveryPublicRecord($record)]);
+        case 'recoveryHoldRelease':
+            requirePostMutation();requireRecoveryDirection('source');$record=unmRecoveryReleaseHold((string)($_POST['replication_id']??''),(string)($_POST['hold_id']??''));reply(['success'=>true,'message'=>'The destination acknowledged recovery hold release.','recovery'=>unmRecoveryPublicRecord($record)]);
+        case 'recoveryEvidence':
+            requirePostMutation();requireRecoveryDirection('destination');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'evidence',['pointId'=>(string)($_POST['point_id']??''),'checkpointId'=>(string)($_POST['checkpoint_id']??''),'mode'=>(string)($_POST['mode']??''),'confirmation'=>(string)($_POST['confirmation']??''),'dnsProbe'=>(string)($_POST['dns_probe']??''),'externalProbe'=>(string)($_POST['external_probe']??'')]);reply(['success'=>true,'message'=>'Recovery evidence collection started.','operation'=>$operation]);
+        case 'recoveryRenewClaim':
+            requirePostMutation();requireRecoveryDirection('destination');$record=unmRecoveryRenewClaim((string)($_POST['replication_id']??''));reply(['success'=>true,'message'=>'The source renewed the exact fenced recovery claim.','recovery'=>unmRecoveryPublicRecord($record)]);
+        case 'recoveryActivate':
+            requirePostMutation();requireRecoveryDirection('destination');$start=filter_var($_POST['start_vm']??true,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($start===null)throw new InvalidArgumentException('Invalid recovery start setting.');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'activate',['claimId'=>(string)($_POST['claim_id']??''),'startVm'=>$start]);reply(['success'=>true,'message'=>'Exact replica activation started.','operation'=>$operation]);
+        case 'recoveryStartActivation':
+            requirePostMutation();requireRecoveryDirection('destination');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'start-activation');reply(['success'=>true,'message'=>'Recovered VM start and authority revalidation started.','operation'=>$operation]);
+        case 'recoveryRetryCheckpoint':
+            requirePostMutation();requireRecoveryDirection('destination');$start=filter_var($_POST['start_vm']??true,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($start===null)throw new InvalidArgumentException('Invalid recovery retry start setting.');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'retry-checkpoint',['checkpointId'=>(string)($_POST['checkpoint_id']??''),'startVm'=>$start]);reply(['success'=>true,'message'=>'Stopped activation checkpoint retry started.','operation'=>$operation]);
+        case 'recoveryStopActivation':
+            requirePostMutation();requireRecoveryDirection('destination');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'stop-activation');reply(['success'=>true,'message'=>'Recovered VM stop started.','operation'=>$operation]);
+        case 'recoveryRemoveActivation':
+            requirePostMutation();requireRecoveryDirection('destination');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'remove-activation',['confirmation'=>(string)($_POST['confirmation']??'')]);reply(['success'=>true,'message'=>'Exact stopped activation removal started.','operation'=>$operation]);
+        case 'recoveryFailback':
+            requirePostMutation();requireRecoveryDirection('destination');if((string)($_POST['action']??'')!=='preflight')throw new RuntimeException('Beta2 supports cold-failback preflight only.');reply(['success'=>true,'message'=>'Cold-failback preflight completed; no transfer or authority change was started.','preflight'=>unmRecoveryColdFailbackPreflight((string)($_POST['replication_id']??''))]);
         case 'replicationPreflight':
             $opts=['rpo_seconds'=>$_POST['rpo_seconds']??3600,'retention_count'=>$_POST['retention_count']??1,'tpm_initial_mode'=>$_POST['tpm_initial_mode']??'none'];
             reply(['success'=>true,'preflight'=>unmReplicationPreflight((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),$opts)]);

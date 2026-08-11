@@ -1,10 +1,17 @@
 #!/bin/bash
 # shellcheck disable=SC2016 # Embedded PHP snippets intentionally use single-quoted shell strings.
+set -u
+umask 077
+
 PLUGIN=/boot/config/plugins/unmotion
 SERVICE=/etc/avahi/services/unmotion.service
 REPLICATION_SCHEDULER=/usr/local/sbin/unmotion-replication-scheduler
 REPLICATION_PID=/var/run/unmotion-replication-scheduler.pid
 REPLICATION_RUNTIME=/var/run/unmotion/replications
+REPLICATION_LIFECYCLE=/usr/local/sbin/unmotion-replication-lifecycle
+REPLICATION_LIFECYCLE_PID=/var/run/unmotion/replication-lifecycle.pid
+REPLICATION_LIFECYCLE_LOG=/var/log/unmotion/replication-lifecycle.log
+CRITICAL_NOTIFY=/usr/local/sbin/unmotion-notify-critical
 init_config(){
   mkdir -p "$PLUGIN" "$PLUGIN/peers" "$PLUGIN/jobs" "$PLUGIN/ownership" "$PLUGIN/seeds" "$PLUGIN/replications" "$PLUGIN/replicas" "$REPLICATION_RUNTIME" /var/log/unmotion
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; unmWriteRuntimeConfig(unmLoadConfig()); unmHostId();' >/dev/null 2>&1 || true
@@ -36,23 +43,77 @@ start_replication_scheduler(){
   rm -f -- "$REPLICATION_PID"
   nohup setsid "$REPLICATION_SCHEDULER" >>/var/log/unmotion/replication-scheduler.log 2>&1 &
 }
+start_replication_lifecycle(){
+  local pid='' launched='' _attempt
+  [[ -x "$REPLICATION_LIFECYCLE" ]] || { [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery lifecycle is unavailable' 'The recovery lifecycle executable is missing. Recovery-managed starts and replication scheduling remain disabled.' || true; return 1; }
+  [[ -f "$REPLICATION_LIFECYCLE_PID" ]] && read -r pid < "$REPLICATION_LIFECYCLE_PID"
+  pid_matches "$pid" "$REPLICATION_LIFECYCLE" --daemon && return 0
+  rm -f -- "$REPLICATION_LIFECYCLE_PID"
+  if ! "$REPLICATION_LIFECYCLE" --startup-check >>"$REPLICATION_LIFECYCLE_LOG" 2>&1; then
+    [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery startup reconciliation failed' 'The synchronous recovery startup check failed. The lifecycle daemon and replication scheduler were not started.' || true
+    return 1
+  fi
+  nohup setsid "$REPLICATION_LIFECYCLE" --daemon >>"$REPLICATION_LIFECYCLE_LOG" 2>&1 &
+  launched=$!
+  for _attempt in {1..50}; do
+    pid=''; [[ -f "$REPLICATION_LIFECYCLE_PID" ]] && read -r pid < "$REPLICATION_LIFECYCLE_PID"
+    if [[ "$pid" == "$launched" ]] && pid_matches "$pid" "$REPLICATION_LIFECYCLE" --daemon; then return 0; fi
+    kill -0 "$launched" 2>/dev/null || break
+    sleep 0.1
+  done
+  if stop_replication_process "$launched" "$REPLICATION_LIFECYCLE" --daemon; then rm -f -- "$REPLICATION_LIFECYCLE_PID"; fi
+  [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery lifecycle failed to start' 'The recovery lifecycle daemon did not publish a matching PID and command line. Replication scheduling remains disabled.' || true
+  return 1
+}
 stop_replication_process(){
   local pid="$1" script="$2" expected_arg="${3:-}"
   pid_matches "$pid" "$script" "$expected_arg" || return 0
   kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
   for _ in {1..40}; do [[ -d "/proc/$pid" ]] || return 0; sleep 0.25; done
+  pid_matches "$pid" "$script" "$expected_arg" && return 75
   return 0
 }
-stop_replication_runtime(){
+stop_replication_scheduler(){
+  local pid=''
+  if [[ -f "$REPLICATION_PID" ]]; then
+    read -r pid < "$REPLICATION_PID"
+    stop_replication_process "$pid" "$REPLICATION_SCHEDULER" || return 75
+  fi
+  rm -f -- "$REPLICATION_PID"; return 0
+}
+stop_replication_workers(){
   local pid='' runtime id
-  if [[ -f "$REPLICATION_PID" ]]; then read -r pid < "$REPLICATION_PID"; stop_replication_process "$pid" "$REPLICATION_SCHEDULER"; fi
-  rm -f -- "$REPLICATION_PID"
   for runtime in "$REPLICATION_RUNTIME"/*.json; do
     [[ -f "$runtime" ]] || continue
     id=$(basename "$runtime" .json)
     pid=$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo is_array($d)?(int)($d["pid"]??0):0;' "$runtime" 2>/dev/null || echo 0)
     stop_replication_process "$pid" /usr/local/sbin/unmotion-replication-worker "$id"
   done
+}
+stop_replication_lifecycle(){
+  local pid=''
+  if [[ -f "$REPLICATION_LIFECYCLE_PID" ]]; then
+    read -r pid < "$REPLICATION_LIFECYCLE_PID"
+    if ! stop_replication_process "$pid" "$REPLICATION_LIFECYCLE" --daemon; then
+      [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery lifecycle did not stop' 'The exact lifecycle daemon remained active after its shutdown grace period. Its PID file was retained and no replacement daemon should be started.' || true
+      return 75
+    fi
+  fi
+  rm -f -- "$REPLICATION_LIFECYCLE_PID"; return 0
+}
+prepare_recovery_shutdown(){
+  if [[ -x "$REPLICATION_LIFECYCLE" ]] && "$REPLICATION_LIFECYCLE" --prepare-shutdown host-shutdown >>"$REPLICATION_LIFECYCLE_LOG" 2>&1; then return 0; fi
+  mkdir -p /var/run/unmotion
+  printf '%s\t%s\n' "$(date +%s)" host-shutdown > /var/run/unmotion/shutdown-fence
+  chmod 0600 /var/run/unmotion/shutdown-fence
+  [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery shutdown coordination failed' 'The lifecycle shutdown hook failed. A local shutdown fence was installed, but remote graceful holds may require review after boot.' || true
+  return 1
+}
+stop_replication_runtime(){
+  prepare_recovery_shutdown || true
+  stop_replication_lifecycle
+  stop_replication_scheduler
+  stop_replication_workers
 }
 advertise(){
   [[ -x /usr/bin/avahi-browse || -x /usr/bin/avahi-publish-service || -d /etc/avahi/services ]] || return 0
@@ -65,13 +126,13 @@ advertise(){
   cat > "$SERVICE" <<EOF
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
-<service-group><name replace-wildcards="yes">$host unMotion</name><service><type>_unmotion._tcp</type><port>$ssh_port</port><txt-record>host_id=$id</txt-record><txt-record>version=$version</txt-record><txt-record>protocol=5</txt-record></service></service-group>
+<service-group><name replace-wildcards="yes">$host unMotion</name><service><type>_unmotion._tcp</type><port>$ssh_port</port><txt-record>host_id=$id</txt-record><txt-record>version=$version</txt-record><txt-record>protocol=5</txt-record><txt-record>protocol_min=5</txt-record><txt-record>protocol_max=6</txt-record><txt-record>recovery_protocol=1</txt-record></service></service-group>
 EOF
   pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true
 }
 case "${1:-start}" in
-  start) init_config; advertise; start_replication_scheduler ;;
+  start) init_config; advertise; start_replication_lifecycle && start_replication_scheduler ;;
   stop) stop_replication_runtime; rm -f "$SERVICE"; pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true ;;
-  restart) "$0" stop; "$0" start ;;
+  restart) stop_replication_scheduler || exit 75; stop_replication_lifecycle || exit 75; init_config; advertise; start_replication_lifecycle && start_replication_scheduler ;;
   *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
 esac

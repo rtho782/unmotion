@@ -31,6 +31,14 @@ mkdir -p "$JOBDIR"
 touch "$LOG"; chmod 600 "$LOG"
 exec 9>/var/run/unmotion.lock
 if ! flock -n 9; then /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Another migration job is active"; exit 5; fi
+exec 8>"/var/lock/unmotion-$VM_UUID.lock"
+if ! flock -n 8; then /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Another unMotion operation is already using this VM"; exit 5; fi
+LEGACY_OPERATION='Move'
+[[ "${MIGRATION_MODE:-cold}" == cold ]] || LEGACY_OPERATION='Warm Move'
+if ! /usr/local/sbin/unmotion-agent recovery-legacy-interlock "$VM_UUID" "$LEGACY_OPERATION" >>"$LOG" 2>&1; then
+  /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Recovery authority blocks this migration"
+  exit 6
+fi
 
 export UNM_WORKER_PID=$$
 SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \

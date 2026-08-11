@@ -4,8 +4,10 @@ umask 077
 
 POLICY_ID="${1:-}"
 REQUESTED_SLOT="${2:-0}"
+RUN_REASON="${3:-scheduled}"
 [[ "$POLICY_ID" =~ ^[A-Za-z0-9_.-]{8,80}$ ]] || { echo 'Invalid replication id' >&2; exit 2; }
 [[ "$REQUESTED_SLOT" =~ ^[0-9]+$ ]] || { echo 'Invalid replication slot' >&2; exit 2; }
+[[ "$RUN_REASON" =~ ^(scheduled|opportunistic)$ ]] || { echo 'Invalid replication run reason' >&2; exit 2; }
 
 BASE=/boot/config/plugins/unmotion
 DIR="$BASE/replications/$POLICY_ID"
@@ -15,6 +17,10 @@ RUNTIME_ROOT="/var/lib/unmotion/replications/$POLICY_ID"
 RUN_DIR="$RUNTIME_ROOT/run"
 LOG_DIR=/var/log/unmotion
 LOG="$LOG_DIR/replication-$POLICY_ID.log"
+LIFECYCLE_CHECKPOINT_REQUEST="/var/run/unmotion/lifecycle/checkpoint-queue/$POLICY_ID.request"
+QGA_CACHE="$RUNTIME_ROOT/qga-last.json"
+START_GATE=/usr/local/sbin/unmotion-replication-start-gate
+CRITICAL_NOTIFY=/usr/local/sbin/unmotion-notify-critical
 LOCAL_HOST_ID_FILE="$BASE/host_id"
 [[ -f "$POLICY_JSON" && -f "$LOCAL_HOST_ID_FILE" ]] || { echo 'Replication policy or local host identity is missing' >&2; exit 3; }
 mkdir -p "$RUN_DIR" "$LOG_DIR" /var/run/unmotion/replications
@@ -85,7 +91,35 @@ FAIL_RECORDED=0
 THAW_NEEDED=0
 RESUME_NEEDED=0
 RESTART_NEEDED=0
+RECOVERY_AUTHORITY_TOKEN=''
 qga_return(){ php -r '$d=json_decode(stream_get_contents(STDIN),true);$v=is_array($d)?($d["return"]??null):null;if(is_scalar($v))echo $v;' 2>/dev/null; }
+recovery_authority_guard(){
+  local phase="$1" output token
+  output="$(php -r '
+  require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
+  if(!function_exists("unmRecoverySourceWorkerAuthority")){if(is_file($argv[3])){fwrite(STDERR,"recovery authority helper is unavailable");exit(70);}echo "legacy:0";exit;}
+  $result=unmRecoverySourceWorkerAuthority($argv[1],$argv[2]);if(empty($result["allowed"])){fwrite(STDERR,(string)($result["reason"]??"recovery authority blocks replication"));exit(75);}$record=is_array($result["record"]??null)?$result["record"]:[];$armed=!empty($record["armed"]);echo ($armed?"armed":"legacy").":".(int)($record["term"]??0).":".strtoupper((string)($record["authority"]??"SOURCE"));' "$POLICY_ID" "$VM_UUID" "$DIR/recovery.json" 2>&1)" || { log "Recovery authority blocked $phase: ${output:-validation failed}"; return 75; }
+  token="$output"; [[ -n "$RECOVERY_AUTHORITY_TOKEN" ]] || RECOVERY_AUTHORITY_TOKEN="$token"
+  [[ "$token" == "$RECOVERY_AUTHORITY_TOKEN" ]] || { log "Recovery authority changed during $phase; refusing to advance or prune replication state."; return 75; }
+}
+ack_lifecycle_request(){
+  [[ -n "$LIFECYCLE_REQUEST_ID" ]] || return 0
+  php -r '$request=json_decode((string)@file_get_contents($argv[1]),true);$pending=json_decode((string)@file_get_contents($argv[2]),true);$host=json_decode((string)@file_get_contents($argv[3]),true);if(!is_array($request)||!is_array($pending)||!is_array($host)||(string)($request["requestId"]??"")!==$argv[4]||(string)($pending["lifecycleRequestId"]??"")!==$argv[4]||($host["quality"]??"")!=="safe"||empty($host["transferred"]))exit(1);if(!unlink($argv[1]))exit(2);' "$LIFECYCLE_CHECKPOINT_REQUEST" "$PENDING_JSON" "$HOST_STATE_JSON" "$LIFECYCLE_REQUEST_ID"
+}
+start_vm_authorized(){
+  local reason=''
+  if [[ ! -x "$START_GATE" ]]; then reason='the recovery start gate is unavailable'
+  else reason="$($START_GATE "$POLICY_ID" "$VM_UUID" --issue-permit 2>&1)" || true
+  fi
+  if [[ -n "$reason" ]]; then
+    log "CRITICAL: managed VM restart blocked: $reason"
+    [[ -x "$CRITICAL_NOTIFY" ]] && "$CRITICAL_NOTIFY" 'Recovery fence blocked a worker restart' "$VM_UUID remained stopped after a replication checkpoint because $reason." || true
+    return 75
+  fi
+  if timeout 30 virsh start "$VM_UUID" >>"$LOG" 2>&1; then return 0; fi
+  "$START_GATE" "$POLICY_ID" "$VM_UUID" --revoke-permit >/dev/null 2>&1 || true
+  return 1
+}
 qga_thaw(){
   local out='' status=''
   ((THAW_NEEDED)) || return 0
@@ -109,7 +143,8 @@ restore_vm_state(){
     if [[ "$current" =~ ^(running|idle)$ ]]; then
       for _attempt in {1..60}; do sleep 1; current="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"; [[ "$current" == 'shut off' ]] && break; done
     fi
-    if [[ "$current" == 'shut off' ]]; then timeout 30 virsh start "$VM_UUID" >>"$LOG" 2>&1 && RESTART_NEEDED=0 || failed=1
+    if [[ "$current" == 'shut off' ]]; then
+      if start_vm_authorized; then RESTART_NEEDED=0; else RESTART_NEEDED=0; failed=1; fi
     elif [[ "$current" =~ ^(running|idle)$ ]]; then RESTART_NEEDED=0
     else failed=1
     fi
@@ -131,6 +166,7 @@ trap 'rc=$?; restore_vm_state || rc=1; if ((rc!=0&&FAIL_RECORDED==0));then /usr/
 interrupt(){ FAIL_RECORDED=1; state INTERRUPTED "${2:-0}" "$1"; exit 75; }
 fail(){ FAIL_RECORDED=1; state FAILED 0 "$1"; exit "${2:-1}"; }
 
+recovery_authority_guard preflight || { state PAUSED 0 'Recovery authority currently blocks replication'; exit 75; }
 state PREFLIGHT 2 'Validating policy, source storage and destination'
 PLAN_JSON="$RUN_DIR/storage.json"
 php -r '
@@ -207,10 +243,10 @@ reconcile_destination_retention(){
   rm -f -- "$inventory_reply" "$prune_request" "$prune_reply"
   agent_call replication-inventory "$inventory_request" "$inventory_reply" || interrupt 'Destination inventory reconciliation is pending; no newer generation will be created' 94
   php -r '
-  require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$reply=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$policy=json_decode(file_get_contents($argv[2]),true);$points=$reply["manifest"]["points"]??$reply["points"]??[];if(!is_array($points)||!is_array($policy))exit(2);$now=time();$ids=[];foreach($points as $p){if(!is_array($p))exit(2);$id=(string)($p["id"]??"");$ts=unmReplicationPointTimestamp($p);if($id===""||isset($ids[$id])||$ts<=0)exit(2);if($ts>$now)exit(0);$ids[$id]=true;}
-  $kept=unmSelectReplicationRetentionPoints($points,(int)$policy["rpoSeconds"],(int)$policy["retentionCount"],$now);$selected=[];foreach($kept as $p){$id=(string)($p["id"]??"");if($id!=="")$selected[$id]=true;}
+  require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$reply=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$policy=json_decode(file_get_contents($argv[2]),true);$points=$reply["points"]??$reply["manifest"]["points"]??[];if(!is_array($points)||!is_array($policy))exit(2);$now=time();$ids=[];foreach($points as $p){if(!is_array($p))exit(2);$id=(string)($p["id"]??"");$ts=unmReplicationPointTimestamp($p);if($id===""||isset($ids[$id])||$ts<=0)exit(2);if($ts>$now)exit(0);$ids[$id]=true;}
+  $armed=str_starts_with($argv[8],"armed:");$kept=unmSelectReplicationRetentionPointsWithRecoverySafety($points,(int)$policy["rpoSeconds"],(int)$policy["retentionCount"],$armed,$now);$selected=[];foreach($kept as $p){$id=(string)($p["id"]??"");if($id!=="")$selected[$id]=true;}
   $prune=[];foreach($points as $p){$id=(string)($p["id"]??"");if($id!==""&&isset($selected[$id]))continue;$snaps=[];foreach(($p["storage"]??[]) as $s){$dataset=(string)($s["destination"]??$s["dataset"]??"");$snapshot=(string)($s["snapshot"]??$p["snapshot"]??"");if($dataset!==""&&$snapshot!=="")$snaps[]=["dataset"=>$dataset,"snapshot"=>$snapshot];}if($id!==""&&$snaps)$prune[]=["id"=>$id,"snapshots"=>$snaps];}
-  if($prune){$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$argv[5],"vmUuid"=>$argv[6],"points"=>$prune];file_put_contents($argv[7],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");}' "$inventory_reply" "$POLICY_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$prune_request" || interrupt 'Destination inventory response is invalid; no recovery point was pruned' 94
+  if($prune){$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$argv[5],"vmUuid"=>$argv[6],"points"=>$prune];file_put_contents($argv[7],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");}' "$inventory_reply" "$POLICY_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$prune_request" "$RECOVERY_AUTHORITY_TOKEN" || interrupt 'Destination inventory response is invalid; no recovery point was pruned' 94
   if [[ -s "$prune_request" ]]; then
     atomic_state_update set-prune "$prune_request"
     state PRUNING 96 'Pruning exact destination recovery points'
@@ -219,17 +255,26 @@ reconcile_destination_retention(){
   fi
   atomic_state_update clear-inventory
 }
+recovery_authority_guard pre-cleanup || interrupt 'Recovery authority changed before pending cleanup; retained state was not advanced' 3
 cleanup_source_pending
 retry_destination_prune
 reconcile_destination_retention
 
 LAST_SLOT="$(json_get "$DURABLE_STATE" lastScheduledSlot 2>/dev/null || echo 0)"
 EFFECTIVE_SLOT="$REQUESTED_SLOT"; ((EFFECTIVE_SLOT>0)) || EFFECTIVE_SLOT="$(date +%s)"
+if [[ "$RUN_REASON" == opportunistic ]] && ((EFFECTIVE_SLOT<=LAST_SLOT)); then EFFECTIVE_SLOT="$(date +%s)"; fi
+LIFECYCLE_REQUEST_ID=''
+if [[ "$RUN_REASON" == opportunistic ]]; then
+  LIFECYCLE_REQUEST_ID="$(php -r '$d=json_decode((string)@file_get_contents($argv[1]),true);$id=(string)($d["requestId"]??"");$slot=(int)($d["slotEpoch"]??0);if(!is_array($d)||($d["schemaVersion"]??null)!==1||!preg_match("/^shutdown-[a-f0-9]{32}$/",$id)||$slot!==(int)$argv[2])exit(1);echo $id;' "$LIFECYCLE_CHECKPOINT_REQUEST" "$REQUESTED_SLOT" 2>/dev/null)" || interrupt 'The opportunistic checkpoint request is missing, stale or invalid' 1
+fi
 PENDING_JSON="$RUN_DIR/pending.json"
 rm -f -- "$PENDING_JSON"
 php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):[];$p=is_array($d)?($d["pending"]??null):null;if(is_array($p))file_put_contents($argv[2],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$DURABLE_STATE" "$PENDING_JSON"
 if [[ -s "$PENDING_JSON" ]]; then
   GENERATION="$(json_get "$PENDING_JSON" generation)"; POINT_ID="$(json_get "$PENDING_JSON" id)"; SNAPSHOT_NAME="$(json_get "$PENDING_JSON" snapshot)"; SLOT="$(json_get "$PENDING_JSON" slotEpoch)"
+  PENDING_LIFECYCLE_REQUEST_ID="$(json_get "$PENDING_JSON" lifecycleRequestId 2>/dev/null || true)"
+  if [[ -n "$PENDING_LIFECYCLE_REQUEST_ID" && "$PENDING_LIFECYCLE_REQUEST_ID" != "$LIFECYCLE_REQUEST_ID" ]]; then interrupt 'The pending point belongs to a different lifecycle checkpoint request' 1; fi
+  LIFECYCLE_REQUEST_ID="$PENDING_LIFECYCLE_REQUEST_ID"
   log "Resuming pending replication point $POINT_ID."
 else
   if ((EFFECTIVE_SLOT<=LAST_SLOT)); then state IDLE 100 'Replication is current'; trap - EXIT; exit 0; fi
@@ -238,7 +283,7 @@ else
   policy_hash="$(printf '%s' "$POLICY_ID" | sha256sum | awk '{print substr($1,1,12)}')"
   SNAPSHOT_NAME="unmotion-rpl-${policy_hash}-g${GENERATION}"
   POINT_ID="point-${SLOT}-g${GENERATION}"
-  php -r '$storage=json_decode(file_get_contents($argv[1]),true);$slot=(int)$argv[5];$p=["id"=>$argv[2],"generation"=>(int)$argv[3],"snapshot"=>$argv[4],"slotEpoch"=>$slot,"scheduledAt"=>gmdate("c",$slot),"rpoSeconds"=>(int)$argv[6],"createdAt"=>gmdate("c"),"consistency"=>"crash-consistent","replicationOnly"=>true,"storage"=>$storage];file_put_contents($argv[7],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PLAN_JSON" "$POINT_ID" "$GENERATION" "$SNAPSHOT_NAME" "$SLOT" "$RPO_SECONDS" "$PENDING_JSON"
+  php -r '$storage=json_decode(file_get_contents($argv[1]),true);$slot=(int)$argv[5];$p=["id"=>$argv[2],"generation"=>(int)$argv[3],"snapshot"=>$argv[4],"slotEpoch"=>$slot,"scheduledAt"=>gmdate("c",$slot),"rpoSeconds"=>(int)$argv[6],"createdAt"=>gmdate("c"),"consistency"=>"crash-consistent","replicationOnly"=>true,"storage"=>$storage];if($argv[8]!=="")$p["lifecycleRequestId"]=$argv[8];file_put_contents($argv[7],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PLAN_JSON" "$POINT_ID" "$GENERATION" "$SNAPSHOT_NAME" "$SLOT" "$RPO_SECONDS" "$PENDING_JSON" "$LIFECYCLE_REQUEST_ID"
   atomic_state_update pending "$PENDING_JSON"
 fi
 php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get_contents($argv[2]),true);if(!is_array($p)||!is_array($s)||($p["storage"]??[])!==$s)exit(1);' "$PENDING_JSON" "$PLAN_JSON" || fail 'The VM storage plan changed while a replication point was pending; restore the prior plan or remove the policy safely' 13
@@ -292,6 +337,13 @@ if [[ "$(json_get "$PENDING_JSON" guestAgent.observedAt 2>/dev/null || true)" ==
   fi
 else
   PENDING_GUEST_RECORDED=1
+fi
+if ((PENDING_GUEST_RECORDED==0&&QGA_AVAILABLE==0&&POWERED_OFF_POINT==1)) && [[ -f "$QGA_CACHE" ]]; then
+  if php -r '
+  $cache=json_decode((string)@file_get_contents($argv[1]),true);$xml=(string)@file_get_contents($argv[2]);if(!is_array($cache)||empty($cache["verified"])||strtolower((string)($cache["vmUuid"]??""))!==strtolower($argv[3]))exit(1);$observed=(int)($cache["observedAtEpoch"]??0);if($observed<=0||$observed<time()-300||$observed>time()+30)exit(2);
+  preg_match_all("~<mac\\s+address=[\"\x27]([^\"\x27]+)[\"\x27]~i",$xml,$matches);$current=array_values(array_unique(array_map("strtolower",$matches[1]??[])));$cached=array_values(array_unique(array_map("strtolower",(array)($cache["domainMacs"]??[]))));sort($current,SORT_STRING);sort($cached,SORT_STRING);if(!$current||$current!==$cached)exit(3);$network=$cache["network"]??null;if(!is_array($network)||empty($network["selectedProbeAddress"])||!filter_var($network["selectedProbeAddress"],FILTER_VALIDATE_IP))exit(4);$data=json_encode($network,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";if(file_put_contents($argv[4],$data,LOCK_EX)!==strlen($data)||!chmod($argv[4],0600))exit(5);' "$QGA_CACHE" "$SOURCE_XML" "$VM_UUID" "$QGA_NETWORK"; then
+    QGA_AVAILABLE=1; QGA_NETWORK_OK=1; log 'Using a fresh VM/MAC-bound Guest Agent observation captured immediately before shutdown.'
+  fi
 fi
 
 TPM_PRESENT=0; grep -qE '<tpm([[:space:]>])' "$SOURCE_XML" && TPM_PRESENT=1
@@ -369,7 +421,7 @@ if ((PENDING_GUEST_RECORDED==0)); then
   else CONSISTENCY=crash-consistent
   fi
   RECOVERY_VERIFIED=0; ((SNAPSHOT_REUSED==0&&QGA_AVAILABLE&&QGA_NETWORK_OK&&(QUIESCED||POWERED_OFF_POINT))) && RECOVERY_VERIFIED=1
-  php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$network=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];$p["consistency"]=$argv[3];$p["replicationOnly"]=$argv[4]!=="1";$p["guestAgent"]=["verified"=>$argv[4]==="1","observedAt"=>gmdate("c"),"network"=>is_array($network)?$network:[]];file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$QGA_NETWORK" "$CONSISTENCY" "$RECOVERY_VERIFIED"
+  php -r '$p=json_decode(file_get_contents($argv[1]),true);if(!is_array($p))exit(2);$network=is_file($argv[2])?json_decode(file_get_contents($argv[2]),true):[];$observed=is_array($network)?(string)($network["observedAt"]??""):"";if(strtotime($observed)===false)$observed=gmdate("c");$p["consistency"]=$argv[3];$p["replicationOnly"]=$argv[4]!=="1";$p["guestAgent"]=["verified"=>$argv[4]==="1","observedAt"=>$observed,"network"=>is_array($network)?$network:[]];file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$QGA_NETWORK" "$CONSISTENCY" "$RECOVERY_VERIFIED"
   atomic_state_update pending "$PENDING_JSON"
 fi
 
@@ -446,7 +498,9 @@ if ((${#STATE_PATHS[@]}>0)); then
   HASH_STATE_AFTER="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
   LAST_HASH="$(json_get "$DURABLE_STATE" lastHostState.contentSha256 2>/dev/null || true)"
   LAST_TRANSFERRED="$(json_get "$DURABLE_STATE" lastHostState.transferred 2>/dev/null || echo 0)"
-  if [[ -n "$CURRENT_HASH" && "$CURRENT_HASH" == "$LAST_HASH" && "$LAST_TRANSFERRED" == 1 ]]; then
+  LAST_CHECKPOINT_ID="$(json_get "$DURABLE_STATE" lastHostState.checkpointId 2>/dev/null || true)"; LAST_ARCHIVE_HASH="$(json_get "$DURABLE_STATE" lastHostState.archiveSha256 2>/dev/null || true)"; LAST_ARCHIVE_PATH="$(json_get "$DURABLE_STATE" lastHostState.archivePath 2>/dev/null || true)"; LAST_REMOTE_OK=0
+  if [[ "$LAST_CHECKPOINT_ID" =~ ^state-[a-f0-9]{24}$ && "$LAST_ARCHIVE_HASH" =~ ^[a-f0-9]{64}$ && "$LAST_CHECKPOINT_ID" == "state-${LAST_ARCHIVE_HASH:0:24}" && "$LAST_ARCHIVE_PATH" == "${STATE_DIRECTORY%/}/$LAST_CHECKPOINT_ID.tar.gz" && "$(remote_regular_sha256 "$LAST_ARCHIVE_PATH" || true)" == "$LAST_ARCHIVE_HASH" ]]; then LAST_REMOTE_OK=1; fi
+  if [[ -n "$CURRENT_HASH" && "$CURRENT_HASH" == "$LAST_HASH" && "$LAST_TRANSFERRED" == 1 && "$LAST_REMOTE_OK" == 1 ]]; then
     php -r '$d=json_decode(file_get_contents($argv[1]),true);$h=$d["lastHostState"]??[];if(!is_array($h))exit(2);if($argv[2]==="shut off"&&$argv[3]==="shut off"){$h["quality"]="safe";$h["safeObservedAt"]=gmdate("c");$h["capturedAt"]=$h["safeObservedAt"];unset($h["safeFallback"]);}file_put_contents($argv[4],json_encode($h,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$DURABLE_STATE" "$HASH_STATE_BEFORE" "$HASH_STATE_AFTER" "$HOST_STATE_JSON"
   else
     CAPTURE_STATE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"; QUALITY=unstable; STUNNED=0
@@ -487,7 +541,10 @@ if [[ -n "$SAFE_ID" ]]; then
 fi
 php -r '$p=json_decode(file_get_contents($argv[1]),true);$h=json_decode(file_get_contents($argv[2]),true);if(!is_array($p))exit(2);$p["hostState"]=is_array($h)?$h:[];$required=($h["tpmPresent"]??false)||($h["nvramPresent"]??false);$unsafe=$required&&(in_array((string)($h["quality"]??""),["missing","unstable"],true)||(($h["tpmPresent"]??false)&&empty($h["tpmCaptured"]))||(($h["nvramPresent"]??false)&&empty($h["nvramCaptured"]))||empty($h["transferred"]));if($unsafe)$p["replicationOnly"]=true;file_put_contents($argv[1],json_encode($p,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$PENDING_JSON" "$HOST_STATE_JSON"
 atomic_state_update pending "$PENDING_JSON"
-if ((RESTART_NEEDED)); then state CAPTURING_HOST_STATE 16 'Restarting VM after safe TPM checkpoint'; virsh start "$VM_UUID" >>"$LOG" 2>&1 || fail 'Safe TPM checkpoint was captured, but the VM could not be restarted' 18; RESTART_NEEDED=0; fi
+if ((RESTART_NEEDED)); then
+  state CAPTURING_HOST_STATE 16 'Restarting VM after safe TPM checkpoint'
+  if start_vm_authorized; then RESTART_NEEDED=0; else RESTART_NEEDED=0; fail 'Safe TPM checkpoint was captured, but recovery fencing did not authorize this VM restart' 18; fi
+fi
 
 receive_properties(){ local type="$1" p; p="-o readonly=on -o dedup=$(sq "$DEST_DEDUP")"; [[ "$DEST_COMPRESSION" == inherit ]] || p+=" -o compression=$(sq "$DEST_COMPRESSION")"; if [[ "$type" == dataset ]]; then p+=' -o canmount=off -o mountpoint=none'; else p+=' -o volmode=none -o snapdev=hidden'; fi; printf '%s' "$p"; }
 remote_resume_token(){
@@ -568,11 +625,15 @@ php -r '$p=json_decode(file_get_contents($argv[1]),true);$point=json_decode(file
 PUBLISH_REPLY="$RUN_DIR/publish-reply.json"
 state PUBLISHING 86 'Publishing verified destination recovery point'
 rm -f -- "$PUBLISH_REPLY"
+recovery_authority_guard publication || interrupt 'Recovery authority changed before point publication; snapshots and receive state were retained' 86
 agent_call replication-publish "$PUBLISH_REQUEST" "$PUBLISH_REPLY" || interrupt 'Destination point publish failed; snapshots and receive state were retained' 86
 php -r '$d=is_file($argv[1])?json_decode(file_get_contents($argv[1]),true):null;if(!is_array($d)||array_key_exists("success",$d)&&empty($d["success"])||array_key_exists("accepted",$d)&&empty($d["accepted"]))exit(1);' "$PUBLISH_REPLY" || interrupt 'Destination returned an invalid point publish confirmation; source state was not committed' 86
 
 state COMMITTING 90 'Committing new source incremental base'
+recovery_authority_guard commit || interrupt 'Recovery authority changed before source commit; the published destination point remains held for reconciliation' 90
 atomic_state_update commit "$PENDING_JSON"
+ack_lifecycle_request || interrupt 'The point committed, but its exact lifecycle request could not be acknowledged; the request was retained' 91
+recovery_authority_guard pruning || interrupt 'Recovery authority changed after commit; old points and snapshots were retained' 92
 cleanup_source_pending
 reconcile_destination_retention
 

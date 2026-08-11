@@ -1,0 +1,62 @@
+#!/bin/bash
+# shellcheck disable=SC2016 # Embedded PHP snippets intentionally use single-quoted shell strings.
+set -Eeuo pipefail
+umask 077
+
+policy_id="${1:-}"
+vm_uuid="${2:-}"
+mode="${3:---check}"
+base=/boot/config/plugins/unmotion
+permit_dir=/var/run/unmotion/lifecycle/start-permits
+shutdown_fence=/var/run/unmotion/shutdown-fence
+
+[[ "$policy_id" =~ ^[A-Za-z0-9_.-]{8,80}$ && "$vm_uuid" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || { echo 'invalid managed VM identity' >&2; exit 64; }
+[[ "$mode" == --check || "$mode" == --issue-permit || "$mode" == --consume-permit || "$mode" == --revoke-permit ]] || { echo 'invalid recovery start-gate mode' >&2; exit 64; }
+for command in php flock virsh awk timeout; do command -v "$command" >/dev/null 2>&1 || { echo "required start-gate command is unavailable: $command" >&2; exit 66; }; done
+if [[ "$mode" != --revoke-permit && -e "$shutdown_fence" ]]; then echo 'the host shutdown fence is active' >&2; exit 67; fi
+
+policy="$base/replications/$policy_id/policy.json"
+recovery="$base/replications/$policy_id/recovery.json"
+host_id_file="$base/host_id"
+[[ -f "$policy" && -f "$host_id_file" ]] || { echo 'replication policy or local host identity is unavailable' >&2; exit 65; }
+if [[ ! -f "$recovery" ]]; then [[ "$mode" == --revoke-permit ]] && rm -f -- "$permit_dir/$policy_id.json"; exit 0; fi
+boot_id="$(tr -d '\r\n' </proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+host_id="$(tr -d '\r\n' <"$host_id_file" 2>/dev/null || true)"
+[[ "$boot_id" =~ ^[A-Fa-f0-9-]{32,36}$ && "$host_id" =~ ^[A-Fa-f0-9-]{16,80}$ ]] || { echo 'local host or boot identity is invalid' >&2; exit 67; }
+
+mkdir -p "$permit_dir" /var/lock/unmotion
+exec 9>"/var/lock/unmotion-recovery-$policy_id.lock"
+flock -x 9
+permit="$permit_dir/$policy_id.json"
+gate_result="$(php -r '
+$policyPath=$argv[1];$recoveryPath=$argv[2];$policyId=$argv[3];$vmUuid=strtolower($argv[4]);$hostId=$argv[5];$bootId=strtolower($argv[6]);$mode=$argv[7];$permitPath=$argv[8];$base=$argv[9];$now=time();
+$fail=static function(string $message,int $code=67):never{fwrite(STDERR,$message."\n");exit($code);};
+$p=json_decode((string)@file_get_contents($policyPath),true);$r=json_decode((string)@file_get_contents($recoveryPath),true);if(!is_array($p)||!is_array($r))$fail("recovery authority is corrupt");
+$id=(string)($p["id"]??basename(dirname($policyPath)));$uuid=strtolower((string)($p["vmUuid"]??""));$peer=(string)($p["peerHostId"]??"");if($id!==$policyId||$uuid!==$vmUuid)$fail("recovery policy identity does not match the managed VM");
+if($mode==="--revoke-permit"){@unlink($permitPath);exit(0);}
+$state=strtoupper(trim((string)($r["state"]??"")));if(in_array($state,["REPLICATION_ONLY","DISARMED","REMOVED"],true)){if($mode==="--revoke-permit")@unlink($permitPath);echo "UNARMED";exit(0);}
+$active=[];foreach(glob($base."/replications/*/recovery.json")?:[] as $candidatePath){$candidate=json_decode((string)@file_get_contents($candidatePath),true);if(!is_array($candidate))$fail("the global recovery policy inventory is corrupt");$candidateState=strtoupper(trim((string)($candidate["state"]??"")));if(in_array($candidateState,["REPLICATION_ONLY","DISARMED","REMOVED"],true))continue;$candidateUuid=strtolower(trim((string)($candidate["vmUuid"]??"")));if(!preg_match("/^[a-f0-9-]{32,36}$/",$candidateUuid))$fail("the global recovery policy inventory has an invalid VM identity");if($candidateUuid===$vmUuid)$active[]=basename(dirname($candidatePath));}
+if(count($active)!==1||$active[0]!==$policyId)$fail("this is not the sole armed or non-reconciled recovery policy for the VM UUID");
+if((int)($r["schemaVersion"]??0)!==1||(int)($r["protocolVersion"]??0)!==6||(int)($r["recoveryProtocolVersion"]??0)!==1)$fail("recovery protocol identity is invalid");
+$recordId=(string)($r["replicationId"]??$r["policyId"]??"");if($recordId!==$policyId||strtolower((string)($r["vmUuid"]??""))!==$vmUuid||(string)($r["sourceHostId"]??"")!==$hostId||(string)($r["destinationHostId"]??"")!==$peer||(string)($r["side"]??"")!=="source")$fail("recovery authority host or VM identity does not match the policy");
+$term=(int)($r["term"]??0);if($term<1||empty($r["armed"])||empty($r["managedAutostart"])||strtoupper((string)($r["authority"]??"UNKNOWN"))!=="SOURCE"||$state!=="STANDBY")$fail("source recovery authority is not in startable STANDBY state");
+if(strtolower((string)($r["sourceBootId"]??""))!==$bootId)$fail("this host boot has no source authority");
+$hold=$r["hold"]??null;if(is_array($hold)){$until=(string)($hold["holdUntil"]??"");$released=!empty($hold["releasedAt"]);if(!$released&&($until==="forever"||($until!==""&&(($epoch=strtotime($until))===false||$epoch>$now))))$fail("a graceful recovery hold is active");}
+if($mode==="--issue-permit"){
+ $a=$r["startAuthorization"]??null;if(!is_array($a))$fail("a fresh destination start authorization is unavailable");$request=(string)($a["requestId"]??"");$issued=strtotime((string)($a["issuedAt"]??""));$expires=strtotime((string)($a["expiresAt"]??""));
+ if(!preg_match("/^start-[a-f0-9]{24,64}$/",$request)||(int)($a["term"]??0)!==$term||strtolower((string)($a["sourceBootId"]??""))!==$bootId||(string)($a["destinationHostId"]??"")!==$peer||!preg_match("/^[A-Fa-f0-9-]{16,80}$/",(string)($a["destinationBootId"]??"")))$fail("destination start authorization identity is invalid");
+ if($issued===false||$expires===false||$issued>$now+30||$issued<$now-300||$expires<=$now||$expires>$now+300||$expires<=$issued)$fail("destination start authorization is stale or has an invalid lifetime");
+ $permit=["schemaVersion"=>1,"replicationId"=>$policyId,"vmUuid"=>$vmUuid,"term"=>$term,"sourceHostId"=>$hostId,"destinationHostId"=>$peer,"sourceBootId"=>$bootId,"requestId"=>$request,"issuedAt"=>gmdate("c",$now),"expiresAt"=>gmdate("c",min($expires,$now+30))];$tmp=$permitPath.".tmp.".getmypid();$data=json_encode($permit,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";if(file_put_contents($tmp,$data,LOCK_EX)!==strlen($data)||!chmod($tmp,0600)||!rename($tmp,$permitPath)){@unlink($tmp);$fail("unable to store the runtime start permit",70);}exit(0);
+}
+if($mode==="--consume-permit"){
+ $permit=json_decode((string)@file_get_contents($permitPath),true);@unlink($permitPath);if(!is_array($permit)||($permit["schemaVersion"]??null)!==1||(string)($permit["replicationId"]??"")!==$policyId||strtolower((string)($permit["vmUuid"]??""))!==$vmUuid||(int)($permit["term"]??0)!==$term||(string)($permit["sourceHostId"]??"")!==$hostId||(string)($permit["destinationHostId"]??"")!==$peer||strtolower((string)($permit["sourceBootId"]??""))!==$bootId)$fail("no matching one-shot start permit is available");$expires=strtotime((string)($permit["expiresAt"]??""));if($expires===false||$expires<$now||$expires>$now+30)$fail("the one-shot start permit is stale");exit(0);
+}
+' "$policy" "$recovery" "$policy_id" "$vm_uuid" "$host_id" "$boot_id" "$mode" "$permit" "$base")"
+[[ "$gate_result" == UNARMED ]] && exit 0
+
+autostart="$(timeout 10 virsh dominfo "$vm_uuid" 2>/dev/null | awk -F: '/^Autostart/{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2);print tolower($2);exit}')"
+case "$autostart" in
+  disable|disabled|no) exit 0 ;;
+  '') rm -f -- "$permit"; echo 'libvirt autostart state is unavailable' >&2; exit 68 ;;
+  *) rm -f -- "$permit"; echo 'built-in libvirt autostart is not disabled' >&2; exit 69 ;;
+esac

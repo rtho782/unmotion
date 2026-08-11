@@ -4,7 +4,7 @@
 
 Scheduled replication maintains verified ZFS recovery points for a VM on a paired Unraid host. The source remains authoritative. The destination stores inert replica objects and metadata, but does not define, mount, expose or start the VM.
 
-Beta1 is the replication transport and inventory layer only. Beta2 begins the separately fenced recovery design, but replica activation remains disabled until that contract is implemented and tested. See [RECOVERY.md](RECOVERY.md).
+Beta1 is the replication transport and inventory layer. Beta2 adds a separately capability-gated manual recovery control plane; retained replica objects remain inert and read-only, and activation uses exact activation-owned clones rather than modifying them. See [RECOVERY.md](RECOVERY.md).
 
 ## Storage boundary
 
@@ -57,6 +57,8 @@ Historical points live on the destination; the source normally retains only the 
 
 Retention divides each UTC day into `N` equal buckets, where `N` is the selected retention count. It keeps the newest verified point in each bucket intersecting the latest 24 hours and always keeps the newest verified point, even if replication has been failing for more than a day. Empty buckets are not backfilled. Transfer completion time does not affect selection; the disk capture epoch does.
 
+When recovery is armed, the destination evaluates recovery eligibility before the source constructs a prune request. If the normal retention set contains no eligible point, unMotion safety-pins the newest eligible point as one additional point. If exact eligibility validation is temporarily unavailable, it conservatively pins the newest published non-replication-only candidate instead. This exception is limited to one extra point and disappears automatically once the configured retention set again contains an eligible point; unarmed policies continue to enforce the selected count exactly.
+
 Failed, partial, GUID-unverified, deleting or cleanup-failed points are not recovery points. Materially future-dated timestamps suppress destructive retention cleanup until the clock is trustworthy again. Foreign ZFS holds are never released.
 
 ## Guest consistency and recovery eligibility
@@ -76,8 +78,10 @@ Checkpoint quality is recorded as:
 - `unstable`: state or hashes changed during capture; or
 - `missing`: expected state could not be located.
 
-A running pause is not treated as a safe TPM copy. The latest verified safe TPM checkpoint is retained until a newer safe checkpoint is verified, even when retention removes the disk point that first referenced it. Beta1 opportunistically captures or promotes a safe checkpoint when a scheduled or manual replication run observes the VM powered off. It does not yet install a libvirt lifecycle hook, so a shutdown and restart wholly between two runs can be missed.
+A running pause is not treated as a safe TPM copy. The latest verified safe TPM checkpoint is retained until a newer safe checkpoint is verified, even when retention removes the disk point that first referenced it. Beta1 opportunistically captures or promotes a safe checkpoint only when a scheduled or manual replication run observes the VM powered off. Beta2 adds a persistent libvirt lifecycle monitor that wakes the replication worker on shutdown; publication and source-base commit must still complete before the event request is acknowledged.
 
-## Deferred recovery contract
+## Beta2 recovery boundary
 
-A later recovery release must require Guest-Agent-verified VM/IP evidence, enforce source-side autostart under unMotion control, prevent both copies from running, and perform explicit split-brain checks before activation. The planned evidence set includes source-host and guest reachability, default gateway, DNS, optional internet probe and, when available, an independent third paired witness. Graceful source shutdown will place an explicit destination holdoff. None of those future controls are represented as available in beta1.
+Beta2 recovery requires a Guest-Agent-eligible point, places source-side autostart under unMotion control, and requires an authenticated coordinated grant from the reachable, stopped and fenced source before manual activation. Retained recovery objects stay read-only and inert; activation uses exact, separately owned clones. Host shutdown/reboot prepares a durable destination hold before the local service stops, and startup remains fenced until the peer reconciles authority.
+
+These controls are separate from the beta1 replication transport and use recovery protocol 1 negotiated over protocol 6. Automatic failover, network-silence claims and witnesses are not enabled in beta2.

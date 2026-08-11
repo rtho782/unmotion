@@ -3,11 +3,11 @@ declare(strict_types=1);
 
 const UNM_VERSION = '0.4.0-beta2';
 const UNM_PROTOCOL = 5;
-// Beta2 begins explicit range negotiation without advertising protocol 6 yet.
-// Raise UNM_PROTOCOL_MAX only when the v6 fencing/witness RPCs and mixed-peer
-// tests are implemented; legacy migration continues to use UNM_PROTOCOL.
+// Legacy migration, cloning, pairing, and scheduled replication continue to
+// use protocol 5.  Protocol 6 is negotiated only for the recovery control
+// plane and must never change the shape of a protocol-5 operation.
 const UNM_PROTOCOL_MIN = 5;
-const UNM_PROTOCOL_MAX = 5;
+const UNM_PROTOCOL_MAX = 6;
 const UNM_BOOT_DIR = '/boot/config/plugins/unmotion';
 const UNM_CONFIG_JSON = UNM_BOOT_DIR . '/config.json';
 const UNM_CONFIG_CFG = UNM_BOOT_DIR . '/settings.cfg';
@@ -19,6 +19,13 @@ const UNM_REPLICATIONS_DIR = UNM_BOOT_DIR . '/replications';
 const UNM_REPLICAS_DIR = UNM_BOOT_DIR . '/replicas';
 const UNM_HOST_ID_FILE = UNM_BOOT_DIR . '/host_id';
 const UNM_REPLICATION_PROTOCOL = 1;
+const UNM_RECOVERY_PROTOCOL = 1;
+const UNM_RECOVERY_EVIDENCE_TTL = 120;
+const UNM_RECOVERY_RPC_TTL = 120;
+const UNM_RECOVERY_SCHEMA = 1;
+const UNM_RECOVERY_WORKER = '/usr/local/sbin/unmotion-recovery-worker';
+const UNM_RECOVERY_RUNTIME_DIR = '/var/lib/unmotion/recovery';
+const UNM_RECOVERY_SHUTDOWN_FENCE = '/var/run/unmotion/shutdown-fence';
 
 function unmProtocolRange(array $capabilities): array {
     $legacy=(int)($capabilities['protocolVersion']??0);
@@ -32,6 +39,13 @@ function unmNegotiateProtocol(array $localCapabilities,array $remoteCapabilities
     $local=unmProtocolRange($localCapabilities);$remote=unmProtocolRange($remoteCapabilities);
     $minimum=max($local['min'],$remote['min']);$maximum=min($local['max'],$remote['max']);
     return $maximum>=$minimum?$maximum:null;
+}
+
+function unmRecoveryProtocolAvailable(array $capabilities): bool {
+    try{$range=unmProtocolRange($capabilities);}catch(Throwable $ignored){return false;}
+    return UNM_PROTOCOL_MIN<=6&&UNM_PROTOCOL_MAX>=6&&$range['min']<=6&&$range['max']>=6
+        &&(int)($capabilities['recoveryProtocolVersion']??0)===UNM_RECOVERY_PROTOCOL
+        &&!empty($capabilities['features']['recoveryControlPlane']);
 }
 
 function unmEnsureDirs(): void {
@@ -798,10 +812,10 @@ function unmCapabilities(): array {
     $isoContaining=is_dir($cfg['iso_dir'])?unmZfsDatasetForPath($cfg['iso_dir'],false):null;
     $checks=['image_dir_exists'=>is_dir($cfg['image_dir']),'image_dir_writable'=>is_dir($cfg['image_dir'])&&is_writable($cfg['image_dir']),'iso_dir_exists'=>is_dir($cfg['iso_dir']),'iso_dir_writable'=>is_dir($cfg['iso_dir'])&&is_writable($cfg['iso_dir']),'zvol_dataset_exists'=>$zvolReady];
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
-    return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
+    return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true],
+        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -1058,6 +1072,7 @@ function unmCloneDatasetIsolated(string $dataset,string $mountpoint,array $diskP
 function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options=[]): array {
     $cloneName=unmCloneName($cloneName);
     $vm=unmParseVm($vmIdentifier);$cfg=unmLoadConfig();$errors=[];$warnings=[];$plan=[];$maps=[];
+    try{unmRecoveryAssertLegacyVmAvailable((string)($vm['uuid']??''),'Clone');}catch(Throwable $e){$errors[]=$e->getMessage();}
     $state=strtolower(trim((string)($vm['state']??'')));
     if($state!=='shut off')$errors[]='Power off the source VM before cloning.';
     if(!empty($vm['pci']))$errors[]='PCIe passthrough must be removed before cloning.';
@@ -1143,6 +1158,16 @@ function unmPeers(): array {
     usort($peers, fn($a,$b)=>strcasecmp($a['name']??'', $b['name']??''));
     return $peers;
 }
+
+function unmPublicPeerValue(mixed $value): mixed {
+    if(!is_array($value))return $value;$blocked=['recoverySecret','pendingRecoveryBootstrap','bootstrapSignature','secret','keyPath','knownHosts','incomingPublicKey'];foreach($blocked as $key)unset($value[$key]);foreach($value as $key=>$item)$value[$key]=unmPublicPeerValue($item);return $value;
+}
+
+function unmPublicPeer(array $peer): array {
+    $public=[];foreach(['id','name','host','port','username','hostId','pluginVersion','lastCapabilities','reciprocalPeerId','pairingState','pairedAt','fingerprint'] as $key)if(array_key_exists($key,$peer))$public[$key]=unmPublicPeerValue($peer[$key]);return $public;
+}
+
+function unmPublicPeers(array $peers): array {return array_map('unmPublicPeer',$peers);}
 
 function unmPeer(string $id): array {
     $p=unmLoadJson(unmPeerPath($id));
@@ -1643,6 +1668,33 @@ function unmSelectReplicationRetentionPoints(array $points,int $rpoSeconds,int $
     return $selected;
 }
 
+/**
+ * Keep the configured retention set plus, while recovery is armed, one
+ * recovery-capable safety point when the normal set contains none. The
+ * destination annotates inventory entries after validating its local XML and
+ * checkpoint material, so the source never guesses from inaccessible paths.
+ */
+function unmSelectReplicationRetentionPointsWithRecoverySafety(array $points,int $rpoSeconds,int $retentionCount,bool $recoveryArmed,?int $now=null): array {
+    $selected=unmSelectReplicationRetentionPoints($points,$rpoSeconds,$retentionCount,$now);
+    if(!$recoveryArmed)return $selected;
+    foreach($selected as $point)if(is_array($point)&&!empty($point['recoveryEligible']))return $selected;
+    $ordered=[];
+    foreach($points as $index=>$point){
+        if(!is_array($point))continue;$timestamp=unmReplicationPointTimestamp($point);if($timestamp<=0)continue;
+        $ordered[]=['point'=>$point,'timestamp'=>$timestamp,'index'=>$index];
+    }
+    usort($ordered,static fn(array $a,array $b):int=>$b['timestamp']<=>$a['timestamp']?:$b['index']<=>$a['index']);
+    $chosen=null;
+    foreach($ordered as $entry)if(!empty($entry['point']['recoveryEligible'])){$chosen=$entry['point'];break;}
+    // If exact validation is temporarily unavailable, preserve the newest
+    // published non-replication-only candidate instead of deleting what may
+    // be the only repairable recovery point.
+    if($chosen===null)foreach($ordered as $entry)if(!empty($entry['point']['recoveryCandidate'])){$chosen=$entry['point'];break;}
+    if($chosen===null)return $selected;
+    $chosenId=(string)($chosen['id']??'');foreach($selected as $point)if($chosenId!==''&&hash_equals($chosenId,(string)($point['id']??'')))return $selected;
+    $selected[]=$chosen;return $selected;
+}
+
 function unmReplicationId(string $vmUuid,string $destinationHostId): string {
     if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM UUID.');
     $destinationHostId=unmReplicaIdentityPart($destinationHostId,'destination host identity');
@@ -1730,6 +1782,8 @@ function unmReplication(string $id): array {
     $record['nextDueEpoch']=$nextDueEpoch;
     $record['nextDueAt']=$nextDueEpoch===null?null:gmdate('c',$nextDueEpoch);
     $record['policy']=$policy;$record['durable']=$durable;$record['runtime']=$runtime;
+    $identity=['replicationId'=>$id,'vmUuid'=>(string)$policy['vmUuid'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
+    $record['recovery']=unmRecoveryPublicRecord(unmRecoveryLoad(unmRecoverySourcePath($id),unmRecoveryDefaultRecord($identity,true)));
     return $record;
 }
 
@@ -1773,6 +1827,7 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
     $tpmMode=unmReplicationTpmInitialMode((string)($options['tpmInitialMode']??$options['tpm_initial_mode']??'none'));
     $vm=unmParseVm($vmIdentifier);$peer=unmTestPeer($peerId);$caps=(array)($peer['lastCapabilities']??[]);
     $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)($peer['hostId']??'')),0,16);
+    try{unmRecoveryAssertLegacyVmAvailable((string)($vm['uuid']??''),'Replication policy mutation');}catch(Throwable $e){$errors[]=$e->getMessage();}
     if((string)($peer['pairingState']??'paired')!=='paired')$errors[]='Scheduled replication requires a completed reciprocal pairing.';
     if((int)($caps['replicationProtocolVersion']??$caps['features']['replicationProtocolVersion']??0)!==UNM_REPLICATION_PROTOCOL||empty($caps['features']['scheduledReplication']))$errors[]='Destination does not support scheduled replication protocol 1. Upgrade it to unMotion 0.4 or later.';
     if(empty($vm['disks']))$errors[]='The VM has no writable disks to replicate.';
@@ -1859,7 +1914,7 @@ function unmUpdateReplication(string $id,array $input): array {
 }
 
 function unmSetReplicationEnabled(string $id,bool $enabled): array {
-    $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);$policy['enabled']=$enabled;$policy['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/policy.json',$policy);
+    $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);unmRecoveryAssertLegacyVmAvailable((string)$policy['vmUuid'],'Replication policy mutation');$policy['enabled']=$enabled;$policy['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/policy.json',$policy);
     $state=unmReplicationDurableState($id);$state['state']=$enabled?'IDLE':'PAUSED';$state['nextDueAt']=$enabled?date(DATE_ATOM):null;$state['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/state.json',$state);
     return unmReplication($id);
 }
@@ -1889,6 +1944,7 @@ function unmRunReplicationNow(string $id): array {
 function unmRemoveReplication(string $id): void {
     $policyLock=unmAcquireReplicationPolicyLock($id);$record=unmReplication($id);$durable=(array)($record['durable']??[]);$state=(string)($record['state']??'');
     if(unmReplicationStateIsActive($state))throw new RuntimeException('Pause and wait for the active replication run before removing this policy.');
+    $recovery=(array)($record['recovery']??[]);if(!empty($recovery['armed'])||(string)($recovery['state']??'REPLICATION_ONLY')!=='REPLICATION_ONLY')throw new RuntimeException('Disarm and reconcile recovery on both hosts before removing this replication policy.');
     $unsafe=(int)($durable['generation']??0)!==0
         ||is_array($durable['pending']??null)
         ||(string)($durable['baseSnapshot']??'')!==''
@@ -1918,6 +1974,8 @@ function unmIncomingReplicas(bool $includeRecoveryMaterial=false): array {
     foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $path){
         $manifest=unmLoadJson($path);if(!$manifest)continue;
         $manifest['id']=(string)($manifest['replicationId']??$manifest['id']??'');$manifest['pointCount']=count((array)($manifest['points']??[]));$manifest['status']=(string)($manifest['state']??'UNKNOWN');
+        $identity=['replicationId'=>$manifest['id'],'vmUuid'=>(string)($manifest['vmUuid']??''),'sourceHostId'=>(string)($manifest['sourceHostId']??''),'destinationHostId'=>unmHostId()];
+        $manifest['recovery']=unmRecoveryPublicRecord(unmRecoveryLoad(dirname($path).'/recovery.json',unmRecoveryDefaultRecord($identity,false)));
         if(!$includeRecoveryMaterial){
             foreach($manifest['points']??[] as &$point){
                 if(array_key_exists('sourceXml',$point)){$point['sourceXmlAvailable']=(string)$point['sourceXml']!=='';unset($point['sourceXml']);}
@@ -2129,7 +2187,8 @@ function unmReplicaSnapshotHoldTags(string $snapshot): array {
 }
 
 function unmReplicaPublish(array $request): array {
-    $identity=unmValidateReplicaRequestIdentity($request);$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica must be reserved before publishing a recovery point.');
+    $identity=unmValidateReplicaRequestIdentity($request);$recoveryLock=unmRecoveryAcquireLock($identity['replicationId']);try{$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica must be reserved before publishing a recovery point.');
+    unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);
     unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
     if(($manifest['sourceHostId']??'')!==$identity['sourceHostId']||($manifest['destinationHostId']??'')!==$identity['destinationHostId']||($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica reservation identity does not match the publish request.');
     $point=is_array($request['point']??null)?$request['point']:[];$pointId=trim((string)($point['id']??''));if(!preg_match('/^[A-Za-z0-9_.-]{8,100}$/',$pointId))throw new InvalidArgumentException('Invalid recovery point id.');
@@ -2185,8 +2244,9 @@ function unmReplicaPublish(array $request): array {
     $points[]=$point;
     usort($points,static fn(array $a,array $b):int=>unmReplicationPointTimestamp($b)<=>unmReplicationPointTimestamp($a));
     unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
-    $manifest['points']=$points;$manifest['currentPointId']=$pointId;$manifest['state']='READY';$manifest['lastSuccessAt']=$point['completedAt'];$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);
+    unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);$manifest['points']=$points;$manifest['currentPointId']=$pointId;$manifest['state']='READY';$manifest['lastSuccessAt']=$point['completedAt'];$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);
     return ['published'=>true,'accepted'=>true,'idempotent'=>false,'point'=>$point,'points'=>$points,'manifest'=>$manifest,'pointCount'=>count($points),'currentPointId'=>$pointId];
+    }finally{unmRecoveryReleaseLock($recoveryLock);}
 }
 
 function unmGarbageCollectReplicaCheckpointArchives(array $points,string $stateDirectory): array {
@@ -2233,7 +2293,8 @@ function unmGarbageCollectReplicaCheckpointArchives(array $points,string $stateD
 }
 
 function unmReplicaPrune(array $request): array {
-    $identity=unmValidateReplicaRequestIdentity($request,false);$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica inventory not found.');
+    $identity=unmValidateReplicaRequestIdentity($request,false);$recoveryLock=unmRecoveryAcquireLock($identity['replicationId']);try{$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$manifest=unmLoadJson($dir.'/manifest.json');if(!$manifest)throw new RuntimeException('Replica inventory not found.');
+    unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);
     if(($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica inventory VM identity does not match.');
     $requested=(array)($request['points']??[]);if(!$requested&&isset($request['pointIds']))foreach((array)$request['pointIds'] as $id)$requested[]=['id'=>$id];
     $points=(array)($manifest['points']??[]);$byId=[];foreach($points as $point)$byId[(string)($point['id']??'')]=$point;$pruned=[];$seen=[];$ownHold='unmotion:replication:'.$identity['replicationId'];
@@ -2265,11 +2326,11 @@ function unmReplicaPrune(array $request): array {
             foreach($existingSnapshots as $full=>$stored){
                 $tags=unmReplicaSnapshotHoldTags($full);
                 if(in_array($ownHold,$tags,true)){
-                    $release=unmRun(['zfs','release',$ownHold,$full],null,15);if($release['code']!==0)throw new RuntimeException('Unable to release the exact unMotion hold on '.$full.': '.trim($release['stderr']));
+                    unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);$release=unmRun(['zfs','release',$ownHold,$full],null,15);if($release['code']!==0)throw new RuntimeException('Unable to release the exact unMotion hold on '.$full.': '.trim($release['stderr']));
                 }
                 if(unmReplicaSnapshotHoldTags($full))throw new RuntimeException('Recovery snapshot gained another hold and was preserved: '.$full);
                 $currentGuid=unmReplicaZfsProperty($full,'guid');if(!hash_equals((string)$stored['guid'],$currentGuid))throw new RuntimeException('Recovery snapshot GUID changed immediately before prune: '.$full);
-                $destroy=unmRun(['zfs','destroy',$full],null,60);if($destroy['code']!==0)throw new RuntimeException('Unable to prune recovery snapshot '.$full.': '.trim($destroy['stderr']));
+                unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);$destroy=unmRun(['zfs','destroy',$full],null,60);if($destroy['code']!==0)throw new RuntimeException('Unable to prune recovery snapshot '.$full.': '.trim($destroy['stderr']));
             }
         }catch(Throwable $e){
             foreach($manifest['points'] as &$manifestPoint)if((string)($manifestPoint['id']??'')===$id){$manifestPoint['state']='CLEANUP_FAILED';$manifestPoint['cleanupError']=$e->getMessage();break;}unset($manifestPoint);
@@ -2278,18 +2339,1161 @@ function unmReplicaPrune(array $request): array {
         unset($byId[$id]);$manifest['points']=array_values($byId);usort($manifest['points'],static fn(array $a,array $b):int=>unmReplicationPointTimestamp($b)<=>unmReplicationPointTimestamp($a));$manifest['state']='READY';unset($manifest['checkpointCleanupError']);$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);$pruned[]=$id;
     }
     try{
+        unmRecoveryAssertReplicaMutationAllowed($identity['sourceHostId'],$identity['replicationId']);
         unmGarbageCollectReplicaCheckpointArchives((array)($manifest['points']??[]),(string)($manifest['stateDirectory']??''));
         if(isset($manifest['checkpointCleanupError'])){unset($manifest['checkpointCleanupError']);$manifest['state']='READY';$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);}
     }catch(Throwable $e){
         $manifest['state']='CLEANUP_FAILED';$manifest['checkpointCleanupError']=$e->getMessage();$manifest['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/manifest.json',$manifest);throw $e;
     }
     return ['pruned'=>$pruned,'pointCount'=>count((array)($manifest['points']??[])),'currentPointId'=>$manifest['currentPointId']??null,'manifest'=>$manifest];
+    }finally{unmRecoveryReleaseLock($recoveryLock);}
 }
 
 function unmReplicaInventory(array $request): array {
     $identity=unmValidateReplicaRequestIdentity($request,false);$manifest=unmReplicaManifest($identity['sourceHostId'],$identity['replicationId']);if(!$manifest)throw new RuntimeException('Replica inventory not found.');
     if(($manifest['vmUuid']??'')!==$identity['vmUuid'])throw new RuntimeException('Replica inventory VM identity does not match.');
-    return ['manifest'=>$manifest,'points'=>(array)($manifest['points']??[]),'pointCount'=>count((array)($manifest['points']??[])),'currentPointId'=>$manifest['currentPointId']??null];
+    $points=[];$now=time();
+    foreach((array)($manifest['points']??[]) as $point){
+        if(!is_array($point))continue;$eligibility=unmRecoveryPointEligibility($manifest,$point,$now,false);
+        $point['recoveryEligible']=!empty($eligibility['eligible']);
+        $point['recoveryCandidate']=(string)($point['state']??'')==='AVAILABLE'&&empty($point['replicationOnly']);
+        $points[]=$point;
+    }
+    return ['manifest'=>$manifest,'points'=>$points,'pointCount'=>count($points),'currentPointId'=>$manifest['currentPointId']??null];
+}
+
+function unmRecoveryStates(): array {
+    return ['REPLICATION_ONLY','ARMING','STANDBY','HOLDOFF','SOURCE_START_FENCED','EVIDENCE_GATHERING','RECOVERY_READY','ACTIVATING','RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED','SPLIT_BRAIN_SUSPECTED','SPLIT_BRAIN_FENCING','SPLIT_BRAIN_UNRESOLVED','FAILBACK_PREPARING','FAILBACK_CUTOVER','SOURCE_RESTORING','DISARMING','FENCED'];
+}
+
+function unmRecoveryValidateState(string $state): string {
+    $state=strtoupper(trim($state));
+    if(!in_array($state,unmRecoveryStates(),true))throw new InvalidArgumentException('Invalid recovery state.');
+    return $state;
+}
+
+function unmRecoveryTransitionAllowed(string $from,string $to): bool {
+    $from=unmRecoveryValidateState($from);$to=unmRecoveryValidateState($to);
+    if($from===$to)return true;
+    if(in_array($to,['FENCED','SPLIT_BRAIN_SUSPECTED'],true)&&$from!=='REPLICATION_ONLY')return true;
+    $allowed=[
+        'REPLICATION_ONLY'=>['ARMING'],
+        'ARMING'=>['STANDBY','REPLICATION_ONLY'],
+        'STANDBY'=>['HOLDOFF','SOURCE_START_FENCED','EVIDENCE_GATHERING','DISARMING'],
+        'HOLDOFF'=>['STANDBY','DISARMING'],
+        'SOURCE_START_FENCED'=>['STANDBY','FENCED'],
+        'EVIDENCE_GATHERING'=>['STANDBY','HOLDOFF','RECOVERY_READY'],
+        'RECOVERY_READY'=>['EVIDENCE_GATHERING','ACTIVATING'],
+        'ACTIVATING'=>['RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED'],
+        'RECOVERED_STOPPED'=>['RECOVERED_RUNNING','RECOVERY_BOOT_FAILED','FAILBACK_PREPARING','DISARMING'],
+        'RECOVERED_RUNNING'=>['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],
+        'RECOVERY_BOOT_FAILED'=>['RECOVERED_STOPPED','RECOVERED_RUNNING','DISARMING'],
+        'SPLIT_BRAIN_SUSPECTED'=>['SPLIT_BRAIN_FENCING','SPLIT_BRAIN_UNRESOLVED'],
+        'SPLIT_BRAIN_FENCING'=>['RECOVERED_STOPPED','SPLIT_BRAIN_UNRESOLVED'],
+        'SPLIT_BRAIN_UNRESOLVED'=>[],
+        'FAILBACK_PREPARING'=>['RECOVERED_STOPPED','FAILBACK_CUTOVER'],
+        'FAILBACK_CUTOVER'=>['SOURCE_RESTORING','SPLIT_BRAIN_UNRESOLVED'],
+        'SOURCE_RESTORING'=>['STANDBY','SPLIT_BRAIN_UNRESOLVED'],
+        'DISARMING'=>['REPLICATION_ONLY'],
+        'FENCED'=>['STANDBY','EVIDENCE_GATHERING','REPLICATION_ONLY','SPLIT_BRAIN_SUSPECTED'],
+    ];
+    return in_array($to,$allowed[$from]??[],true);
+}
+
+function unmRecoveryValidateRecord(array $record): array {
+    $record['state']=unmRecoveryValidateState((string)($record['state']??'REPLICATION_ONLY'));
+    $record['term']=(int)($record['term']??0);if($record['term']<0)throw new InvalidArgumentException('Recovery term cannot be negative.');
+    $authority=strtoupper(trim((string)($record['authority']??'SOURCE')));if(!in_array($authority,['SOURCE','DESTINATION','UNKNOWN'],true))throw new InvalidArgumentException('Invalid recovery authority.');$record['authority']=$authority;
+    $record['armed']=!empty($record['armed']);$record['managedAutostart']=!empty($record['managedAutostart']);$record['desiredAutostart']=!empty($record['desiredAutostart']);
+    foreach(['activationId'=>'/^act-[a-f0-9]{24}$/','claimId'=>'/^claim-[a-f0-9]{24}$/'] as $key=>$pattern){$value=(string)($record[$key]??'');if($value!==''&&!preg_match($pattern,$value))throw new InvalidArgumentException('Invalid recovery '.$key.'.');}
+    if(isset($record['hold'])&&!is_array($record['hold']))throw new InvalidArgumentException('Invalid recovery hold.');
+    return $record;
+}
+
+function unmRecoveryRecordInvariantErrors(array $record): array {
+    $errors=[];try{$record=unmRecoveryValidateRecord($record);}catch(Throwable $e){return [$e->getMessage()];}$state=(string)$record['state'];$armed=!empty($record['armed']);$term=(int)$record['term'];$authority=(string)$record['authority'];
+    if($armed&&$term<1)$errors[]='An armed recovery policy requires a positive authority term.';
+    if(!$armed&&!in_array($state,['REPLICATION_ONLY','FENCED'],true))$errors[]='An unarmed recovery policy cannot be in an active recovery state.';
+    if($state==='REPLICATION_ONLY'&&($armed||!empty($record['managedAutostart'])))$errors[]='Replication-only state cannot retain managed recovery autostart.';
+    if(isset($record['hold'])&&$state!=='HOLDOFF')$errors[]='A durable recovery hold requires HOLDOFF state.';
+    if($state==='HOLDOFF'&&!is_array($record['hold']??null))$errors[]='HOLDOFF state requires a durable hold record.';
+    if(in_array($state,['RECOVERY_READY','ACTIVATING','RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED'],true)&&!preg_match('/^act-[a-f0-9]{24}$/',(string)($record['activationId']??$record['claim']['activationId']??'')))$errors[]='Recovery activation states require an activation id.';
+    if(in_array($state,['RECOVERY_READY','ACTIVATING','RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED'],true)&&$authority!=='DESTINATION')$errors[]='Recovery activation states require destination authority.';
+    if($state==='STANDBY'&&$armed&&$authority!=='SOURCE')$errors[]='Armed STANDBY requires source authority.';
+    if(isset($record['claim'])&&!is_array($record['claim']))$errors[]='Recovery claim must be an object.';
+    if(isset($record['activation'])&&!is_array($record['activation']))$errors[]='Recovery activation must be an object.';
+    return array_values(array_unique($errors));
+}
+
+function unmRecoveryAssertRecordInvariants(array $record): void {
+    $errors=unmRecoveryRecordInvariantErrors($record);if($errors)throw new RuntimeException('Recovery record invariant failed: '.implode(' ',$errors));
+}
+
+function unmRecoverySourcePath(string $replicationId): string {
+    return unmReplicationPath($replicationId).'/recovery.json';
+}
+
+function unmRecoveryReplicaContext(string $replicationId): array {
+    unmReplicationPath($replicationId);$matches=[];
+    foreach(glob(UNM_REPLICAS_DIR.'/*/'.$replicationId.'/manifest.json')?:[] as $path){$manifest=unmLoadJson($path);if($manifest)$matches[]=['dir'=>dirname($path),'manifest'=>$manifest];}
+    if(count($matches)!==1)throw new RuntimeException(count($matches)?'Replica identity is ambiguous.':'Incoming replica not found.');
+    return $matches[0];
+}
+
+function unmRecoveryReplicaPath(string $replicationId): string {
+    return unmRecoveryReplicaContext($replicationId)['dir'].'/recovery.json';
+}
+
+function unmRecoveryLoad(string $path,array $defaults=[]): array {
+    $record=unmLoadJson($path,$defaults);return unmRecoveryValidateRecord($record?:$defaults);
+}
+
+function unmRecoveryStore(string $path,array $record): array {
+    $record=unmRecoveryValidateRecord($record);unmRecoveryAssertRecordInvariants($record);$record['updatedAt']=gmdate('c');unmAtomicJson($path,$record);return $record;
+}
+
+function unmRecoveryTransition(array $record,string $to,array $changes=[]): array {
+    $from=(string)($record['state']??'REPLICATION_ONLY');$to=unmRecoveryValidateState($to);
+    if(!unmRecoveryTransitionAllowed($from,$to))throw new RuntimeException("Recovery transition $from to $to is not permitted.");
+    return unmRecoveryValidateRecord(array_replace($record,$changes,['state'=>$to]));
+}
+
+function unmRecoveryAcquireLock(string $replicationId) {
+    unmReplicationPath($replicationId);$path='/var/lock/unmotion-recovery-'.$replicationId.'.lock';$handle=fopen($path,'c');
+    if($handle===false)throw new RuntimeException('Unable to open recovery policy lock.');@chmod($path,0600);
+    if(!flock($handle,LOCK_EX)){fclose($handle);throw new RuntimeException('Unable to lock recovery policy.');}return $handle;
+}
+
+function unmRecoveryReleaseLock($handle): void {if(is_resource($handle)){flock($handle,LOCK_UN);fclose($handle);}}
+
+function unmRecoveryAcquireVmLock(string $vmUuid) {
+    $vmUuid=strtolower(trim($vmUuid));if(!preg_match('/^[a-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid recovery VM lock identity.');$path='/var/lock/unmotion-'.$vmUuid.'.lock';$handle=fopen($path,'c');if($handle===false)throw new RuntimeException('Unable to open the global VM operation lock.');@chmod($path,0600);if(!flock($handle,LOCK_EX|LOCK_NB)){fclose($handle);throw new RuntimeException('Another unMotion migration, replication, clone, or recovery operation is using this VM.');}return $handle;
+}
+
+function unmRecoveryBootId(): string {
+    $id=trim((string)@file_get_contents('/proc/sys/kernel/random/boot_id'));
+    return preg_match('/^[a-f0-9-]{32,40}$/i',$id)?strtolower($id):'unknown-boot';
+}
+
+function unmRecoveryRandomId(string $prefix): string {
+    if(!preg_match('/^[a-z]{2,12}$/',$prefix))throw new InvalidArgumentException('Invalid recovery id prefix.');
+    return $prefix.'-'.bin2hex(random_bytes(12));
+}
+
+function unmRecoveryCanonicalValue(mixed $value): mixed {
+    if(!is_array($value))return $value;
+    if(array_is_list($value))return array_map('unmRecoveryCanonicalValue',$value);
+    ksort($value,SORT_STRING);foreach($value as $key=>$item)$value[$key]=unmRecoveryCanonicalValue($item);return $value;
+}
+
+function unmRecoveryCanonicalJson(array $value): string {
+    return json_encode(unmRecoveryCanonicalValue($value),JSON_UNESCAPED_SLASHES|JSON_UNESCAPED_UNICODE|JSON_THROW_ON_ERROR);
+}
+
+function unmRecoveryPeerSupportsV6(array $peer): bool {
+    return (string)($peer['pairingState']??'paired')==='paired'&&unmRecoveryProtocolAvailable((array)($peer['lastCapabilities']??[]));
+}
+
+function unmRecoveryPeerSecret(array $peer): string {
+    $secret=strtolower(trim((string)($peer['recoverySecret']??'')));
+    if(!preg_match('/^[a-f0-9]{64}$/',$secret))throw new RuntimeException('The paired host has no recovery RPC signing key. Re-test or re-pair it before arming recovery.');
+    return $secret;
+}
+
+function unmRecoveryBootstrapPayload(array $request): array {
+    unset($request['bootstrapSignature']);return $request;
+}
+
+function unmRecoveryBootstrapIdentityMatches(array $request,array $peer,string $localHostId): bool {
+    return (string)($request['destinationHostId']??'')===$localHostId
+        &&(string)($request['senderHostId']??'')===(string)($request['sourceHostId']??'')
+        &&(string)($request['sourceHostId']??'')===(string)($peer['hostId']??'')
+        &&(string)($request['recipientPeerId']??'')===(string)($peer['id']??'')
+        &&(string)($request['senderPeerId']??'')===(string)($peer['reciprocalPeerId']??'')
+        &&(string)($request['sourceHostId']??'')!==$localHostId;
+}
+
+function unmRecoveryBootstrapReplayDecision(array $seen,string $nonce,string $requestHash): string {
+    if(!preg_match('/^[a-f0-9]{32}$/',$nonce)||!preg_match('/^[a-f0-9]{64}$/',$requestHash))return 'invalid';
+    if(!array_key_exists($nonce,$seen))return 'new';return hash_equals((string)$seen[$nonce],$requestHash)?'idempotent':'conflict';
+}
+
+function unmRecoveryPeerCredentialLock(string $peerId) {
+    unmPeerPath($peerId);$path='/var/lock/unmotion-peer-recovery-'.$peerId.'.lock';$lock=fopen($path,'c');if($lock===false)throw new RuntimeException('Unable to open recovery peer-credential lock.');@chmod($path,0600);if(!flock($lock,LOCK_EX)){fclose($lock);throw new RuntimeException('Unable to lock recovery peer credentials.');}return $lock;
+}
+
+function unmRecoverySshSign(string $message,string $privateKey,string $identity): string {
+    if(!preg_match('/^[A-Za-z0-9_.:-]{8,128}$/',$identity))throw new InvalidArgumentException('Recovery bootstrap signing identity is invalid.');$message="unmotion-recovery-identity:$identity\n".$message;
+    $realKey=realpath($privateKey);if($realKey===false||!is_file($realKey)||is_link($privateKey))throw new RuntimeException('Recovery bootstrap signing key is unavailable.');
+    $data=tempnam('/tmp','unm-rpc-data-');if($data===false)throw new RuntimeException('Unable to create recovery bootstrap signing input.');$signature=$data.'.sig';
+    try{if(file_put_contents($data,$message,LOCK_EX)!==strlen($message)||!chmod($data,0600))throw new RuntimeException('Unable to write recovery bootstrap signing input.');$result=unmRun(['ssh-keygen','-Y','sign','-f',$realKey,'-n','unmotion-recovery',$data],null,15);if($result['code']!==0||!is_file($signature))throw new RuntimeException('Unable to sign recovery bootstrap request: '.trim($result['stderr']));$contents=(string)file_get_contents($signature);if(!str_contains($contents,'BEGIN SSH SIGNATURE')||strlen($contents)>8192)throw new RuntimeException('Recovery bootstrap signature is invalid.');return $contents;}
+    finally{@unlink($data);@unlink($signature);}
+}
+
+function unmRecoverySshVerify(string $message,string $signature,string $publicKey,string $identity): bool {
+    try{$publicKey=unmValidatePublicKey($publicKey);}catch(Throwable $ignored){return false;}if(!preg_match('/^[A-Za-z0-9_.:-]{8,128}$/',$identity)||!str_contains($signature,'BEGIN SSH SIGNATURE')||strlen($signature)>8192)return false;
+    $message="unmotion-recovery-identity:$identity\n".$message;
+    $allowed=tempnam('/tmp','unm-rpc-allowed-');$sig=tempnam('/tmp','unm-rpc-sig-');if($allowed===false||$sig===false){if(is_string($allowed))@unlink($allowed);if(is_string($sig))@unlink($sig);return false;}
+    try{$keyParts=preg_split('/\s+/',trim($publicKey),3)?:[];if(count($keyParts)<2)return false;$line=$identity.' namespaces="unmotion-recovery" '.$keyParts[0].' '.$keyParts[1]."\n";if(file_put_contents($allowed,$line,LOCK_EX)!==strlen($line)||file_put_contents($sig,$signature,LOCK_EX)!==strlen($signature))return false;@chmod($allowed,0600);@chmod($sig,0600);$result=unmRun(['ssh-keygen','-Y','verify','-f',$allowed,'-I',$identity,'-n','unmotion-recovery','-s',$sig],$message,15);return $result['code']===0;}
+    finally{@unlink($allowed);@unlink($sig);}
+}
+
+function unmRecoveryInstallPeerSecret(array $request): array {
+    $sourceHostId=trim((string)($request['sourceHostId']??''));$destinationHostId=trim((string)($request['destinationHostId']??''));
+    $senderHostId=trim((string)($request['senderHostId']??''));$secret=strtolower(trim((string)($request['secret']??'')));
+    $issuedAt=(int)($request['issuedAt']??0);$expiresAt=(int)($request['expiresAt']??0);$nonce=(string)($request['nonce']??'');$senderPeerId=(string)($request['senderPeerId']??'');$recipientPeerId=(string)($request['recipientPeerId']??'');$signature=(string)($request['bootstrapSignature']??'');
+    if($destinationHostId!==unmHostId()||$senderHostId!==$sourceHostId||$sourceHostId===''||$sourceHostId===$destinationHostId)throw new InvalidArgumentException('Recovery signing-key identities are invalid.');
+    if(!preg_match('/^[a-f0-9]{64}$/',$secret)||!preg_match('/^[a-f0-9]{32}$/',$nonce))throw new InvalidArgumentException('Recovery signing-key material is invalid.');
+    $now=time();if($issuedAt>$now+30||$issuedAt<$now-UNM_RECOVERY_RPC_TTL||$expiresAt<$now||$expiresAt>$issuedAt+UNM_RECOVERY_RPC_TTL)throw new RuntimeException('Recovery signing-key request is expired or has an invalid clock.');
+    $peer=unmFindPeerByHostId($sourceHostId);if((string)($peer['pairingState']??'')!=='paired')throw new RuntimeException('Recovery signing keys require a completed reciprocal pairing.');
+    if(!unmRecoveryBootstrapIdentityMatches($request,$peer,unmHostId()))throw new RuntimeException('Recovery signing-key request does not match the reciprocal peer identities.');
+    if(!unmRecoveryProtocolAvailable((array)($peer['lastCapabilities']??[])))throw new RuntimeException('The paired source has not negotiated recovery protocol 1 over protocol 6.');
+    if(!unmRecoverySshVerify(unmRecoveryCanonicalJson(unmRecoveryBootstrapPayload($request)),$signature,(string)($peer['incomingPublicKey']??''),$sourceHostId))throw new RuntimeException('Recovery signing-key bootstrap signature validation failed.');
+    $requestHash=hash('sha256',unmRecoveryCanonicalJson(unmRecoveryBootstrapPayload($request)));$credentialLock=unmRecoveryPeerCredentialLock((string)$peer['id']);try{$peer=unmPeer((string)$peer['id']);$nonces=(array)($peer['recoveryBootstrapNonces']??[]);$replay=unmRecoveryBootstrapReplayDecision($nonces,$nonce,$requestHash);if($replay==='conflict'||$replay==='invalid')throw new RuntimeException('Recovery signing-key bootstrap nonce was replayed with different content.');$existing=strtolower(trim((string)($peer['recoverySecret']??'')));if($existing!==''&&!hash_equals($existing,$secret))throw new RuntimeException('The paired host presented a different recovery signing key. Remove and re-pair it to rotate recovery credentials.');$pending=(array)($peer['pendingRecoveryBootstrap']??[]);$pendingSecret=strtolower((string)($pending['secret']??''));if($existing===''&&preg_match('/^[a-f0-9]{64}$/',$pendingSecret)&&!hash_equals($pendingSecret,$secret)&&strcmp(unmHostId(),$sourceHostId)<0)throw new RuntimeException('The deterministic local-host recovery bootstrap takes precedence; retry after reciprocal key installation.');$nonces[$nonce]=$requestHash;if(count($nonces)>32)$nonces=array_slice($nonces,-32,null,true);$peer['recoveryBootstrapNonces']=$nonces;$peer['recoverySecret']=$secret;$peer['recoverySecretInstalledAt']=$peer['recoverySecretInstalledAt']??gmdate('c');unset($peer['pendingRecoveryBootstrap']);unmSavePeerRecord($peer);}finally{unmRecoveryReleaseLock($credentialLock);}
+    $ack=['installed'=>true,'sourceHostId'=>$sourceHostId,'destinationHostId'=>$destinationHostId,'nonce'=>$nonce,'hostId'=>unmHostId(),'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL];
+    $ack['signature']=hash_hmac('sha256',unmRecoveryCanonicalJson($ack),$secret);return $ack;
+}
+
+function unmRecoveryEnsurePeerSecret(array $peer): array {
+    $peerId=(string)($peer['id']??'');$lock=unmRecoveryPeerCredentialLock($peerId);
+    try{
+        $peer=unmPeer($peerId);if(!unmRecoveryPeerSupportsV6($peer))throw new RuntimeException('Recovery requires a reciprocal protocol-6 peer with recovery protocol 1.');if(preg_match('/^[a-f0-9]{64}$/i',(string)($peer['recoverySecret']??'')))return $peer;
+        $pending=is_array($peer['pendingRecoveryBootstrap']??null)?$peer['pendingRecoveryBootstrap']:[];$secret=strtolower((string)($pending['secret']??''));if($secret!==''&&!preg_match('/^[a-f0-9]{64}$/',$secret))throw new RuntimeException('Pending recovery signing-key state is invalid; re-pair before recovery.');if($secret==='')$secret=bin2hex(random_bytes(32));
+        $request=is_array($pending['request']??null)?$pending['request']:[];$sameIdentity=hash_equals((string)($request['sourceHostId']??''),unmHostId())&&hash_equals((string)($request['destinationHostId']??''),(string)$peer['hostId'])&&hash_equals((string)($request['senderPeerId']??''),$peerId)&&hash_equals((string)($request['recipientPeerId']??''),(string)($peer['reciprocalPeerId']??''))&&hash_equals((string)($request['secret']??''),$secret);$expires=(int)($request['expiresAt']??0);
+        if(!$sameIdentity||$expires<time()){$now=time();$request=['sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$peer['hostId'],'senderHostId'=>unmHostId(),'senderPeerId'=>$peerId,'recipientPeerId'=>(string)($peer['reciprocalPeerId']??''),'senderBootId'=>unmRecoveryBootId(),'issuedAt'=>$now,'expiresAt'=>$now+UNM_RECOVERY_RPC_TTL,'nonce'=>bin2hex(random_bytes(16)),'secret'=>$secret];$request['bootstrapSignature']=unmRecoverySshSign(unmRecoveryCanonicalJson($request),(string)($peer['keyPath']??''),unmHostId());}
+        $peer['pendingRecoveryBootstrap']=['secret'=>$secret,'request'=>$request,'persistedAt'=>(string)($pending['persistedAt']??gmdate('c')),'lastAttemptAt'=>gmdate('c')];unmSavePeerRecord($peer);
+    }finally{unmRecoveryReleaseLock($lock);}
+    $encoded=base64_encode(unmRecoveryCanonicalJson($request));$remote=unmRemote($peer,'/usr/local/sbin/unmotion-agent recovery-key-install '.escapeshellarg($encoded),30);
+    if($remote['code']!==0){$lock=unmRecoveryPeerCredentialLock($peerId);try{$current=unmPeer($peerId);if(!unmRecoveryPeerSupportsV6($current))throw new RuntimeException('Recovery peer capability or reciprocal pairing changed during signing-key installation.');if(preg_match('/^[a-f0-9]{64}$/i',(string)($current['recoverySecret']??'')))return $current;}finally{unmRecoveryReleaseLock($lock);}throw new RuntimeException('Unable to install the paired recovery signing key: '.(trim($remote['stderr'])?:'unknown error'));}
+    $reply=json_decode($remote['stdout'],true);if(!is_array($reply)||empty($reply['installed'])||!hash_equals((string)$peer['hostId'],(string)($reply['hostId']??''))||!hash_equals((string)$request['nonce'],(string)($reply['nonce']??'')))throw new RuntimeException('The paired host returned an invalid recovery signing-key acknowledgement.');$signature=(string)($reply['signature']??'');unset($reply['signature']);if(!preg_match('/^[a-f0-9]{64}$/',$signature)||!hash_equals($signature,hash_hmac('sha256',unmRecoveryCanonicalJson($reply),$secret)))throw new RuntimeException('The paired host recovery signing-key acknowledgement was not authentic.');
+    $lock=unmRecoveryPeerCredentialLock($peerId);try{$current=unmPeer($peerId);if(!unmRecoveryPeerSupportsV6($current))throw new RuntimeException('Recovery peer capability or reciprocal pairing changed before signing-key acknowledgement.');$established=strtolower((string)($current['recoverySecret']??''));if($established!==''&&!hash_equals($established,$secret))return $current;$pending=(array)($current['pendingRecoveryBootstrap']??[]);if(!hash_equals($secret,strtolower((string)($pending['secret']??'')))||!hash_equals((string)$request['nonce'],(string)($pending['request']['nonce']??'')))throw new RuntimeException('Pending recovery bootstrap changed before authenticated acknowledgement.');$current['recoverySecret']=$secret;$current['recoverySecretInstalledAt']=gmdate('c');unset($current['pendingRecoveryBootstrap']);unmSavePeerRecord($current);return $current;}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryIdentityFromSource(string $replicationId): array {
+    $policy=unmReplicationPolicy($replicationId);$peer=unmPeer((string)$policy['peerId']);
+    $identity=['replicationId'=>$replicationId,'vmUuid'=>(string)$policy['vmUuid'],'vmName'=>(string)$policy['vmName'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
+    if(!hash_equals((string)($peer['hostId']??''),$identity['destinationHostId']))throw new RuntimeException('Replication peer identity no longer matches the recovery policy.');
+    return ['identity'=>$identity,'policy'=>$policy,'peer'=>$peer,'path'=>unmRecoverySourcePath($replicationId),'sourceSide'=>true];
+}
+
+function unmRecoveryIdentityFromReplica(string $replicationId): array {
+    $context=unmRecoveryReplicaContext($replicationId);$manifest=(array)$context['manifest'];$identity=['replicationId'=>$replicationId,'vmUuid'=>(string)$manifest['vmUuid'],'vmName'=>(string)$manifest['vmName'],'sourceHostId'=>(string)$manifest['sourceHostId'],'destinationHostId'=>unmHostId()];
+    return ['identity'=>$identity,'manifest'=>$manifest,'peer'=>unmFindPeerByHostId($identity['sourceHostId']),'path'=>$context['dir'].'/recovery.json','dir'=>$context['dir'],'sourceSide'=>false];
+}
+
+function unmRecoveryContext(string $replicationId): array {
+    unmReplicationPath($replicationId);return is_file(unmReplicationPath($replicationId).'/policy.json')?unmRecoveryIdentityFromSource($replicationId):unmRecoveryIdentityFromReplica($replicationId);
+}
+
+function unmRecoverySignEnvelope(array $envelope,string $secret): array {
+    unset($envelope['signature']);$envelope['signature']=hash_hmac('sha256',unmRecoveryCanonicalJson($envelope),$secret);return $envelope;
+}
+
+function unmRecoveryEnvelope(array $context,array $peer,string $command,int $term,array $payload=[]): array {
+    if(!preg_match('/^recovery-[a-z-]+$/',$command)||$command==='recovery-key-install')throw new InvalidArgumentException('Invalid recovery RPC command.');
+    $identity=(array)$context['identity'];$now=time();$envelope=['requestId'=>unmRecoveryRandomId('req'),'nonce'=>bin2hex(random_bytes(16)),'issuedAt'=>$now,'expiresAt'=>$now+UNM_RECOVERY_RPC_TTL,'protocolVersion'=>6,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'command'=>$command,'replicationId'=>$identity['replicationId'],'vmUuid'=>$identity['vmUuid'],'sourceHostId'=>$identity['sourceHostId'],'destinationHostId'=>$identity['destinationHostId'],'senderHostId'=>unmHostId(),'senderBootId'=>unmRecoveryBootId(),'term'=>$term,'payload'=>$payload];
+    return unmRecoverySignEnvelope($envelope,unmRecoveryPeerSecret($peer));
+}
+
+function unmRecoveryVerifyResponse(array $response,array $request,string $secret,string $expectedHostId): array {
+    $signature=(string)($response['responseSignature']??'');unset($response['responseSignature']);
+    if($expectedHostId===''||!hash_equals($expectedHostId,(string)($response['hostId']??''))||(int)($response['recoveryProtocolVersion']??0)!==UNM_RECOVERY_PROTOCOL||!hash_equals((string)$request['requestId'],(string)($response['requestId']??''))||!preg_match('/^[a-f0-9]{64}$/',$signature)||!hash_equals($signature,hash_hmac('sha256',unmRecoveryCanonicalJson($response),$secret)))throw new RuntimeException('The peer returned an unauthenticated recovery response.');
+    if(empty($response['success']))throw new RuntimeException((string)($response['error']??'The peer rejected the recovery request.'));
+    return $response;
+}
+
+function unmRecoveryRemoteCall(array $context,string $command,int $term,array $payload=[],int $timeout=45): array {
+    if(!preg_match('/^recovery-[a-z-]+$/',$command)||$command==='recovery-key-install')throw new InvalidArgumentException('Invalid recovery RPC command.');
+    $peer=unmRecoveryEnsurePeerSecret((array)$context['peer']);$request=unmRecoveryEnvelope($context,$peer,$command,$term,$payload);$encoded=base64_encode(unmRecoveryCanonicalJson($request));
+    $remote=unmRemote($peer,'/usr/local/sbin/unmotion-agent '.$command.' '.escapeshellarg($encoded),$timeout);
+    if($remote['code']!==0)throw new RuntimeException('Recovery RPC '.$command.' failed: '.(trim($remote['stderr'])?:'peer unavailable'));
+    $reply=json_decode($remote['stdout'],true);if(!is_array($reply))throw new RuntimeException('Recovery RPC '.$command.' returned invalid JSON.');
+    return unmRecoveryVerifyResponse($reply,$request,unmRecoveryPeerSecret($peer),(string)$peer['hostId']);
+}
+
+function unmRecoveryRequestContext(array $request,string $command): array {
+    if(strlen(unmRecoveryCanonicalJson($request))>65536)throw new InvalidArgumentException('Recovery RPC request exceeds the 64 KiB limit.');
+    if((int)($request['protocolVersion']??0)!==6||(int)($request['recoveryProtocolVersion']??0)!==UNM_RECOVERY_PROTOCOL)throw new RuntimeException('Recovery RPC requires protocol 6 and recovery protocol 1.');
+    if(!hash_equals($command,(string)($request['command']??'')))throw new RuntimeException('Recovery RPC command is not bound to the signed envelope.');
+    foreach(['requestId'=>'/^req-[a-f0-9]{24}$/','nonce'=>'/^[a-f0-9]{32}$/','replicationId'=>'/^repl-[a-f0-9]{24}$/','vmUuid'=>'/^[A-Fa-f0-9-]{32,36}$/'] as $key=>$pattern)if(!preg_match($pattern,(string)($request[$key]??'')))throw new InvalidArgumentException('Invalid recovery RPC '.$key.'.');
+    if(!preg_match('/^(?:[a-f0-9-]{32,40}|unknown-boot)$/i',(string)($request['senderBootId']??''))||(int)($request['term']??-1)<0)throw new InvalidArgumentException('Recovery RPC boot identity or term is invalid.');
+    $sourceHostId=(string)($request['sourceHostId']??'');$destinationHostId=(string)($request['destinationHostId']??'');$senderHostId=(string)($request['senderHostId']??'');
+    if($sourceHostId===''||$destinationHostId===''||$sourceHostId===$destinationHostId||$senderHostId===unmHostId()||!in_array($senderHostId,[$sourceHostId,$destinationHostId],true))throw new InvalidArgumentException('Recovery RPC host identities are invalid.');
+    $now=time();$issuedAt=(int)($request['issuedAt']??0);$expiresAt=(int)($request['expiresAt']??0);
+    if($issuedAt>$now+30||$issuedAt<$now-UNM_RECOVERY_RPC_TTL||$expiresAt<$now||$expiresAt>$issuedAt+UNM_RECOVERY_RPC_TTL)throw new RuntimeException('Recovery RPC is expired or the peer clock is outside the allowed window.');
+    $peer=unmFindPeerByHostId($senderHostId);if(!unmRecoveryPeerSupportsV6($peer))throw new RuntimeException('Recovery RPC sender has not negotiated recovery protocol 1 over protocol 6.');$secret=unmRecoveryPeerSecret($peer);
+    $signature=(string)($request['signature']??'');$unsigned=$request;unset($unsigned['signature']);if(!preg_match('/^[a-f0-9]{64}$/',$signature)||!hash_equals($signature,hash_hmac('sha256',unmRecoveryCanonicalJson($unsigned),$secret)))throw new RuntimeException('Recovery RPC signature validation failed.');
+    $replicationId=(string)$request['replicationId'];
+    if(unmHostId()===$destinationHostId){$context=unmRecoveryIdentityFromReplica($replicationId);if($senderHostId!==$sourceHostId)throw new RuntimeException('Only the source may send this recovery RPC to the destination.');}
+    elseif(unmHostId()===$sourceHostId){$context=unmRecoveryIdentityFromSource($replicationId);if($senderHostId!==$destinationHostId)throw new RuntimeException('Only the destination may send this recovery RPC to the source.');}
+    else throw new RuntimeException('Recovery RPC targets another host.');
+    $identity=(array)$context['identity'];foreach(['replicationId','vmUuid','sourceHostId','destinationHostId'] as $key)if(!hash_equals(strtolower((string)$identity[$key]),strtolower((string)$request[$key])))throw new RuntimeException('Recovery RPC '.$key.' does not match the durable policy identity.');
+    $context['peer']=$peer;$context['secret']=$secret;$context['command']=$command;return $context;
+}
+
+function unmRecoverySignedResponse(array $request,string $secret,array $payload): array {
+    $response=['success'=>true,'requestId'=>(string)$request['requestId'],'hostId'=>unmHostId(),'bootId'=>unmRecoveryBootId(),'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL]+$payload;
+    $response['responseSignature']=hash_hmac('sha256',unmRecoveryCanonicalJson($response),$secret);return $response;
+}
+
+function unmRecoveryApplyRemoteMutation(array $request,string $command,callable $mutator): array {
+    $context=unmRecoveryRequestContext($request,$command);$lock=unmRecoveryAcquireLock((string)$request['replicationId']);
+    try{
+        $record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],(bool)$context['sourceSide']));$requests=(array)($record['requests']??[]);$hash=hash('sha256',unmRecoveryCanonicalJson($request));$requestId=(string)$request['requestId'];$nonce=(string)$request['nonce'];
+        if(isset($requests[$requestId])){if(!hash_equals((string)($requests[$requestId]['requestSha256']??''),$hash))throw new RuntimeException('Recovery request ID was replayed with different content.');$stored=(array)($requests[$requestId]['response']??[]);if(!$stored)throw new RuntimeException('Recovery request replay record is incomplete.');return $stored;}
+        foreach($requests as $seen)if(hash_equals((string)($seen['nonce']??''),$nonce))throw new RuntimeException('Recovery request nonce was already used.');
+        [$record,$payload]=$mutator($record,$context,(array)($request['payload']??[]),$request);$response=unmRecoverySignedResponse($request,(string)$context['secret'],(array)$payload);
+        $requests[$requestId]=['nonce'=>$nonce,'requestSha256'=>$hash,'command'=>$command,'acceptedAt'=>gmdate('c'),'response'=>$response];
+        if(count($requests)>128)$requests=array_slice($requests,-128,null,true);$record['requests']=$requests;unmRecoveryStore((string)$context['path'],$record);return $response;
+    }finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryDefaultRecord(array $identity,bool $sourceSide): array {
+    return unmRecoveryValidateRecord([
+        'schemaVersion'=>UNM_RECOVERY_SCHEMA,'protocolVersion'=>6,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'replicationId'=>(string)$identity['replicationId'],'vmUuid'=>(string)$identity['vmUuid'],
+        'sourceHostId'=>(string)$identity['sourceHostId'],'destinationHostId'=>(string)$identity['destinationHostId'],'term'=>0,'authority'=>'SOURCE','state'=>'REPLICATION_ONLY',
+        'armed'=>false,'managedAutostart'=>false,'desiredAutostart'=>false,'side'=>$sourceSide?'source':'destination','sourceBootId'=>$sourceSide?unmRecoveryBootId():'','destinationBootId'=>$sourceSide?'':unmRecoveryBootId(),'requests'=>[],
+    ]);
+}
+
+function unmRecoveryNativeAutostart(string $vmUuid): bool {
+    if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM UUID.');
+    $info=unmRun(['virsh','dominfo',$vmUuid],null,15);if($info['code']!==0)throw new RuntimeException('Unable to inspect native VM autostart: '.trim($info['stderr']));
+    if(!preg_match('/^Autostart:\s+(enable|disable)/mi',$info['stdout'],$match))throw new RuntimeException('Unable to determine native VM autostart.');
+    return strtolower($match[1])==='enable';
+}
+
+function unmRecoverySetNativeAutostart(string $vmUuid,bool $enabled): void {
+    $result=unmRun($enabled?['virsh','autostart',$vmUuid]:['virsh','autostart','--disable',$vmUuid],null,15);
+    if($result['code']!==0)throw new RuntimeException('Unable to update native VM autostart: '.trim($result['stderr']));
+    if(unmRecoveryNativeAutostart($vmUuid)!==$enabled)throw new RuntimeException('Native VM autostart did not remain in the required state.');
+}
+
+function unmRecoveryVmState(string $vmUuid): string {
+    if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM UUID.');
+    $state=unmRun(['virsh','domstate',$vmUuid],null,15);return $state['code']===0?strtolower(trim($state['stdout'])):'undefined';
+}
+
+function unmRecoveryAssertNoDomainConflict(string $vmUuid,string $vmName,bool $allowOwned=false,?array $record=null): void {
+    $uuids=unmRun(['virsh','list','--all','--uuid'],null,30);$names=unmRun(['virsh','list','--all','--name'],null,30);
+    if($uuids['code']!==0||$names['code']!==0)throw new RuntimeException('Libvirt inventory is unavailable; recovery conflict isolation cannot be verified.');
+    $uuidConflict=!unmReplicaVmUuidUndefinedInInventory((string)$uuids['stdout'],$vmUuid);$nameConflict=false;
+    foreach(preg_split('/\R/',trim((string)$names['stdout']))?:[] as $name)if($name!==''&&strcasecmp(trim($name),$vmName)===0){$nameConflict=true;break;}
+    if($allowOwned&&is_array($record)&&hash_equals((string)($record['activation']['activationId']??''),(string)($record['activationId']??'')))return;
+    if($uuidConflict)throw new RuntimeException('Destination already defines a VM with the recovery UUID.');
+    if($nameConflict)throw new RuntimeException('Destination already defines a VM named '.$vmName.'.');
+}
+
+function unmRecoveryInterlockStatus(): array {
+    $startGate='/usr/local/sbin/unmotion-replication-start-gate';$lifecycle='/usr/local/sbin/unmotion-replication-lifecycle';$pidPath='/var/run/unmotion/replication-lifecycle.pid';$pid=(int)trim((string)@file_get_contents($pidPath));$alive=false;
+    if($pid>1&&is_readable('/proc/'.$pid.'/cmdline')){$cmd=(string)@file_get_contents('/proc/'.$pid.'/cmdline');$alive=str_contains($cmd,$lifecycle);}
+    $reasons=[];if(!is_executable($startGate))$reasons[]='The recovery start gate is not installed.';if(!is_executable($lifecycle))$reasons[]='The libvirt recovery lifecycle monitor is not installed.';if(!$alive)$reasons[]='The libvirt recovery lifecycle monitor is not running.';
+    return ['ready'=>!$reasons,'reasons'=>$reasons,'startGate'=>$startGate,'lifecycleMonitor'=>$lifecycle,'lifecyclePid'=>$alive?$pid:0];
+}
+
+function unmRecoveryHoldActive(array $record,int $now=0): bool {
+    $hold=is_array($record['hold']??null)?$record['hold']:[];if(!$hold)return false;$until=(string)($hold['holdUntil']??'');if($until==='forever')return true;$epoch=strtotime($until);return $epoch!==false&&$epoch>($now?:time());
+}
+
+function unmRecoveryPublicRecord(array $record): array {
+    unset($record['requests'],$record['nativeAutostartBeforeArm']);
+    if(is_array($record['activation']??null)){
+        unset($record['activation']['xmlPath'],$record['activation']['activationRoot'],$record['activation']['hostStateBinding'],$record['activation']['intendedState'],$record['activation']['checkpointArchivePath'],$record['activation']['checkpointRetry']);
+        foreach((array)($record['activation']['objects']??[]) as $index=>$object)if(is_array($object)){unset($object['mountpoint'],$object['sourceSnapshot']);$record['activation']['objects'][$index]=$object;}
+        foreach((array)($record['activation']['installedState']??[]) as $index=>$state)if(is_array($state)){$record['activation']['installedState'][$index]=['kind'=>$state['kind']??'state','present'=>true];}
+    }
+    return $record;
+}
+
+function unmRecoverySourcePolicyActive(array $record): bool {
+    $state=strtoupper(trim((string)($record['state']??'UNKNOWN')));return !in_array($state,['REPLICATION_ONLY','DISARMED','REMOVED'],true)||!empty($record['armed'])||isset($record['claim'])||isset($record['activation']);
+}
+
+function unmRecoveryPolicySetIsSole(array $active,string $replicationId): bool {
+    $active=array_values(array_unique(array_map('strval',$active)));return count($active)===0||(count($active)===1&&hash_equals($replicationId,$active[0]));
+}
+
+function unmRecoveryAssertSoleSourcePolicy(string $vmUuid,string $replicationId): void {
+    $vmUuid=strtolower(trim($vmUuid));unmReplicationPath($replicationId);if(!preg_match('/^[a-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid recovery VM identity for policy uniqueness.');$active=[];
+    foreach(glob(UNM_REPLICATIONS_DIR.'/*/policy.json')?:[] as $policyPath){$raw=@file_get_contents($policyPath);$policy=$raw===false?null:json_decode($raw,true);if(!is_array($policy))throw new RuntimeException('A corrupt source replication policy prevents global recovery authority verification.');if(strcasecmp((string)($policy['vmUuid']??''),$vmUuid)!==0)continue;$id=(string)($policy['id']??basename(dirname($policyPath)));if(!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!hash_equals(basename(dirname($policyPath)),$id))throw new RuntimeException('An ambiguous source replication policy prevents recovery authority verification.');$recoveryPath=dirname($policyPath).'/recovery.json';if(!is_file($recoveryPath))continue;$recoveryRaw=@file_get_contents($recoveryPath);$recovery=$recoveryRaw===false?null:json_decode($recoveryRaw,true);if(!is_array($recovery))throw new RuntimeException('A corrupt source recovery record prevents global VM authority verification.');if(strcasecmp((string)($recovery['vmUuid']??$vmUuid),$vmUuid)!==0)throw new RuntimeException('A source recovery record has a conflicting VM identity.');if(unmRecoverySourcePolicyActive($recovery))$active[]=$id;}
+    $active=array_values(array_unique($active));if(!unmRecoveryPolicySetIsSole($active,$replicationId))throw new RuntimeException('Exactly one recovery policy may hold or reconcile authority for a source VM. Conflicting policy: '.implode(', ',$active));
+}
+
+function unmRecoveryAssertSoleDestinationPolicy(string $vmUuid,string $replicationId): void {
+    $vmUuid=strtolower(trim($vmUuid));unmReplicationPath($replicationId);if(!preg_match('/^[a-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid destination recovery VM identity for policy uniqueness.');$active=[];
+    foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $manifestPath){$manifest=unmLoadJson($manifestPath);if(!$manifest)throw new RuntimeException('A corrupt incoming replica prevents global destination authority verification.');if(strcasecmp((string)($manifest['vmUuid']??''),$vmUuid)!==0)continue;$id=(string)($manifest['replicationId']??basename(dirname($manifestPath)));if(!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!hash_equals(basename(dirname($manifestPath)),$id))throw new RuntimeException('An ambiguous incoming replica prevents destination recovery authority verification.');$recoveryPath=dirname($manifestPath).'/recovery.json';if(!is_file($recoveryPath))continue;$record=unmLoadJson($recoveryPath);if(!$record)throw new RuntimeException('A corrupt destination recovery record prevents global VM authority verification.');if(unmRecoverySourcePolicyActive($record))$active[]=$id;}
+    $active=array_values(array_unique($active));if(!unmRecoveryPolicySetIsSole($active,$replicationId))throw new RuntimeException('Exactly one incoming recovery policy may hold or reconcile authority for a destination VM. Conflicting policy: '.implode(', ',$active));
+}
+
+function unmRecoveryAssertLegacyVmAvailable(string $vmUuid,string $operation): void {
+    $vmUuid=strtolower(trim($vmUuid));if(!preg_match('/^[a-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM identity for recovery interlock.');foreach(glob(UNM_REPLICATIONS_DIR.'/*/policy.json')?:[] as $policyPath){$policy=unmLoadJson($policyPath);if(!$policy)throw new RuntimeException('A corrupt replication policy blocks '.$operation.'.');if(strcasecmp((string)($policy['vmUuid']??''),$vmUuid)!==0)continue;$recoveryPath=dirname($policyPath).'/recovery.json';if(!is_file($recoveryPath))continue;$record=unmLoadJson($recoveryPath);if(!$record||unmRecoverySourcePolicyActive($record))throw new RuntimeException($operation.' is blocked while this VM has armed or unreconciled recovery authority.');}
+    $dump=unmRun(['virsh','dumpxml',$vmUuid,'--inactive'],null,15);if($dump['code']===0&&str_contains((string)$dump['stdout'],'urn:unmotion:recovery:1'))throw new RuntimeException($operation.' is blocked for an activation-owned recovered VM.');
+}
+
+function unmRecoverySourceWorkerAuthority(string $replicationId,string $vmUuid): array {
+    try{$context=unmRecoveryIdentityFromSource($replicationId);if(strcasecmp((string)$context['identity']['vmUuid'],$vmUuid)!==0)throw new RuntimeException('Recovery policy VM identity does not match.');$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],true));unmRecoveryAssertSoleSourcePolicy($vmUuid,$replicationId);}
+    catch(Throwable $e){return ['allowed'=>false,'reason'=>$e->getMessage(),'term'=>null,'authority'=>'UNKNOWN','state'=>'UNKNOWN','record'=>[]];}
+    $summary=['term'=>(int)$record['term'],'authority'=>(string)$record['authority'],'state'=>(string)$record['state'],'record'=>unmRecoveryPublicRecord($record)];
+    if(empty($record['armed']))return ['allowed'=>true,'reason'=>'Recovery is not armed.']+$summary;
+    if((string)$record['authority']!=='SOURCE')return ['allowed'=>false,'reason'=>'The source host does not hold recovery authority.']+$summary;
+    if(!in_array((string)$record['state'],['STANDBY','HOLDOFF'],true))return ['allowed'=>false,'reason'=>'Recovery state '.$record['state'].' blocks source replication.']+$summary;
+    return ['allowed'=>true,'reason'=>'Source authority is current.']+$summary;
+}
+
+function unmRecoveryAssertReplicaMutationAllowed(string $sourceHostId,string $replicationId): void {
+    $path=unmReplicaPath($sourceHostId,$replicationId).'/recovery.json';if(!is_file($path))return;$record=unmRecoveryLoad($path);
+    if(empty($record['armed']))return;if((string)$record['authority']!=='SOURCE'||!in_array((string)$record['state'],['STANDBY','HOLDOFF'],true))throw new RuntimeException('Replica publish/prune is fenced while recovery authority or activation state is unresolved.');
+}
+
+function unmRecoveryLifecycleFence(string $replicationId,string $vmUuid,string $state,string $reason): array {
+    $state=unmRecoveryValidateState($state);if(!in_array($state,['SPLIT_BRAIN_SUSPECTED','SPLIT_BRAIN_FENCING','SPLIT_BRAIN_UNRESOLVED'],true))throw new InvalidArgumentException('Lifecycle fencing may only enter split-brain safety states.');
+    $context=unmRecoveryIdentityFromSource($replicationId);if(strcasecmp((string)$context['identity']['vmUuid'],$vmUuid)!==0)throw new RuntimeException('Lifecycle fence VM identity does not match the recovery policy.');
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],true));if(empty($record['armed']))throw new RuntimeException('Recovery is not armed for this VM.');
+        $current=(string)$record['state'];if($state==='SPLIT_BRAIN_FENCING'&&!in_array($current,['SPLIT_BRAIN_SUSPECTED','SPLIT_BRAIN_FENCING'],true))throw new RuntimeException('Split-brain fencing must follow a durable suspicion record.');
+        if($state==='SPLIT_BRAIN_UNRESOLVED'&&!in_array($current,['SPLIT_BRAIN_FENCING','SPLIT_BRAIN_UNRESOLVED'],true))throw new RuntimeException('Unresolved split brain must follow a durable fencing attempt.');
+        $record=unmRecoveryTransition($record,$state,['authority'=>'UNKNOWN','lastFenceReason'=>substr(trim($reason),0,512),'lastFenceAt'=>gmdate('c')]);return unmRecoveryStore((string)$context['path'],$record);
+    }finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryCheckpointChain(array $checkpoint): array {
+    $out=[];$depth=0;
+    while($checkpoint&&$depth++<2){$out[]=$checkpoint;$checkpoint=is_array($checkpoint['safeFallback']??null)?$checkpoint['safeFallback']:[];}
+    return $out;
+}
+
+function unmRecoveryPointRequiresState(array $point): array {
+    $checkpoint=is_array($point['hostState']??null)?$point['hostState']:[];
+    $xmlPath=(string)($point['sourceXmlPath']??'');$xmlHash=strtolower((string)($point['sourceXmlSha256']??''));
+    if($xmlPath!==''&&!is_link($xmlPath)&&is_file($xmlPath)&&preg_match('/^[a-f0-9]{64}$/',$xmlHash)&&hash_equals($xmlHash,(string)hash_file('sha256',$xmlPath))){
+        $xml=(string)file_get_contents($xmlPath);
+        return ['tpm'=>(bool)preg_match('~<tpm\b~i',$xml),'nvram'=>(bool)preg_match('~<nvram\b~i',$xml)];
+    }
+    return ['tpm'=>!empty($checkpoint['tpmPresent']),'nvram'=>!empty($checkpoint['nvramPresent'])];
+}
+
+function unmRecoveryCheckpoints(array $points): array {
+    $out=[];
+    foreach($points as $point){if(!is_array($point))continue;$pointId=(string)($point['id']??'');$pointTime=unmReplicationPointTimestamp($point);
+        foreach(['hostState','tpm','nvram'] as $key){if(!is_array($point[$key]??null))continue;foreach(unmRecoveryCheckpointChain($point[$key]) as $checkpoint){
+            $id=(string)($checkpoint['checkpointId']??'');if($id===''||isset($out[$id]))continue;
+            $out[$id]=$checkpoint+['pointId'=>$pointId,'pointTimestamp'=>$pointTime,'checkpointKind'=>$key];
+        }}
+    }
+    return array_values($out);
+}
+
+function unmRecoveryRecommendCheckpoint(array $points,string $pointId): array {
+    $chosen=null;foreach($points as $point)if(is_array($point)&&hash_equals((string)($point['id']??''),$pointId)){$chosen=$point;break;}
+    if(!is_array($chosen))throw new RuntimeException('Recovery point not found.');$required=unmRecoveryPointRequiresState($chosen);$chosenTime=unmReplicationPointTimestamp($chosen);
+    if(!$required['tpm']&&!$required['nvram'])return ['required'=>false,'recommended'=>null,'candidates'=>[],'reason'=>'No TPM or NVRAM checkpoint is required.'];
+    $candidates=[];
+    foreach(unmRecoveryCheckpoints($points) as $checkpoint){
+        $quality=(string)($checkpoint['quality']??'missing');$compatible=(bool)($checkpoint['tpmPresent']??false)===$required['tpm']&&(bool)($checkpoint['nvramPresent']??false)===$required['nvram'];
+        $covered=(!$required['tpm']||!empty($checkpoint['tpmCaptured']))&&(!$required['nvram']||!empty($checkpoint['nvramCaptured']))&&!empty($checkpoint['transferred']);
+        if(!$compatible||!$covered||!in_array($quality,['safe','best-effort'],true))continue;
+        $captured=strtotime((string)($checkpoint['capturedAt']??''));if($captured===false)$captured=(int)($checkpoint['pointTimestamp']??0);
+        $exact=hash_equals((string)($checkpoint['pointId']??''),$pointId);$delta=$captured-$chosenTime;
+        $rank=$quality==='safe'?($exact?0:($delta<=0?1:2)):($exact?3:4);
+        $checkpoint['quality']=$quality;$checkpoint['compatible']=true;$checkpoint['timeDeltaSeconds']=$delta;$checkpoint['rank']=$rank;$candidates[]=$checkpoint;
+    }
+    usort($candidates,static fn(array $a,array $b):int=>($a['rank']<=>$b['rank'])?:((int)abs($a['timeDeltaSeconds'])<=>(int)abs($b['timeDeltaSeconds']))?:((int)$a['timeDeltaSeconds']<=>(int)$b['timeDeltaSeconds'])?:strcmp((string)$a['checkpointId'],(string)$b['checkpointId']));
+    return ['required'=>true,'recommended'=>$candidates[0]??null,'candidates'=>$candidates,'reason'=>$candidates?'The safest compatible checkpoint closest to the disk point is recommended.':'No usable compatible TPM/NVRAM checkpoint exists.'];
+}
+
+function unmRecoveryPointEligibility(array $manifest,array $point,int $now=0,bool $verifyStorage=false): array {
+    $now=$now?:time();$reasons=[];$pointId=(string)($point['id']??'');
+    if($pointId===''||(string)($point['state']??'')!=='AVAILABLE')$reasons[]='The recovery point is not available.';
+    if(!empty($point['replicationOnly']))$reasons[]='The point is marked replication-only.';
+    if(!in_array((string)($point['consistency']??''),['powered-off','filesystem-quiesced'],true))$reasons[]='The point is only crash-consistent.';
+    $guest=is_array($point['guestAgent']??null)?$point['guestAgent']:[];$observed=strtotime((string)($guest['observedAt']??''));
+    if(empty($guest['verified'])||$observed===false)$reasons[]='The point has no verified QEMU Guest Agent observation.';
+    elseif(abs(unmReplicationPointTimestamp($point)-$observed)>86400)$reasons[]='The Guest Agent observation is too far from the capture time.';
+    if(!is_array($guest['network']??null)||!unmRecoveryGuestIps((array)($guest['network']??[])))$reasons[]='The Guest Agent did not report a usable VM address.';
+    $xmlPath=(string)($point['sourceXmlPath']??'');$xmlHash=strtolower((string)($point['sourceXmlSha256']??''));$stateDirectory=(string)($manifest['stateDirectory']??'');
+    $stateReal=realpath($stateDirectory);$xmlReal=realpath($xmlPath);
+    if(!preg_match('/^[a-f0-9]{64}$/',$xmlHash)||$stateReal===false||$xmlReal===false||dirname($xmlReal)!==$stateReal||!is_file($xmlReal)||is_link($xmlPath)||!hash_equals($xmlHash,(string)hash_file('sha256',$xmlReal)))$reasons[]='The source XML recovery material failed exact path or hash validation.';
+    try{$recommendation=unmRecoveryRecommendCheckpoint((array)($manifest['points']??[]),$pointId);if($recommendation['required']&&!$recommendation['recommended'])$reasons[]='No compatible TPM/NVRAM checkpoint is available.';}catch(Throwable $e){$recommendation=['required'=>true,'recommended'=>null,'candidates'=>[],'reason'=>$e->getMessage()];$reasons[]=$e->getMessage();}
+    if($verifyStorage)foreach((array)($point['storage']??[]) as $item){
+        if(!is_array($item)){$reasons[]='Recovery storage metadata is invalid.';continue;}$full=(string)($item['destination']??'').'@'.(string)($item['snapshot']??'');
+        $guid=unmRun(['zfs','get','-H','-o','value','guid',$full],null,15);if($guid['code']!==0||!hash_equals(trim((string)($item['guid']??'')),trim($guid['stdout'])))$reasons[]='A recovery snapshot is missing or has a different GUID: '.$full;
+        elseif(!in_array('unmotion:replication:'.(string)($manifest['replicationId']??''),unmReplicaSnapshotHoldTags($full),true))$reasons[]='A recovery snapshot lost its exact unMotion hold: '.$full;
+    }
+    return ['eligible'=>!$reasons,'reasons'=>array_values(array_unique($reasons)),'point'=>$point,'recommendation'=>$recommendation];
+}
+
+function unmRecoveryGuestIps(array $network): array {
+    $ips=[];$walk=function(mixed $value)use(&$walk,&$ips):void{
+        if(is_array($value)){foreach($value as $item)$walk($item);return;}if(!is_string($value))return;
+        $candidate=trim(explode('/',trim($value),2)[0]);if(!filter_var($candidate,FILTER_VALIDATE_IP))return;$packed=@inet_pton($candidate);if($packed===false)return;
+        if(strlen($packed)===4){$first=ord($packed[0]);$second=ord($packed[1]);if($candidate==='0.0.0.0'||$first===127||($first===169&&$second===254)||($first>=224&&$first<=239))return;}
+        elseif(strlen($packed)===16){if($packed===str_repeat("\0",16)||$packed===str_repeat("\0",15)."\1"||ord($packed[0])===255||(ord($packed[0])===254&&(ord($packed[1])&192)===128))return;}
+        $ips[]=$candidate;
+    };
+    $walk($network);return array_values(array_unique($ips));
+}
+
+function unmRecoveryEvidenceReady(array $samples,int $now=0): bool {
+    $now=$now?:time();$ordered=[];
+    foreach($samples as $sample){if(!is_array($sample))continue;$at=(int)($sample['at']??0);if($at<=0||$at>$now||$at<$now-UNM_RECOVERY_EVIDENCE_TTL)continue;$ordered[]=$sample+['at'=>$at];}
+    usort($ordered,static fn(array $a,array $b):int=>$a['at']<=>$b['at']);$valid=[];
+    foreach($ordered as $sample){
+        $passed=!empty($sample['sourceSilent'])&&!empty($sample['guestSilent'])&&!empty($sample['gatewayReachable'])&&!empty($sample['dnsResolvable'])&&(!array_key_exists('externalReachable',$sample)||$sample['externalReachable']!==false);
+        if(!$passed){$valid=[];continue;}$valid[(int)$sample['at']]=true;
+    }
+    $times=array_keys($valid);sort($times,SORT_NUMERIC);return count($times)>=3&&($times[array_key_last($times)]-$times[0])>=30&&$now-$times[array_key_last($times)]<=15;
+}
+
+function unmRecoveryPublicCheckpoint(?array $checkpoint): ?array {
+    if(!$checkpoint)return null;unset($checkpoint['archivePath'],$checkpoint['safeFallback']);return $checkpoint;
+}
+
+function unmRecoveryOperation(string $replicationId): array {
+    unmReplicationPath($replicationId);return unmLoadJson(UNM_RECOVERY_RUNTIME_DIR.'/'.$replicationId.'.json');
+}
+
+function unmRecoveryActionFlags(array $record,string $direction,array $points=[]): array {
+    $state=(string)($record['state']??'REPLICATION_ONLY');$armed=!empty($record['armed']);$authority=(string)($record['authority']??'SOURCE');$hold=unmRecoveryHoldActive($record);
+    if($direction==='source'){$armRetry=$armed&&in_array($state,['ARMING','FENCED'],true)&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));$disarmRetry=$armed&&in_array($state,['DISARMING','FENCED'],true)&&preg_match('/^disarm-[a-f0-9]{24}$/',(string)($record['disarmTransactionId']??''));$holdRetry=$armed&&$state==='HOLDOFF'&&isset($record['hold'])&&empty($record['hold']['acknowledged']);return ['canArm'=>(!$armed&&$state==='REPLICATION_ONLY')||$armRetry,'canResumeArm'=>$armRetry,'canDisarm'=>($armed&&$state==='STANDBY'&&$authority==='SOURCE'&&!$hold&&empty($record['claim'])&&empty($record['activation']))||$disarmRetry,'canResumeDisarm'=>$disarmRetry,'canHold'=>($armed&&$state==='STANDBY'&&$authority==='SOURCE')||$holdRetry,'canResumeHold'=>$holdRetry,'canReleaseHold'=>$armed&&$state==='HOLDOFF'&&isset($record['hold']),'canGatherEvidence'=>false,'canActivate'=>false,'canStartActivation'=>false,'canRetryCheckpoint'=>false,'canStopActivation'=>false,'canRemoveActivation'=>false,'canFailbackPreflight'=>false];}
+    $eligible=(bool)array_filter($points,static fn(array $point):bool=>!empty($point['eligible']));$activation=is_array($record['activation']??null)?$record['activation']:[];$vmState=(string)($activation['vmState']??'');
+    $grantRetry=$armed&&in_array($state,['EVIDENCE_GATHERING','FENCED'],true)&&empty($record['claim']['evidenceReady'])&&preg_match('/^grant-[a-f0-9]{24}$/',(string)($record['claim']['grantTransactionId']??''));$claimExpires=strtotime((string)($record['claim']['expiresAt']??''));$claimFresh=$claimExpires!==false&&$claimExpires>time();$canRenew=$armed&&$state==='RECOVERY_READY'&&$authority==='DESTINATION'&&!empty($record['claim']['evidenceReady'])&&empty($record['activation'])&&($claimExpires===false||$claimExpires<=time()+60);return ['canArm'=>false,'canDisarm'=>false,'canHold'=>false,'canReleaseHold'=>false,'canGatherEvidence'=>($armed&&$state==='STANDBY'&&$authority==='SOURCE'&&!$hold&&$eligible)||$grantRetry,'canResumeGrant'=>$grantRetry,'canRenewClaim'=>$canRenew,'canActivate'=>$armed&&$state==='RECOVERY_READY'&&$authority==='DESTINATION'&&!empty($record['claim']['evidenceReady'])&&$claimFresh,'canStartActivation'=>$authority==='DESTINATION'&&$state==='RECOVERED_STOPPED'&&$vmState!=='running','canRetryCheckpoint'=>$authority==='DESTINATION'&&in_array($state,['RECOVERY_BOOT_FAILED','RECOVERED_STOPPED'],true)&&$vmState!=='running','canStopActivation'=>$authority==='DESTINATION'&&in_array($state,['ACTIVATING','RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED'],true)&&$vmState==='running','canRemoveActivation'=>$authority==='DESTINATION'&&in_array($state,['RECOVERY_BOOT_FAILED','RECOVERED_STOPPED'],true)&&$vmState!=='running','canFailbackPreflight'=>$authority==='DESTINATION'&&$state==='RECOVERED_STOPPED'&&$vmState!=='running'];
+}
+
+function unmRecoveryReconcileActivationState(string $replicationId,array $context): array {
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],false));if((string)($record['authority']??'')!=='DESTINATION'||!isset($record['activation'])||!preg_match('/^act-[a-f0-9]{24}$/',(string)($record['activationId']??'')))return $record;$activationId=(string)$record['activationId'];$uuid=(string)$context['identity']['vmUuid'];$actual=unmRecoveryVmState($uuid);$owned=$actual==='undefined'?false:unmRecoveryDomainOwned($uuid,$replicationId,$activationId);$state=(string)$record['state'];$phase=(string)($record['activation']['phase']??'');
+        if($actual!=='undefined'&&!$owned){$record=unmRecoveryTransition($record,'SPLIT_BRAIN_UNRESOLVED',['authority'=>'UNKNOWN','lastError'=>'A domain with this recovery UUID is not owned by the durable activation journal.']);return unmRecoveryStore((string)$context['path'],$record);}
+        if(in_array($actual,['running','idle','paused'],true)){if($phase==='RUNNING'&&$state==='RECOVERED_RUNNING')return $record;try{unmRecoveryStopDomain($uuid,10,true);$actual='shut off';$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['lastError'=>'An interrupted or unauthorized activation start was fenced before QEMU Guest Agent health could be certified.']);}catch(Throwable $e){$record=unmRecoveryTransition($record,'SPLIT_BRAIN_UNRESOLVED',['authority'=>'UNKNOWN','lastError'=>'Unexpected exact-owned activation could not be fenced during reconciliation: '.$e->getMessage()]);return unmRecoveryStore((string)$context['path'],$record);}}
+        if($actual==='shut off'){$installed=[];foreach((array)($record['activation']['intendedState']??[]) as $item){if(!is_array($item)||!hash_equals($activationId,(string)($item['activationId']??'')))continue;$path=(string)($item['path']??'');$kind=(string)($item['kind']??'');if(unmRecoveryStateDestinationAllowed($path,$kind,$uuid)&&(is_file($path)||is_dir($path))&&!is_link($path)){$item['contentSha256']=unmRecoveryPathContentHash($path);unset($item['pending']);$installed[]=$item;}}if($installed)$record['activation']['installedState']=$installed;if(in_array($state,['ACTIVATING','RECOVERED_RUNNING'],true))$record=unmRecoveryTransition($record,'RECOVERED_STOPPED');$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['vmState']='shut off';return unmRecoveryStore((string)$context['path'],$record);}
+        if($actual==='undefined'&&$state==='ACTIVATING'){$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['lastError'=>'Activation transaction was interrupted before an exact owned domain was defined.']);$record['activation']['vmState']='undefined';$record['activation']['partial']=true;return unmRecoveryStore((string)$context['path'],$record);}return $record;
+    }finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryExactStartingWorkerLive(string $replicationId): bool {
+    $operation=unmRecoveryOperation($replicationId);$operationId=(string)($operation['operationId']??'');$pid=(int)($operation['pid']??0);if((string)($operation['state']??'')!=='RUNNING'||!in_array((string)($operation['type']??''),['activate','retry-checkpoint'],true)||!preg_match('/^op-[a-f0-9]{24}$/',$operationId)||$pid<2||!is_readable('/proc/'.$pid.'/cmdline'))return false;$parts=explode("\0",(string)@file_get_contents('/proc/'.$pid.'/cmdline'));for($index=0;$index+2<count($parts);$index++)if($parts[$index]===UNM_RECOVERY_WORKER&&$parts[$index+1]===$replicationId&&$parts[$index+2]===$operationId)return true;return false;
+}
+
+function unmRecoveryLifecycleReconcileDestination(string $replicationId): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$uuid=strtolower((string)$context['identity']['vmUuid']);$vmLock=unmRecoveryAcquireVmLock($uuid);$policyLock=null;
+    try{$policyLock=unmRecoveryAcquireLock($replicationId);$context=unmRecoveryIdentityFromReplica($replicationId);if(!hash_equals($uuid,strtolower((string)$context['identity']['vmUuid'])))throw new RuntimeException('Destination recovery identity changed during lifecycle reconciliation.');$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],false));$activation=(array)($record['activation']??[]);$activationId=(string)($record['activationId']??'');$base=['replicationId'=>$replicationId,'vmUuid'=>$uuid,'activationId'=>$activationId,'state'=>(string)$record['state']];if(!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!hash_equals($activationId,(string)($activation['activationId']??'')))return ['action'=>'noop']+$base;
+        $actual=unmRecoveryVmState($uuid);$owned=$actual==='undefined'?false:unmRecoveryDomainOwned($uuid,$replicationId,$activationId);if($actual!=='undefined'&&!$owned)return ['action'=>'foreign-domain','actualState'=>$actual]+$base;
+        if(in_array($actual,['running','idle','paused'],true)){
+            if((string)$record['authority']==='DESTINATION'&&(string)$record['state']==='RECOVERED_RUNNING'&&(string)($activation['phase']??'')==='RUNNING')return ['action'=>'authorized-running','actualState'=>$actual]+$base;
+            if((string)$record['authority']==='DESTINATION'&&(string)($activation['phase']??'')==='STARTING'&&unmRecoveryExactStartingWorkerLive($replicationId))return ['action'=>'worker-starting','actualState'=>$actual]+$base;
+            $record=unmRecoveryTransition($record,'SPLIT_BRAIN_SUSPECTED',['authority'=>'UNKNOWN','lastError'=>'Lifecycle observed an exact-owned recovery VM running without a completed RUNNING/QGA journal.']);unmRecoveryStore((string)$context['path'],$record);$record=unmRecoveryTransition($record,'SPLIT_BRAIN_FENCING',['authority'=>'UNKNOWN']);unmRecoveryStore((string)$context['path'],$record);
+            try{unmRecoveryStopDomain($uuid,20,true);$record=unmRecoveryTransition($record,'RECOVERED_STOPPED',['authority'=>'DESTINATION']);$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['vmState']='shut off';$record['activation']['stoppedAt']=gmdate('c');unmRecoveryStore((string)$context['path'],$record);return ['action'=>'fenced-stopped','actualState'=>'shut off']+$base;}catch(Throwable $e){$record=unmRecoveryTransition($record,'SPLIT_BRAIN_UNRESOLVED',['authority'=>'UNKNOWN','lastError'=>'Lifecycle could not fence an unauthorized exact-owned recovery VM: '.$e->getMessage()]);unmRecoveryStore((string)$context['path'],$record);throw $e;}
+        }
+        if($actual==='shut off'&&$owned&&in_array((string)$record['state'],['ACTIVATING','RECOVERED_RUNNING','SPLIT_BRAIN_SUSPECTED','SPLIT_BRAIN_FENCING'],true)){if((string)$record['state']==='SPLIT_BRAIN_SUSPECTED'){$record=unmRecoveryTransition($record,'SPLIT_BRAIN_FENCING',['authority'=>'UNKNOWN']);unmRecoveryStore((string)$context['path'],$record);}$record=unmRecoveryTransition($record,'RECOVERED_STOPPED',['authority'=>'DESTINATION']);$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['vmState']='shut off';unmRecoveryStore((string)$context['path'],$record);return ['action'=>'reconciled-stopped','actualState'=>'shut off']+$base;}
+        if($actual==='undefined'&&in_array((string)$record['state'],['ACTIVATING','RECOVERED_RUNNING'],true)){$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['authority'=>'DESTINATION','lastError'=>'Lifecycle found no exact owned domain for an incomplete activation.']);$record['activation']['vmState']='undefined';$record['activation']['partial']=true;unmRecoveryStore((string)$context['path'],$record);return ['action'=>'reconciled-stopped','actualState'=>'undefined']+$base;}
+        return ['action'=>'noop','actualState'=>$actual]+$base;
+    }finally{if(is_resource($policyLock))unmRecoveryReleaseLock($policyLock);unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryStatus(string $replicationId): array {
+    unmReplicationPath($replicationId);$sourcePolicyPath=unmReplicationPath($replicationId).'/policy.json';
+    if(is_file($sourcePolicyPath)){
+        $policy=unmReplicationPolicy($replicationId);$identity=['replicationId'=>$replicationId,'vmUuid'=>(string)$policy['vmUuid'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
+        $record=unmRecoveryLoad(unmRecoverySourcePath($replicationId),unmRecoveryDefaultRecord($identity,true));$public=unmRecoveryPublicRecord($record);$peer=unmPeer((string)$policy['peerId']);$interlocks=unmRecoveryInterlockStatus();$armReasons=[];$armWarnings=[];
+        $armRetry=!empty($record['armed'])&&in_array((string)$record['state'],['ARMING','FENCED'],true)&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));if(!unmRecoveryPeerSupportsV6($peer))$armReasons[]='The paired destination has not negotiated protocol 6 and recovery protocol 1.';if(empty($interlocks['ready']))$armReasons=array_merge($armReasons,(array)$interlocks['reasons']);if(((string)$record['state']!=='REPLICATION_ONLY'||!empty($record['armed']))&&!$armRetry)$armReasons[]='Recovery is already armed or requires reconciliation.';
+        try{$vm=unmParseVm((string)$policy['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))$armReasons[]='Recovery beta2 does not support PCI or USB host-device passthrough.';if(strtolower(trim((string)($vm['state']??'')))!=='shut off')$armReasons[]='Power off the source VM before arming recovery; beta2 does not grandfather a running VM through the startup fence.';if(!empty($vm['tpm']))$armWarnings[]='Virtual TPM recovery is best effort unless a safe powered-off checkpoint is available.';}catch(Throwable $e){$armReasons[]=$e->getMessage();}
+        $nativeAutostart=null;try{$nativeAutostart=unmRecoveryNativeAutostart((string)$policy['vmUuid']);}catch(Throwable $e){$armReasons[]='Native VM autostart could not be inspected: '.$e->getMessage();}
+        $arm=['ready'=>!$armReasons,'resumeTransaction'=>$armRetry,'reasons'=>array_values(array_unique($armReasons)),'warnings'=>array_values(array_unique($armWarnings)),'nativeAutostart'=>$nativeAutostart,'suggestedDesiredAutostart'=>$armRetry?!empty($record['desiredAutostart']):$nativeAutostart===true,'witnessSupported'=>false,'evidenceModes'=>unmRecoveryEvidenceModes(),'automaticFailover'=>false,'interlocks'=>$interlocks];
+        return ['direction'=>'source','recovery'=>$public,'policy'=>['id'=>$replicationId,'vmUuid'=>$policy['vmUuid'],'vmName'=>$policy['vmName'],'peerId'=>$policy['peerId'],'peerHostId'=>$policy['peerHostId']],'points'=>[],'arm'=>$arm,'actions'=>unmRecoveryActionFlags($record,'source'),'operation'=>unmRecoveryOperation($replicationId)?:null];
+    }
+    $context=unmRecoveryReplicaContext($replicationId);$manifest=(array)$context['manifest'];$identity=['replicationId'=>$replicationId,'vmUuid'=>(string)$manifest['vmUuid'],'sourceHostId'=>(string)$manifest['sourceHostId'],'destinationHostId'=>unmHostId()];
+    $record=unmRecoveryLoad($context['dir'].'/recovery.json',unmRecoveryDefaultRecord($identity,false));$points=[];
+    foreach((array)($manifest['points']??[]) as $point){if(!is_array($point))continue;$eligibility=unmRecoveryPointEligibility($manifest,$point,time(),false);$recommendation=(array)$eligibility['recommendation'];
+        $points[]=['id'=>$point['id']??'','capturedAt'=>$point['capturedAt']??null,'consistency'=>$point['consistency']??null,'state'=>$point['state']??null,'eligible'=>$eligibility['eligible'],'reasons'=>$eligibility['reasons'],'recommendedCheckpoint'=>unmRecoveryPublicCheckpoint(is_array($recommendation['recommended']??null)?$recommendation['recommended']:null),'checkpoints'=>array_map('unmRecoveryPublicCheckpoint',(array)($recommendation['candidates']??[]))];
+    }
+    return ['direction'=>'destination','recovery'=>unmRecoveryPublicRecord($record),'replica'=>['replicationId'=>$replicationId,'vmUuid'=>$manifest['vmUuid'],'vmName'=>$manifest['vmName'],'sourceHostId'=>$manifest['sourceHostId']],'points'=>$points,'arm'=>['ready'=>false,'reasons'=>['Recovery is armed from the source host.'],'warnings'=>[],'witnessSupported'=>false,'evidenceModes'=>unmRecoveryEvidenceModes(),'automaticFailover'=>false],'actions'=>unmRecoveryActionFlags($record,'destination',$points),'operation'=>unmRecoveryOperation($replicationId)?:null];
+}
+
+function unmRecoveryStartAuthorization(array $record,string $sourceBootId,string $destinationHostId,string $destinationBootId): array {
+    $term=(int)($record['term']??0);if($term<1)throw new RuntimeException('A positive recovery term is required for source-start authorization.');
+    if(!preg_match('/^(?:[a-f0-9-]{32,40}|unknown-boot)$/i',$sourceBootId)||!preg_match('/^(?:[a-f0-9-]{16,80}|unknown-boot)$/i',$destinationBootId))throw new RuntimeException('Recovery start authorization boot identity is invalid.');
+    $now=time();return ['requestId'=>unmRecoveryRandomId('start'),'term'=>$term,'sourceBootId'=>strtolower($sourceBootId),'destinationHostId'=>$destinationHostId,'destinationBootId'=>strtolower($destinationBootId),'issuedAt'=>gmdate('c',$now),'expiresAt'=>gmdate('c',$now+240)];
+}
+
+function unmRecoveryAssertRemoteTerm(array $record,array $request,bool $allowNext=false): int {
+    $current=(int)($record['term']??0);$received=(int)($request['term']??-1);
+    if($received===$current||($allowNext&&$received===$current+1))return $received;
+    throw new RuntimeException('Recovery RPC term is stale or skips the durable authority generation.');
+}
+
+function unmRecoveryGrantMatches(array $record,array $payload,int $requestTerm): bool {
+    $claim=(array)($record['claim']??[]);$proposed=(int)($payload['proposedTerm']??0);return $requestTerm===$proposed-1&&(int)($record['term']??0)===$proposed&&(string)($record['authority']??'')==='DESTINATION'&&in_array((string)($record['state']??''),['SOURCE_START_FENCED','FENCED'],true)&&hash_equals((string)($record['activationId']??''),(string)($payload['activationId']??''))&&hash_equals((string)($claim['activationId']??''),(string)($payload['activationId']??''))&&hash_equals((string)($claim['pointId']??''),(string)($payload['pointId']??''))&&hash_equals((string)($claim['checkpointId']??''),(string)($payload['checkpointId']??''))&&hash_equals((string)($claim['selectionHash']??''),(string)($payload['selectionHash']??''))&&hash_equals((string)($claim['grantTransactionId']??''),(string)($payload['grantTransactionId']??''));
+}
+
+function unmRecoveryAssertSourceReplicationIdle(string $replicationId): void {
+    $durable=unmReplicationDurableState($replicationId);$runtime=unmLoadJson(unmReplicationRuntimePath($replicationId));if(unmReplicationStateIsActive((string)($durable['state']??''))||unmReplicationStateIsActive((string)($runtime['state']??''))||unmReplicationRuntimeWorkerAlive($replicationId,$runtime))throw new RuntimeException('A source replication transaction is active; recovery authority cannot be granted.');
+}
+
+function unmRecoveryTransactionId(string $prefix,string $value): string {
+    if(!preg_match('/^[a-z]{2,12}$/',$prefix)||!preg_match('/^'.preg_quote($prefix,'/').'-[a-f0-9]{24}$/',$value))throw new InvalidArgumentException('Invalid recovery '.$prefix.' transaction id.');return $value;
+}
+
+function unmRecoveryRemoteArm(array $request): array {
+    $vmLock=unmRecoveryAcquireVmLock((string)($request['vmUuid']??''));try{return unmRecoveryApplyRemoteMutation($request,'recovery-arm',static function(array $record,array $context,array $payload,array $request):array{
+        if(!empty($context['sourceSide']))throw new RuntimeException('Recovery arming must target the replica destination.');
+        unmRecoveryAssertSoleDestinationPolicy((string)$context['identity']['vmUuid'],(string)$context['identity']['replicationId']);
+        $transactionId=unmRecoveryTransactionId('arm',(string)($payload['armTransactionId']??''));$desiredAutostart=!empty($payload['desiredAutostart']);
+        if((string)$record['state']==='STANDBY'&&!empty($record['armed'])&&hash_equals((string)($record['armTransactionId']??''),$transactionId)){
+            $term=unmRecoveryAssertRemoteTerm($record,$request);if($desiredAutostart!==!empty($record['desiredAutostart']))throw new RuntimeException('Recovery arm retry changed managed autostart intent.');$sourceBootId=strtolower((string)($payload['sourceBootId']??''));if($sourceBootId!==strtolower((string)$request['senderBootId']))throw new RuntimeException('Recovery arm retry source boot identity is inconsistent.');$record['sourceBootId']=$sourceBootId;$record['destinationBootId']=unmRecoveryBootId();$authorization=unmRecoveryStartAuthorization($record,$sourceBootId,(string)$context['identity']['destinationHostId'],unmRecoveryBootId());return [$record,['armed'=>true,'idempotent'=>true,'term'=>$term,'state'=>'STANDBY','authority'=>'SOURCE','armTransactionId'=>$transactionId,'startAuthorization'=>$authorization]];
+        }
+        if((string)$record['state']!=='REPLICATION_ONLY'||!empty($record['armed']))throw new RuntimeException('The destination recovery policy is not replication-only.');
+        $term=unmRecoveryAssertRemoteTerm($record,$request,true);if($term<1)throw new RuntimeException('Recovery arming requires a positive authority term.');
+        $sourceBootId=strtolower((string)($payload['sourceBootId']??$request['senderBootId']??''));if($sourceBootId!==strtolower((string)$request['senderBootId']))throw new RuntimeException('Recovery arming source boot identity is inconsistent.');
+        unmRecoveryAssertNoDomainConflict((string)$context['identity']['vmUuid'],(string)$context['identity']['vmName']);
+        $record=unmRecoveryTransition($record,'ARMING',['term'=>$term,'armed'=>true,'managedAutostart'=>false,'desiredAutostart'=>$desiredAutostart,'authority'=>'SOURCE','sourceBootId'=>$sourceBootId,'destinationBootId'=>unmRecoveryBootId(),'armTransactionId'=>$transactionId,'armedAt'=>gmdate('c')]);
+        $record=unmRecoveryTransition($record,'STANDBY');
+        $authorization=unmRecoveryStartAuthorization($record,$sourceBootId,(string)$context['identity']['destinationHostId'],unmRecoveryBootId());
+        return [$record,['armed'=>true,'term'=>$term,'state'=>'STANDBY','authority'=>'SOURCE','armTransactionId'=>$transactionId,'startAuthorization'=>$authorization]];
+    });}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryRemoteDisarm(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-disarm',static function(array $record,array $context,array $payload,array $request):array{
+        if(!empty($context['sourceSide']))throw new RuntimeException('Recovery disarming must target the replica destination.');$phase=(string)($payload['phase']??'prepare');if(!in_array($phase,['prepare','commit'],true))throw new InvalidArgumentException('Invalid recovery disarm phase.');$transactionId=unmRecoveryTransactionId('disarm',(string)($payload['disarmTransactionId']??''));$requestTerm=(int)($request['term']??-1);$last=(array)($record['lastDisarm']??[]);
+        if((string)$record['state']==='REPLICATION_ONLY'&&hash_equals((string)($last['transactionId']??''),$transactionId)&&(int)($last['term']??-2)===$requestTerm)return [$record,['prepared'=>true,'disarmed'=>true,'idempotent'=>true,'term'=>$requestTerm,'state'=>'REPLICATION_ONLY','disarmTransactionId'=>$transactionId]];
+        unmRecoveryAssertRemoteTerm($record,$request);
+        if($phase==='prepare'){
+            if((string)$record['state']==='DISARMING'){if(!hash_equals((string)($record['disarmTransactionId']??''),$transactionId))throw new RuntimeException('Another recovery disarm transaction is already prepared.');return [$record,['prepared'=>true,'idempotent'=>true,'term'=>(int)$record['term'],'disarmTransactionId'=>$transactionId]];}
+            if((string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||empty($record['armed'])||unmRecoveryHoldActive($record)||isset($record['claim'])||isset($record['activation']))throw new RuntimeException('Destination recovery state cannot be safely disarmed.');
+            return [unmRecoveryTransition($record,'DISARMING',['disarmTransactionId'=>$transactionId]),['prepared'=>true,'term'=>(int)$record['term'],'disarmTransactionId'=>$transactionId]];
+        }
+        if((string)$record['state']!=='DISARMING'||!hash_equals((string)($record['disarmTransactionId']??''),$transactionId))throw new RuntimeException('Destination disarm commit has no matching transaction prepare.');
+        $requests=(array)($record['requests']??[]);$reset=unmRecoveryDefaultRecord((array)$context['identity'],false);$reset['requests']=$requests;$reset['disarmedAt']=gmdate('c');$reset['lastDisarm']=['transactionId'=>$transactionId,'term'=>$requestTerm,'committedAt'=>gmdate('c')];
+        return [$reset,['disarmed'=>true,'term'=>$requestTerm,'state'=>'REPLICATION_ONLY','disarmTransactionId'=>$transactionId]];
+    });
+}
+
+function unmRecoveryRemoteHold(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-hold',static function(array $record,array $context,array $payload,array $request):array{
+        if(!empty($context['sourceSide']))throw new RuntimeException('Recovery holds must target the replica destination.');unmRecoveryAssertRemoteTerm($record,$request);
+        $hold=(array)($payload['hold']??[]);$id=(string)($hold['holdId']??'');$until=(string)($hold['holdUntil']??'');$reason=(string)($hold['reason']??'');
+        if(!preg_match('/^hold-[a-f0-9]{24}$/',$id)||!in_array($reason,['vm-poweroff','vm-restart','host-shutdown','host-reboot'],true))throw new InvalidArgumentException('Recovery hold identity or reason is invalid.');
+        $current=(array)($record['hold']??[]);if((string)$record['state']==='HOLDOFF'&&hash_equals((string)($current['holdId']??''),$id)){if(!hash_equals((string)($current['reason']??''),$reason)||!hash_equals((string)($current['holdUntil']??''),$until))throw new RuntimeException('Recovery hold retry changed the durable hold.');return [$record,['held'=>true,'idempotent'=>true,'hold'=>$current]];}
+        if($until!=='forever'){$epoch=strtotime($until);if($epoch===false||$epoch<=time()||$epoch>time()+604800)throw new InvalidArgumentException('Recovery hold expiry must be in the next seven days.');}
+        if((string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||empty($record['armed']))throw new RuntimeException('Destination is not in source-authoritative standby.');
+        $hold=['holdId'=>$id,'reason'=>$reason,'holdUntil'=>$until,'sourceBootId'=>(string)$request['senderBootId'],'acknowledged'=>true,'acknowledgedAt'=>gmdate('c')];
+        return [unmRecoveryTransition($record,'HOLDOFF',['hold'=>$hold]),['held'=>true,'hold'=>$hold]];
+    });
+}
+
+function unmRecoveryRemoteHoldRelease(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-hold-release',static function(array $record,array $context,array $payload,array $request):array{
+        if(!empty($context['sourceSide']))throw new RuntimeException('Recovery hold release must target the replica destination.');unmRecoveryAssertRemoteTerm($record,$request);
+        $hold=is_array($record['hold']??null)?$record['hold']:[];$holdId=(string)($payload['holdId']??'');$last=(array)($record['lastHoldRelease']??[]);if((string)$record['state']==='STANDBY'&&preg_match('/^hold-[a-f0-9]{24}$/',$holdId)&&hash_equals((string)($last['holdId']??''),$holdId))return [$record,['released'=>true,'idempotent'=>true,'holdId'=>$holdId,'state'=>'STANDBY']];
+        if((string)$record['state']!=='HOLDOFF'||!preg_match('/^hold-[a-f0-9]{24}$/',$holdId)||!hash_equals((string)($hold['holdId']??''),$holdId))throw new RuntimeException('Recovery hold release does not match the durable hold.');
+        $record=unmRecoveryTransition($record,'STANDBY');unset($record['hold']);$record['lastHoldRelease']=['holdId'=>$holdId,'releasedAt'=>gmdate('c')];
+        return [$record,['released'=>true,'holdId'=>$holdId,'state'=>'STANDBY']];
+    });
+}
+
+function unmRecoveryRemoteStatus(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-status',static function(array $record,array $context,array $payload,array $request):array{
+        unmRecoveryAssertRemoteTerm($record,$request);$vmState=unmRecoveryVmState((string)$context['identity']['vmUuid']);$autostart=null;
+        if(!empty($context['sourceSide']))try{$autostart=unmRecoveryNativeAutostart((string)$context['identity']['vmUuid']);}catch(Throwable $ignored){}
+        return [$record,['term'=>(int)$record['term'],'state'=>(string)$record['state'],'authority'=>(string)$record['authority'],'armed'=>!empty($record['armed']),'vmState'=>$vmState,'nativeAutostart'=>$autostart,'holdActive'=>unmRecoveryHoldActive($record),'activationId'=>(string)($record['activationId']??'')]];
+    });
+}
+
+function unmRecoveryRemoteFenceStatus(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-fence-status',static function(array $record,array $context,array $payload,array $request):array{
+        if(!empty($context['sourceSide']))throw new RuntimeException('Source-start authorization must be issued by the replica destination.');unmRecoveryAssertRemoteTerm($record,$request);
+        if(empty($record['armed'])||(string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||unmRecoveryHoldActive($record)||isset($record['claim'])||isset($record['activation']))throw new RuntimeException('Destination recovery state does not authorize a source start.');
+        unmRecoveryAssertNoDomainConflict((string)$context['identity']['vmUuid'],(string)$context['identity']['vmName']);
+        $sourceBootId=strtolower((string)($payload['sourceBootId']??''));if($sourceBootId!==strtolower((string)$request['senderBootId']))throw new RuntimeException('Source-start authorization boot identity does not match the authenticated request.');
+        $record['sourceBootId']=$sourceBootId;$record['destinationBootId']=unmRecoveryBootId();$authorization=unmRecoveryStartAuthorization($record,$sourceBootId,(string)$context['identity']['destinationHostId'],unmRecoveryBootId());
+        return [$record,['authorized'=>true,'term'=>(int)$record['term'],'state'=>'STANDBY','authority'=>'SOURCE','startAuthorization'=>$authorization]];
+    });
+}
+
+function unmRecoveryRemoteGrant(array $request): array {
+    $vmLock=unmRecoveryAcquireVmLock((string)($request['vmUuid']??''));try{return unmRecoveryApplyRemoteMutation($request,'recovery-grant',static function(array $record,array $context,array $payload,array $request):array{
+        if(empty($context['sourceSide']))throw new RuntimeException('Coordinated recovery grant must target the source.');unmRecoveryAssertSoleSourcePolicy((string)$context['identity']['vmUuid'],(string)$context['identity']['replicationId']);$proposed=(int)($payload['proposedTerm']??0);$activationId=(string)($payload['activationId']??'');$pointId=(string)($payload['pointId']??'');$checkpointId=(string)($payload['checkpointId']??'');$selectionHash=(string)($payload['selectionHash']??'');$grantTransactionId=unmRecoveryTransactionId('grant',(string)($payload['grantTransactionId']??''));
+        if($proposed<1||!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||$pointId===''||!preg_match('/^[a-f0-9]{64}$/',$selectionHash))throw new InvalidArgumentException('Coordinated recovery grant identity is invalid.');unmRecoveryAssertSourceReplicationIdle((string)$context['identity']['replicationId']);
+        if(unmRecoveryGrantMatches($record,$payload,(int)($request['term']??-1)))return [$record,['granted'=>true,'idempotent'=>true,'term'=>$proposed,'activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'selectionHash'=>$selectionHash,'grantTransactionId'=>$grantTransactionId,'sourceVmState'=>'shut off','sourceFenced'=>true]];
+        unmRecoveryAssertRemoteTerm($record,$request);if($proposed!==(int)$record['term']+1)throw new RuntimeException('Coordinated recovery grant term is not the next authority generation.');
+        if(empty($record['armed'])||(string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||unmRecoveryHoldActive($record))throw new RuntimeException('Source is not in grantable recovery standby.');
+        if(unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off')throw new RuntimeException('The source VM is not verifiably powered off.');
+        if(unmRecoveryNativeAutostart((string)$context['identity']['vmUuid']))throw new RuntimeException('The source VM native autostart interlock is not disabled.');
+        $record=unmRecoveryTransition($record,'SOURCE_START_FENCED',['term'=>$proposed,'authority'=>'DESTINATION','activationId'=>$activationId,'claim'=>['activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'selectionHash'=>$selectionHash,'grantTransactionId'=>$grantTransactionId,'kind'=>'coordinated','grantedAt'=>gmdate('c')]]);unset($record['startAuthorization']);
+        return [$record,['granted'=>true,'term'=>$proposed,'activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'selectionHash'=>$selectionHash,'grantTransactionId'=>$grantTransactionId,'sourceVmState'=>'shut off','sourceFenced'=>true]];
+    });}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryRemoteClaimRenew(array $request): array {
+    $vmLock=unmRecoveryAcquireVmLock((string)($request['vmUuid']??''));try{return unmRecoveryApplyRemoteMutation($request,'recovery-claim-renew',static function(array $record,array $context,array $payload,array $request):array{
+        if(empty($context['sourceSide']))throw new RuntimeException('Recovery claim renewal must target the fenced source.');unmRecoveryAssertSoleSourcePolicy((string)$context['identity']['vmUuid'],(string)$context['identity']['replicationId']);unmRecoveryAssertRemoteTerm($record,$request);unmRecoveryAssertSourceReplicationIdle((string)$context['identity']['replicationId']);
+        $claimId=(string)($payload['claimId']??'');$activationId=(string)($payload['activationId']??'');$pointId=(string)($payload['pointId']??'');$checkpointId=(string)($payload['checkpointId']??'');$selectionHash=(string)($payload['selectionHash']??'');$claim=(array)($record['claim']??[]);
+        if(!preg_match('/^claim-[a-f0-9]{24}$/',$claimId)||!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!preg_match('/^[a-f0-9]{64}$/',$selectionHash)||(string)$record['authority']!=='DESTINATION'||!in_array((string)$record['state'],['SOURCE_START_FENCED','FENCED'],true)||isset($record['remoteActivation'])||!hash_equals((string)($record['activationId']??''),$activationId)||!hash_equals((string)($claim['activationId']??''),$activationId)||!hash_equals((string)($claim['pointId']??''),$pointId)||!hash_equals((string)($claim['checkpointId']??''),$checkpointId)||!hash_equals((string)($claim['selectionHash']??''),$selectionHash))throw new RuntimeException('Claim renewal does not match the exact fenced source selection or an activation was already committed.');
+        if(unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off'||unmRecoveryNativeAutostart((string)$context['identity']['vmUuid']))throw new RuntimeException('The source VM is not verifiably fenced for exact claim renewal.');
+        $now=time();$renewal=['claimId'=>$claimId,'activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'selectionHash'=>$selectionHash,'issuedAt'=>gmdate('c',$now),'expiresAt'=>gmdate('c',$now+300)];$record['claimRenewal']=$renewal;
+        return [$record,['renewed'=>true,'sourceFenced'=>true,'term'=>(int)$record['term']]+$renewal];
+    });}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryRemoteActivationCommit(array $request): array {
+    $vmLock=unmRecoveryAcquireVmLock((string)($request['vmUuid']??''));try{return unmRecoveryApplyRemoteMutation($request,'recovery-activation-commit',static function(array $record,array $context,array $payload,array $request):array{
+        if(empty($context['sourceSide']))throw new RuntimeException('Activation commit must target the source.');unmRecoveryAssertSoleSourcePolicy((string)$context['identity']['vmUuid'],(string)$context['identity']['replicationId']);unmRecoveryAssertRemoteTerm($record,$request);
+        $activationId=(string)($payload['activationId']??'');$selectionHash=(string)($payload['selectionHash']??'');if(!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!preg_match('/^[a-f0-9]{64}$/',$selectionHash)||!hash_equals((string)($record['activationId']??''),$activationId)||!hash_equals((string)($record['claim']['selectionHash']??''),$selectionHash)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Activation commit does not match destination authority or the granted selection.');
+        if(!in_array((string)$record['state'],['SOURCE_START_FENCED','FENCED'],true))throw new RuntimeException('Source is not durably start-fenced for activation commit.');
+        if(unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off')throw new RuntimeException('The source VM became active before activation commit.');
+        $record=unmRecoveryTransition($record,'FENCED',['remoteActivation'=>['activationId'=>$activationId,'pointId'=>(string)($payload['pointId']??''),'destinationBootId'=>(string)$request['senderBootId'],'committedAt'=>gmdate('c')]]);
+        $now=time();return [$record,['committed'=>true,'sourceFenced'=>true,'term'=>(int)$record['term'],'activationId'=>$activationId,'selectionHash'=>$selectionHash,'grantIssuedAt'=>gmdate('c',$now),'grantExpiresAt'=>gmdate('c',$now+120)]];
+    });}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryRemoteFailbackPreflight(array $request): array {
+    return unmRecoveryApplyRemoteMutation($request,'recovery-failback-preflight',static function(array $record,array $context,array $payload,array $request):array{
+        if(empty($context['sourceSide']))throw new RuntimeException('Cold-failback preflight must inspect the source.');unmRecoveryAssertRemoteTerm($record,$request);
+        $activationId=(string)($payload['activationId']??'');$reasons=[];
+        if((string)$record['authority']!=='DESTINATION'||!hash_equals((string)($record['activationId']??''),$activationId))$reasons[]='Source authority does not match the stopped destination activation.';
+        if(unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off')$reasons[]='The source VM is not verifiably stopped.';
+        try{if(unmRecoveryNativeAutostart((string)$context['identity']['vmUuid']))$reasons[]='Source native autostart is enabled.';}catch(Throwable $e){$reasons[]='Source native autostart cannot be verified.';}
+        $policy=(array)($context['policy']??[]);$runtime=unmLoadJson(unmReplicationPath((string)$context['identity']['replicationId']).'/runtime.json');if(in_array((string)($runtime['state']??''),['STARTING','RUNNING','PREFLIGHT','SNAPSHOTTING','SENDING','PUBLISHING','COMMITTING','PRUNING'],true))$reasons[]='A source replication transaction is active.';
+        $resources=unmHostResources();return [$record,['ready'=>!$reasons,'reasons'=>$reasons,'sourceVmState'=>'shut off','resources'=>$resources,'storage'=>(array)($policy['storage']??[])]];
+    });
+}
+
+function unmRecoveryDispatchRpc(string $command,array $request): array {
+    return match($command){
+        'recovery-arm'=>unmRecoveryRemoteArm($request),'recovery-disarm'=>unmRecoveryRemoteDisarm($request),'recovery-hold'=>unmRecoveryRemoteHold($request),'recovery-hold-release'=>unmRecoveryRemoteHoldRelease($request),
+        'recovery-status'=>unmRecoveryRemoteStatus($request),'recovery-fence-status'=>unmRecoveryRemoteFenceStatus($request),'recovery-grant'=>unmRecoveryRemoteGrant($request),'recovery-claim-renew'=>unmRecoveryRemoteClaimRenew($request),'recovery-activation-commit'=>unmRecoveryRemoteActivationCommit($request),'recovery-failback-preflight'=>unmRecoveryRemoteFailbackPreflight($request),
+        default=>throw new InvalidArgumentException('Unknown or unsupported recovery RPC command.'),
+    };
+}
+
+function unmRecoveryArmUnlocked(string $replicationId,bool $desiredAutostart,array $witnessPeerIds=[]): array {
+    if($witnessPeerIds)throw new RuntimeException('Witness voting is not implemented in beta2; no witness may be selected implicitly.');$context=unmRecoveryIdentityFromSource($replicationId);$identity=(array)$context['identity'];$interlocks=unmRecoveryInterlockStatus();if(empty($interlocks['ready']))throw new RuntimeException(implode(' ',(array)$interlocks['reasons']));
+    $vm=unmParseVm((string)$identity['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))throw new RuntimeException('Recovery beta2 does not support PCI or USB host-device passthrough.');
+    $lock=unmRecoveryAcquireLock($replicationId);$record=[];$native=false;
+    try{
+        $record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord($identity,true));unmRecoveryAssertSoleSourcePolicy((string)$identity['vmUuid'],$replicationId);$state=(string)$record['state'];$retry=in_array($state,['ARMING','FENCED'],true)&&!empty($record['armed'])&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));if(!$retry&&($state!=='REPLICATION_ONLY'||!empty($record['armed'])))throw new RuntimeException('Recovery is already armed or requires reconciliation.');if($retry&&$desiredAutostart!==!empty($record['desiredAutostart']))throw new RuntimeException('Recovery arm retry must retain the original managed autostart intent.');
+        if(unmRecoveryVmState((string)$identity['vmUuid'])!=='shut off')throw new RuntimeException('Power off the source VM before arming recovery. Beta2 does not grandfather a running VM through the startup fence.');
+        if(!$retry){$native=unmRecoveryNativeAutostart((string)$identity['vmUuid']);$term=max(1,(int)$record['term']+1);$record=unmRecoveryTransition($record,'ARMING',['term'=>$term,'armed'=>true,'managedAutostart'=>true,'desiredAutostart'=>$desiredAutostart,'nativeAutostartBeforeArm'=>$native,'authority'=>'SOURCE','sourceBootId'=>unmRecoveryBootId(),'destinationBootId'=>'','armTransactionId'=>unmRecoveryRandomId('arm'),'armedAt'=>gmdate('c')]);unmRecoveryStore((string)$context['path'],$record);unmRecoverySetNativeAutostart((string)$identity['vmUuid'],false);}else{$record['sourceBootId']=unmRecoveryBootId();unmRecoveryStore((string)$context['path'],$record);unmRecoverySetNativeAutostart((string)$identity['vmUuid'],false);}
+    }catch(Throwable $e){
+        if($record&& !empty($record['armed'])){try{$record=unmRecoveryTransition($record,'FENCED',['authority'=>'UNKNOWN','lastError'=>$e->getMessage()]);unmRecoveryStore((string)$context['path'],$record);}catch(Throwable $ignored){}}
+        throw $e;
+    }finally{unmRecoveryReleaseLock($lock);}
+    try{$reply=unmRecoveryRemoteCall($context,'recovery-arm',(int)$record['term'],['sourceBootId'=>(string)$record['sourceBootId'],'desiredAutostart'=>$desiredAutostart,'armTransactionId'=>(string)$record['armTransactionId']],45);}
+    catch(Throwable $e){$lock=unmRecoveryAcquireLock($replicationId);try{$current=unmRecoveryLoad((string)$context['path']);$current=unmRecoveryTransition($current,'FENCED',['authority'=>'UNKNOWN','lastError'=>'Destination arming acknowledgement failed: '.$e->getMessage()]);unmRecoveryStore((string)$context['path'],$current);}finally{unmRecoveryReleaseLock($lock);}throw $e;}
+    $lock=unmRecoveryAcquireLock($replicationId);try{$current=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$current['state'],['ARMING','FENCED'],true)||(int)$current['term']!==(int)$reply['term']||!hash_equals((string)$current['armTransactionId'],(string)($reply['armTransactionId']??'')))throw new RuntimeException('Local recovery arming state changed before destination acknowledgement.');$current=unmRecoveryTransition($current,'STANDBY',['authority'=>'SOURCE','destinationBootId'=>(string)($reply['bootId']??''),'startAuthorization'=>(array)($reply['startAuthorization']??[])]);unset($current['lastError']);$current=unmRecoveryStore((string)$context['path'],$current);}finally{unmRecoveryReleaseLock($lock);}
+    if($desiredAutostart)try{unmRecoveryQueueManagedStart($replicationId);}catch(Throwable $e){$lock=unmRecoveryAcquireLock($replicationId);try{$current=unmRecoveryLoad((string)$context['path']);$current=unmRecoveryTransition($current,'FENCED',['authority'=>'UNKNOWN','lastError'=>'Recovery armed on both hosts, but managed startup could not be queued: '.$e->getMessage()]);unmRecoveryStore((string)$context['path'],$current);}finally{unmRecoveryReleaseLock($lock);}throw $e;}return $current;
+}
+
+function unmRecoveryArm(string $replicationId,bool $desiredAutostart,array $witnessPeerIds=[]): array {
+    $context=unmRecoveryIdentityFromSource($replicationId);$vmLock=unmRecoveryAcquireVmLock((string)$context['identity']['vmUuid']);try{return unmRecoveryArmUnlocked($replicationId,$desiredAutostart,$witnessPeerIds);}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryQueueManagedStart(string $replicationId): void {
+    $context=unmRecoveryIdentityFromSource($replicationId);unmRecoveryAssertSoleSourcePolicy((string)$context['identity']['vmUuid'],$replicationId);$directory='/var/run/unmotion/lifecycle/state';if(!is_dir($directory)&&!mkdir($directory,0700,true)&&!is_dir($directory))throw new RuntimeException('Unable to create lifecycle state for managed startup.');$target=$directory.'/'.$replicationId.'.restart-pending';$temporary=tempnam($directory,'.restart-pending-');if($temporary===false)throw new RuntimeException('Unable to create a managed-start marker.');$value=unmRecoveryBootId()."\n";
+    try{if(file_put_contents($temporary,$value,LOCK_EX)!==strlen($value)||!chmod($temporary,0600)||!rename($temporary,$target))throw new RuntimeException('Unable to commit the managed-start marker.');$temporary='';}finally{if($temporary!==''&&is_file($temporary))@unlink($temporary);}
+}
+
+function unmRecoveryReconcileSourceStartAuthorization(string $replicationId): array {
+    $context=unmRecoveryIdentityFromSource($replicationId);unmRecoveryAssertSoleSourcePolicy((string)$context['identity']['vmUuid'],$replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    $hostHold=null;
+    try{$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],true));if(!empty($record['armed'])&&(string)$record['state']==='HOLDOFF'&&(string)$record['authority']==='SOURCE'&&is_array($record['hold']??null)&&!empty($record['hold']['automaticHostShutdown'])&&!hash_equals((string)($record['hold']['sourceBootId']??''),unmRecoveryBootId())&&in_array((string)($record['hold']['reason']??''),['host-shutdown','host-reboot'],true))$hostHold=(array)$record['hold'];}finally{unmRecoveryReleaseLock($lock);}
+    if($hostHold!==null){
+        if(is_file(UNM_RECOVERY_SHUTDOWN_FENCE))throw new RuntimeException('The same-boot host-shutdown fence is still active; recovery hold reconciliation was blocked.');
+        if(empty($hostHold['acknowledged']))unmRecoverySetHold($replicationId,(string)$hostHold['reason'],(string)$hostHold['holdUntil']);
+        unmRecoveryReleaseHold($replicationId,(string)$hostHold['holdId']);
+    }
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],true));if(empty($record['armed'])||(string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE')throw new RuntimeException('Source recovery authority is not in startable STANDBY state.');if(unmRecoveryHoldActive($record))throw new RuntimeException('A graceful recovery hold is active.');$term=(int)$record['term'];}finally{unmRecoveryReleaseLock($lock);}
+    $bootId=unmRecoveryBootId();$reply=unmRecoveryRemoteCall($context,'recovery-fence-status',$term,['sourceBootId'=>$bootId],30);$authorization=(array)($reply['startAuthorization']??[]);
+    if((int)($authorization['term']??0)!==$term||!hash_equals(strtolower($bootId),strtolower((string)($authorization['sourceBootId']??'')))||!hash_equals((string)$context['identity']['destinationHostId'],(string)($authorization['destinationHostId']??'')))throw new RuntimeException('Destination returned a mismatched source-start authorization.');
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((int)$record['term']!==$term||(string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE')throw new RuntimeException('Recovery authority changed while source-start authorization was in flight.');$record['sourceBootId']=$bootId;$record['destinationBootId']=(string)($reply['bootId']??'');$record['startAuthorization']=$authorization;return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryDisarm(string $replicationId): array {
+    $context=unmRecoveryIdentityFromSource($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{$record=unmRecoveryLoad((string)$context['path']);$retry=in_array((string)$record['state'],['DISARMING','FENCED'],true)&&preg_match('/^disarm-[a-f0-9]{24}$/',(string)($record['disarmTransactionId']??''));if(!$retry&&((string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||empty($record['armed'])||unmRecoveryHoldActive($record)||isset($record['claim'])||isset($record['activation'])))throw new RuntimeException('Recovery cannot be safely disarmed in its current state.');if(!$retry){$record=unmRecoveryTransition($record,'DISARMING',['disarmTransactionId'=>unmRecoveryRandomId('disarm')]);unmRecoveryStore((string)$context['path'],$record);}$term=(int)$record['term'];$transactionId=(string)$record['disarmTransactionId'];$restore=!empty($record['nativeAutostartBeforeArm']);}finally{unmRecoveryReleaseLock($lock);}
+    unmRecoveryRemoteCall($context,'recovery-disarm',$term,['phase'=>'prepare','disarmTransactionId'=>$transactionId],30);unmRecoveryRemoteCall($context,'recovery-disarm',$term,['phase'=>'commit','disarmTransactionId'=>$transactionId],30);
+    try{unmRecoverySetNativeAutostart((string)$context['identity']['vmUuid'],$restore);}catch(Throwable $e){$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'FENCED',['authority'=>'UNKNOWN','lastError'=>'Destination disarmed, but native autostart restoration failed: '.$e->getMessage()]);unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}throw $e;}
+    $lock=unmRecoveryAcquireLock($replicationId);try{$reset=unmRecoveryDefaultRecord((array)$context['identity'],true);$reset['disarmedAt']=gmdate('c');return unmRecoveryStore((string)$context['path'],$reset);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoverySetHold(string $replicationId,string $reason,string $holdUntil,bool $automaticHostShutdown=false): array {
+    if(!in_array($reason,['vm-poweroff','vm-restart','host-shutdown','host-reboot'],true))throw new InvalidArgumentException('Invalid recovery hold reason.');if($automaticHostShutdown&&!in_array($reason,['host-shutdown','host-reboot'],true))throw new InvalidArgumentException('Automatic host hold metadata requires a host shutdown or reboot reason.');
+    $context=unmRecoveryIdentityFromSource($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']==='HOLDOFF'){$hold=(array)($record['hold']??[]);if(!hash_equals((string)($hold['reason']??''),$reason)||!hash_equals((string)($hold['holdUntil']??''),$holdUntil))throw new RuntimeException('A different durable recovery hold is already active.');if($automaticHostShutdown&&!empty($hold)&&empty($hold['automaticHostShutdown'])){$record['hold']['automaticHostShutdown']=true;$record['hold']['preparedBootId']=unmRecoveryBootId();$hold=(array)$record['hold'];unmRecoveryStore((string)$context['path'],$record);}if(!empty($hold['acknowledged']))return $record;}else{if($holdUntil!=='forever'){$epoch=strtotime($holdUntil);if($epoch===false||$epoch<=time()||$epoch>time()+604800)throw new InvalidArgumentException('Recovery hold expiry must be in the next seven days.');}if((string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||empty($record['armed']))throw new RuntimeException('Recovery is not in source-authoritative standby.');$hold=['holdId'=>unmRecoveryRandomId('hold'),'reason'=>$reason,'holdUntil'=>$holdUntil,'sourceBootId'=>unmRecoveryBootId(),'acknowledged'=>false,'requestedAt'=>gmdate('c')];if($automaticHostShutdown){$hold['automaticHostShutdown']=true;$hold['preparedBootId']=unmRecoveryBootId();}$record=unmRecoveryTransition($record,'HOLDOFF',['hold'=>$hold]);unmRecoveryStore((string)$context['path'],$record);}$term=(int)$record['term'];}finally{unmRecoveryReleaseLock($lock);}
+    $reply=unmRecoveryRemoteCall($context,'recovery-hold',$term,['hold'=>$hold],30);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']!=='HOLDOFF'||!hash_equals($hold['holdId'],(string)($record['hold']['holdId']??'')))throw new RuntimeException('Recovery hold changed before destination acknowledgement.');$record['hold']['acknowledged']=true;$record['hold']['acknowledgedAt']=gmdate('c');return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryPrepareHostShutdownHolds(string $reason='host-shutdown'): array {
+    if(!in_array($reason,['host-shutdown','host-reboot'],true))throw new InvalidArgumentException('Invalid host shutdown hold reason.');$results=[];
+    foreach(glob(UNM_REPLICATIONS_DIR.'/*/policy.json')?:[] as $policyPath){
+        $policy=unmLoadJson($policyPath);$replicationId=(string)($policy['id']??basename(dirname($policyPath)));if(!preg_match('/^repl-[a-f0-9]{24}$/',$replicationId))continue;$recoveryPath=unmRecoverySourcePath($replicationId);if(!is_file($recoveryPath))continue;
+        try{$record=unmRecoveryLoad($recoveryPath);if(empty($record['armed']))continue;$state=(string)$record['state'];$authority=(string)$record['authority'];if($state==='HOLDOFF'&&is_array($record['hold']??null)){$results[]=['replicationId'=>$replicationId,'status'=>'preserved','holdId'=>(string)($record['hold']['holdId']??''),'reason'=>(string)($record['hold']['reason']??'')];continue;}if($state!=='STANDBY'||$authority!=='SOURCE'){$results[]=['replicationId'=>$replicationId,'status'=>'skipped','state'=>$state,'authority'=>$authority];continue;}$held=unmRecoverySetHold($replicationId,$reason,'forever',true);$holdId=(string)($held['hold']['holdId']??'');if(empty($held['hold']['automaticHostShutdown'])||!hash_equals((string)($held['hold']['preparedBootId']??''),unmRecoveryBootId()))throw new RuntimeException('Automatic host-shutdown hold was not durably prepared before remote acknowledgement.');$results[]=['replicationId'=>$replicationId,'status'=>'acknowledged','holdId'=>$holdId,'reason'=>$reason];}
+        catch(Throwable $e){$results[]=['replicationId'=>$replicationId,'status'=>'failed','error'=>$e->getMessage()];}
+    }
+    return $results;
+}
+
+function unmRecoveryReleaseHold(string $replicationId,string $holdId): array {
+    if(!preg_match('/^hold-[a-f0-9]{24}$/',$holdId))throw new InvalidArgumentException('Invalid recovery hold id.');$context=unmRecoveryIdentityFromSource($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']!=='HOLDOFF'||!hash_equals((string)($record['hold']['holdId']??''),$holdId))throw new RuntimeException('Recovery hold id does not match the active hold.');$term=(int)$record['term'];}finally{unmRecoveryReleaseLock($lock);}
+    unmRecoveryRemoteCall($context,'recovery-hold-release',$term,['holdId'=>$holdId],30);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'STANDBY');unset($record['hold']);$record['lastHoldRelease']=['holdId'=>$holdId,'releasedAt'=>gmdate('c')];return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryEnsureRuntimeDir(): void {
+    if(!is_dir(UNM_RECOVERY_RUNTIME_DIR)&&!mkdir(UNM_RECOVERY_RUNTIME_DIR,0700,true)&&!is_dir(UNM_RECOVERY_RUNTIME_DIR))throw new RuntimeException('Unable to create the recovery runtime directory.');
+    if(!chmod(UNM_RECOVERY_RUNTIME_DIR,0700))throw new RuntimeException('Unable to secure the recovery runtime directory.');
+}
+
+function unmRecoveryOperationUpdate(string $replicationId,string $type,string $state,int $progress,string $message,array $extra=[]): array {
+    unmReplicationPath($replicationId);unmRecoveryEnsureRuntimeDir();$current=unmLoadJson(UNM_RECOVERY_RUNTIME_DIR.'/'.$replicationId.'.json');$operation=array_replace($current,['schemaVersion'=>1,'replicationId'=>$replicationId,'type'=>$type,'state'=>$state,'progress'=>max(0,min(100,$progress)),'message'=>substr($message,0,512),'updatedAt'=>gmdate('c')],$extra);$operation['createdAt']=$current['createdAt']??gmdate('c');
+    if(in_array($state,['QUEUED','RUNNING'],true))unset($operation['failedAt'],$operation['error'],$operation['completedAt'],$operation['result']);
+    elseif($state==='COMPLETE')unset($operation['failedAt'],$operation['error']);
+    elseif($state==='FAILED')unset($operation['completedAt'],$operation['result']);
+    unmAtomicJson(UNM_RECOVERY_RUNTIME_DIR.'/'.$replicationId.'.json',$operation);return $operation;
+}
+
+function unmRecoveryOperationTypes(): array {return ['evidence','activate','start-activation','retry-checkpoint','stop-activation','remove-activation'];}
+
+function unmRecoveryOperationLockPath(string $replicationId): string {unmReplicationPath($replicationId);return '/var/lock/unmotion-recovery-operation-'.$replicationId.'.lock';}
+
+function unmRecoveryWorkerRunning(string $replicationId,int $pid): bool {
+    if($pid<2||!is_readable('/proc/'.$pid.'/cmdline'))return false;$parts=explode("\0",(string)@file_get_contents('/proc/'.$pid.'/cmdline'));
+    for($index=0;$index+1<count($parts);$index++)if($parts[$index]===UNM_RECOVERY_WORKER&&$parts[$index+1]===$replicationId)return true;return false;
+}
+
+function unmRecoveryLaunchOperation(string $replicationId,string $type,array $parameters=[]): array {
+    unmReplicationPath($replicationId);if(!in_array($type,unmRecoveryOperationTypes(),true))throw new InvalidArgumentException('Invalid recovery operation.');if(!is_executable(UNM_RECOVERY_WORKER))throw new RuntimeException('The recovery worker is not installed or executable.');
+    $lock=unmRecoveryAcquireLock($replicationId);$processLock=null;try{unmRecoveryEnsureRuntimeDir();$processLock=fopen(unmRecoveryOperationLockPath($replicationId),'c');if($processLock===false)throw new RuntimeException('Unable to open recovery operation process lock.');@chmod(unmRecoveryOperationLockPath($replicationId),0600);if(!flock($processLock,LOCK_EX|LOCK_NB))throw new RuntimeException('Another recovery worker already owns this policy operation.');$existing=unmRecoveryOperation($replicationId);$updated=strtotime((string)($existing['updatedAt']??''));$recent=$updated!==false&&$updated>=time()-30;if(in_array((string)($existing['state']??''),['QUEUED','RUNNING'],true)&&($recent||unmRecoveryWorkerRunning($replicationId,(int)($existing['pid']??0))))throw new RuntimeException('Another recovery operation is already running for this policy.');
+        $request=['schemaVersion'=>1,'operationId'=>unmRecoveryRandomId('op'),'replicationId'=>$replicationId,'type'=>$type,'parameters'=>$parameters,'requestedAt'=>gmdate('c')];if(strlen(unmRecoveryCanonicalJson($request))>65536)throw new InvalidArgumentException('Recovery operation request is too large.');unmAtomicJson(UNM_RECOVERY_RUNTIME_DIR.'/'.$replicationId.'.request.json',$request);$operation=unmRecoveryOperationUpdate($replicationId,$type,'QUEUED',0,'Recovery operation queued.',['operationId'=>$request['operationId']]);$logDirectory='/var/log/unmotion';if(!is_dir($logDirectory)&&!mkdir($logDirectory,0700,true)&&!is_dir($logDirectory))throw new RuntimeException('Unable to create recovery log directory.');flock($processLock,LOCK_UN);fclose($processLock);$processLock=null;
+        $command='nohup setsid '.escapeshellarg(UNM_RECOVERY_WORKER).' '.escapeshellarg($replicationId).' '.escapeshellarg((string)$request['operationId']).' >>'.escapeshellarg($logDirectory.'/recovery-'.$replicationId.'.log').' 2>&1 & echo $!';$launched=unmRun($command,null,10);$pid=(int)trim($launched['stdout']);if($launched['code']!==0||$pid<2){unmRecoveryOperationUpdate($replicationId,$type,'FAILED',100,'Unable to launch recovery worker.',['operationId'=>$request['operationId'],'error'=>trim($launched['stderr'])]);throw new RuntimeException('Unable to launch recovery worker: '.trim($launched['stderr']));}return array_replace($operation,['pid'=>$pid]);
+    }finally{if(is_resource($processLock)){flock($processLock,LOCK_UN);fclose($processLock);}unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryFindPoint(array $manifest,string $pointId): array {
+    foreach((array)($manifest['points']??[]) as $point)if(is_array($point)&&hash_equals((string)($point['id']??''),$pointId))return $point;throw new RuntimeException('Recovery point not found.');
+}
+
+function unmRecoveryFindCheckpoint(array $manifest,array $point,string $checkpointId): ?array {
+    $recommendation=unmRecoveryRecommendCheckpoint((array)($manifest['points']??[]),(string)$point['id']);if(empty($recommendation['required'])){if($checkpointId!=='')throw new RuntimeException('This recovery point does not require a TPM/NVRAM checkpoint.');return null;}
+    foreach((array)$recommendation['candidates'] as $checkpoint)if(is_array($checkpoint)&&hash_equals((string)($checkpoint['checkpointId']??''),$checkpointId))return $checkpoint;throw new RuntimeException('The selected TPM/NVRAM checkpoint is unavailable or incompatible.');
+}
+
+function unmRecoverySelectionHash(string $replicationId,array $point,?array $checkpoint,string $activationId): string {
+    return hash('sha256',unmRecoveryCanonicalJson(['replicationId'=>$replicationId,'pointId'=>(string)($point['id']??''),'checkpointId'=>(string)($checkpoint['checkpointId']??''),'checkpointArchiveSha256'=>(string)($checkpoint['archiveSha256']??''),'activationId'=>$activationId,'pointFingerprint'=>unmReplicaPointImmutableFingerprint($point)]));
+}
+
+function unmRecoveryProbePing(string $address,int $timeout=2): bool {
+    if(!filter_var($address,FILTER_VALIDATE_IP))return false;$args=['ping'];if(filter_var($address,FILTER_VALIDATE_IP,FILTER_FLAG_IPV6))$args[]='-6';$args=array_merge($args,['-n','-c','1','-W',(string)max(1,min(5,$timeout)),$address]);return unmRun($args,null,$timeout+3)['code']===0;
+}
+
+function unmRecoveryNetworkSnapshot(): array {
+    $addresses=unmRun(['ip','-j','address','show'],null,10);$routes=unmRun(['ip','-j','route','show'],null,10);if($addresses['code']!==0||$routes['code']!==0)throw new RuntimeException('Local network state cannot be inspected for recovery evidence.');
+    $routeData=json_decode($routes['stdout'],true);$gateway='';$device='';if(is_array($routeData))foreach($routeData as $route)if(is_array($route)&&(string)($route['dst']??'')==='default'){$gateway=(string)($route['gateway']??'');$device=(string)($route['dev']??'');break;}
+    if(!filter_var($gateway,FILTER_VALIDATE_IP)||$device==='')throw new RuntimeException('A usable default gateway is required for recovery evidence.');return ['fingerprint'=>hash('sha256',$addresses['stdout']."\n".$routes['stdout']),'gateway'=>$gateway,'device'=>$device];
+}
+
+function unmRecoveryGuestAddressSilent(string $address): bool {
+    if(unmRecoveryProbePing($address))return false;$route=unmRun(['ip','-j','route','get',$address],null,8);if($route['code']!==0)return false;$data=json_decode($route['stdout'],true);$entry=is_array($data)&&is_array($data[0]??null)?$data[0]:[];$direct=!isset($entry['gateway'])&&(string)($entry['dev']??'')!=='';if(!$direct)return true;
+    $dev=(string)$entry['dev'];if(filter_var($address,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4)){
+        if(!unmTool('arping'))return false;return unmRun(['arping','-c','2','-w','3','-I',$dev,$address],null,6)['code']!==0;
+    }
+    if(!unmTool('ndisc6'))return false;return unmRun(['ndisc6','-q','-r','2','-w','1000',$address,$dev],null,6)['code']!==0;
+}
+
+function unmRecoveryAssertGuestAddressesSilent(array $point): array {
+    $network=(array)($point['guestAgent']['network']??[]);$addresses=unmRecoveryGuestIps($network);if(!$addresses)throw new RuntimeException('The selected point has no usable QEMU Guest Agent address for coordinated liveness fencing.');
+    foreach($addresses as $address)if(!unmRecoveryGuestAddressSilent($address))throw new RuntimeException('A QEMU Guest Agent address from the selected point is reachable or could not be probed safely: '.$address);
+    sort($addresses,SORT_STRING);return ['silent'=>true,'addresses'=>$addresses,'networkSha256'=>hash('sha256',unmRecoveryCanonicalJson($network)),'observedAt'=>gmdate('c')];
+}
+
+function unmRecoveryEvidenceSample(array $context,array $point,string $dnsProbe,string $externalProbe,int $term): array {
+    $network=unmRecoveryNetworkSnapshot();$sourceProbe=unmRemote((array)$context['peer'],'/usr/local/sbin/unmotion-agent capabilities',8);$sourceSilent=false;$sourceError=$sourceProbe['code']===0?'Source answered authenticated SSH.':'Source contact failed ambiguously and cannot prove source silence: '.substr(trim((string)$sourceProbe['stderr'])?:'unknown transport error',0,220);
+    $guestIps=unmRecoveryGuestIps((array)($point['guestAgent']['network']??[]));$guestSilent=!empty($guestIps);foreach($guestIps as $ip)if(!unmRecoveryGuestAddressSilent($ip)){$guestSilent=false;break;}
+    $gatewayReachable=unmRecoveryProbePing((string)$network['gateway']);$dns=unmRun(['getent','ahosts',$dnsProbe],null,8);$dnsResolvable=$dns['code']===0&&trim($dns['stdout'])!=='';$externalReachable=$externalProbe===''?null:unmRecoveryProbePing($externalProbe);
+    return ['at'=>time(),'observedAt'=>gmdate('c'),'sourceSilent'=>$sourceSilent,'sourceError'=>$sourceError,'guestSilent'=>$guestSilent,'guestAddresses'=>$guestIps,'gatewayReachable'=>$gatewayReachable,'gateway'=>$network['gateway'],'dnsResolvable'=>$dnsResolvable,'dnsProbe'=>$dnsProbe,'externalReachable'=>$externalReachable,'externalProbe'=>$externalProbe,'networkFingerprint'=>$network['fingerprint']];
+}
+
+function unmRecoveryEvidenceModes(): array {return ['coordinated'];}
+
+function unmRecoveryValidateEvidenceMode(string $mode): string {
+    if($mode==='two-host')throw new RuntimeException('Two-host recovery is fail-closed in beta2 because transport silence cannot prove that the source VM is powered off. Use coordinated recovery with the source durably fenced.');if(!in_array($mode,unmRecoveryEvidenceModes(),true))throw new InvalidArgumentException('Recovery evidence mode is not enabled.');return $mode;
+}
+
+function unmRecoveryCollectEvidence(string $replicationId,array $parameters): array {
+    $mode=unmRecoveryValidateEvidenceMode((string)($parameters['mode']??''));$pointId=(string)($parameters['pointId']??'');$checkpointId=(string)($parameters['checkpointId']??'');$dnsProbe=strtolower(trim((string)($parameters['dnsProbe']??'one.one.one.one')));$externalProbe=trim((string)($parameters['externalProbe']??''));if(!preg_match('/^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/',$dnsProbe))throw new InvalidArgumentException('DNS probe name is invalid.');if($externalProbe!==''&&!filter_var($externalProbe,FILTER_VALIDATE_IP))throw new InvalidArgumentException('External recovery probe must be an IP address.');$context=unmRecoveryIdentityFromReplica($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{
+        $context=unmRecoveryIdentityFromReplica($replicationId);$manifest=(array)$context['manifest'];$record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord((array)$context['identity'],false));$pending=(array)($record['claim']??[]);$resume=!empty($record['armed'])&&in_array((string)$record['state'],['EVIDENCE_GATHERING','FENCED'],true)&&empty($pending['evidenceReady'])&&hash_equals($pointId,(string)($pending['pointId']??''))&&hash_equals($checkpointId,(string)($pending['checkpointId']??''))&&hash_equals($mode,(string)($pending['kind']??''))&&preg_match('/^grant-[a-f0-9]{24}$/',(string)($pending['grantTransactionId']??''));
+        if($resume){$activationId=(string)($pending['activationId']??'');$claimId=(string)($pending['claimId']??'');$grantTransactionId=(string)$pending['grantTransactionId'];$term=(int)($pending['term']??-1);$selectionHash=(string)($pending['selectionHash']??'');$point=unmRecoveryFindPoint($manifest,$pointId);$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,$checkpointId);if(!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!preg_match('/^claim-[a-f0-9]{24}$/',$claimId)||$term<1||!hash_equals($selectionHash,unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId)))throw new RuntimeException('Pending coordinated grant no longer matches exact retained recovery material.');if((string)$record['state']==='FENCED')$record=unmRecoveryTransition($record,'EVIDENCE_GATHERING',['authority'=>'UNKNOWN','lastError'=>null]);unmRecoveryStore((string)$context['path'],$record);}
+        else{$point=unmRecoveryFindPoint($manifest,$pointId);$eligibility=unmRecoveryPointEligibility($manifest,$point,time(),true);if(empty($eligibility['eligible']))throw new RuntimeException(implode(' ',(array)$eligibility['reasons']));$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,$checkpointId);if(empty($record['armed'])||(string)$record['state']!=='STANDBY'||(string)$record['authority']!=='SOURCE'||unmRecoveryHoldActive($record))throw new RuntimeException('Replica is not in source-authoritative recovery standby.');$term=(int)$record['term'];$activationId=unmRecoveryRandomId('act');$claimId=unmRecoveryRandomId('claim');$grantTransactionId=unmRecoveryRandomId('grant');$selectionHash=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);$pending=['claimId'=>$claimId,'activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'kind'=>$mode,'term'=>$term,'evidenceReady'=>false,'selectionHash'=>$selectionHash,'grantTransactionId'=>$grantTransactionId,'startedAt'=>gmdate('c')];$record=unmRecoveryTransition($record,'EVIDENCE_GATHERING',['activationId'=>$activationId,'claim'=>$pending]);unmRecoveryStore((string)$context['path'],$record);}
+    }finally{unmRecoveryReleaseLock($lock);}
+    $grantMayHaveCommitted=$resume&&!empty($record['grantReconciliationRequired']);
+    $grantPayload=['proposedTerm'=>$term+1,'activationId'=>$activationId,'pointId'=>$pointId,'checkpointId'=>$checkpointId,'selectionHash'=>$selectionHash,'grantTransactionId'=>$grantTransactionId];
+    try{
+        $guestSilence=unmRecoveryAssertGuestAddressesSilent($point);$lock=unmRecoveryAcquireLock($replicationId);try{$freshContext=unmRecoveryIdentityFromReplica($replicationId);$freshPoint=unmRecoveryFindPoint((array)$freshContext['manifest'],$pointId);$freshCheckpoint=unmRecoveryFindCheckpoint((array)$freshContext['manifest'],$freshPoint,$checkpointId);$record=unmRecoveryLoad((string)$freshContext['path']);if((string)$record['state']!=='EVIDENCE_GATHERING'||!hash_equals($activationId,(string)($record['activationId']??''))||!hash_equals($selectionHash,unmRecoverySelectionHash($replicationId,$freshPoint,$freshCheckpoint,$activationId)))throw new RuntimeException('Selected point changed during coordinated guest-liveness evidence.');$record['claim']['guestSilence']=$guestSilence;unmRecoveryStore((string)$freshContext['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+        $reply=null;$lastGrantError=null;$grantMayHaveCommitted=true;for($attempt=0;$attempt<2;$attempt++)try{$reply=unmRecoveryRemoteCall($context,'recovery-grant',$term,$grantPayload,30);break;}catch(Throwable $grantError){$lastGrantError=$grantError;}if(!is_array($reply))throw new RuntimeException('Coordinated recovery grant could not be reconciled exactly after reply loss.',0,$lastGrantError);if(empty($reply['granted'])||empty($reply['sourceFenced'])||(int)($reply['term']??0)!==$term+1||!hash_equals($activationId,(string)($reply['activationId']??''))||!hash_equals($selectionHash,(string)($reply['selectionHash']??''))||!hash_equals($grantTransactionId,(string)($reply['grantTransactionId']??'')))throw new RuntimeException('Source returned a mismatched coordinated recovery grant.');$newTerm=$term+1;$evidence=['kind'=>'coordinated','grantHostId'=>(string)($reply['hostId']??''),'grantTransactionId'=>$grantTransactionId,'sourceVmState'=>(string)($reply['sourceVmState']??''),'sourceFenced'=>true,'grantedAt'=>gmdate('c')];$now=time();$claim=$pending;$claim['guestSilence']=$guestSilence;$claim['term']=$newTerm;$claim['evidenceReady']=true;$claim['issuedAt']=gmdate('c',$now);$claim['expiresAt']=gmdate('c',$now+300);$claim['evidence']=$evidence;
+        $lock=unmRecoveryAcquireLock($replicationId);try{$freshContext=unmRecoveryIdentityFromReplica($replicationId);$freshPoint=unmRecoveryFindPoint((array)$freshContext['manifest'],$pointId);$freshCheckpoint=unmRecoveryFindCheckpoint((array)$freshContext['manifest'],$freshPoint,$checkpointId);$record=unmRecoveryLoad((string)$freshContext['path']);if((string)$record['state']!=='EVIDENCE_GATHERING'||!hash_equals($activationId,(string)($record['activationId']??''))||!hash_equals($grantTransactionId,(string)($record['claim']['grantTransactionId']??''))||!hash_equals($selectionHash,unmRecoverySelectionHash($replicationId,$freshPoint,$freshCheckpoint,$activationId)))throw new RuntimeException('Recovery point, grant transaction, or evidence state changed before authority commit.');$record=unmRecoveryTransition($record,'RECOVERY_READY',['term'=>$newTerm,'authority'=>'DESTINATION','claim'=>$claim,'activationId'=>$activationId,'destinationBootId'=>unmRecoveryBootId(),'grantReconciliationRequired'=>false]);unset($record['lastError']);return unmRecoveryStore((string)$freshContext['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+    }catch(Throwable $e){$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']==='EVIDENCE_GATHERING'&&hash_equals($activationId,(string)($record['activationId']??''))){if($grantMayHaveCommitted){$record=unmRecoveryTransition($record,'FENCED',['authority'=>'UNKNOWN','grantReconciliationRequired'=>true,'lastError'=>$e->getMessage()]);}else{$record=unmRecoveryTransition($record,'STANDBY',['authority'=>'SOURCE','lastEvidenceError'=>$e->getMessage()]);unset($record['activationId'],$record['claim'],$record['grantReconciliationRequired'],$record['lastError']);}unmRecoveryStore((string)$context['path'],$record);}}finally{unmRecoveryReleaseLock($lock);}throw $e;}
+}
+
+function unmRecoveryRenewClaim(string $replicationId): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{$context=unmRecoveryIdentityFromReplica($replicationId);$record=unmRecoveryLoad((string)$context['path']);$claim=(array)($record['claim']??[]);if((string)$record['state']!=='RECOVERY_READY'||(string)$record['authority']!=='DESTINATION'||empty($claim['evidenceReady'])||isset($record['activation']))throw new RuntimeException('Only an unactivated exact destination claim may be renewed.');$claimId=(string)($claim['claimId']??'');$activationId=(string)($claim['activationId']??'');$point=unmRecoveryFindPoint((array)$context['manifest'],(string)($claim['pointId']??''));$checkpoint=unmRecoveryFindCheckpoint((array)$context['manifest'],$point,(string)($claim['checkpointId']??''));$selectionHash=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!preg_match('/^claim-[a-f0-9]{24}$/',$claimId)||!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!hash_equals($selectionHash,(string)($claim['selectionHash']??'')))throw new RuntimeException('The retained claim no longer matches its exact point and checkpoint.');$term=(int)$record['term'];}finally{unmRecoveryReleaseLock($lock);}
+    $guestSilence=unmRecoveryAssertGuestAddressesSilent($point);$payload=['claimId'=>$claimId,'activationId'=>$activationId,'pointId'=>(string)$claim['pointId'],'checkpointId'=>(string)($claim['checkpointId']??''),'selectionHash'=>$selectionHash];$reply=unmRecoveryRemoteCall($context,'recovery-claim-renew',$term,$payload,30);$issued=strtotime((string)($reply['issuedAt']??''));$expires=strtotime((string)($reply['expiresAt']??''));if(empty($reply['renewed'])||empty($reply['sourceFenced'])||(int)($reply['term']??-1)!==$term||!hash_equals($claimId,(string)($reply['claimId']??''))||!hash_equals($activationId,(string)($reply['activationId']??''))||!hash_equals($selectionHash,(string)($reply['selectionHash']??''))||$issued===false||$expires===false||$issued>time()+30||$expires<=time()||$expires>$issued+300)throw new RuntimeException('Source returned a mismatched or stale exact claim renewal.');
+    $lock=unmRecoveryAcquireLock($replicationId);try{$freshContext=unmRecoveryIdentityFromReplica($replicationId);$fresh=unmRecoveryLoad((string)$freshContext['path']);$freshPoint=unmRecoveryFindPoint((array)$freshContext['manifest'],(string)$claim['pointId']);$freshCheckpoint=unmRecoveryFindCheckpoint((array)$freshContext['manifest'],$freshPoint,(string)($claim['checkpointId']??''));if((string)$fresh['state']!=='RECOVERY_READY'||isset($fresh['activation'])||(int)$fresh['term']!==$term||!hash_equals($claimId,(string)($fresh['claim']['claimId']??''))||!hash_equals($selectionHash,unmRecoverySelectionHash($replicationId,$freshPoint,$freshCheckpoint,$activationId)))throw new RuntimeException('Claim or exact retained recovery material changed before renewal commit.');$fresh['claim']['issuedAt']=(string)$reply['issuedAt'];$fresh['claim']['expiresAt']=(string)$reply['expiresAt'];$fresh['claim']['renewedAt']=gmdate('c');$fresh['claim']['guestSilence']=$guestSilence;unset($fresh['lastError']);return unmRecoveryStore((string)$freshContext['path'],$fresh);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryActivationObjectName(string $replicaDataset,string $activationId,int $index): string {
+    if(!unmZfsObjectNameSafe($replicaDataset)||!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||$index<0||$index>255)throw new InvalidArgumentException('Invalid recovery activation storage identity.');
+    return $replicaDataset.'-unmotion-'.substr($activationId,4,12).'-'.($index+1);
+}
+
+function unmRecoveryExpectedActivationRoot(string $uuid,string $activationId): string {
+    $uuid=strtolower(trim($uuid));if(!preg_match('/^[a-f0-9-]{32,36}$/',$uuid)||!preg_match('/^act-[a-f0-9]{24}$/',$activationId))throw new InvalidArgumentException('Invalid activation root identity.');$imageRoot=rtrim((string)unmLoadConfig()['image_dir'],'/');if($imageRoot===''||!str_starts_with($imageRoot,'/mnt/')||str_contains($imageRoot,"\0")||in_array('..',explode('/',$imageRoot),true))throw new RuntimeException('Configured VM image root is unsafe for recovery activation.');return $imageRoot.'/.unmotion-activations/'.$uuid.'/'.$activationId;
+}
+
+function unmRecoveryAssertActivationRoot(string $root,string $uuid,string $activationId): string {
+    $expected=unmRecoveryExpectedActivationRoot($uuid,$activationId);if(!hash_equals($expected,$root)||str_contains($root,"\0")||in_array('..',explode('/',$root),true))throw new RuntimeException('Activation journal root does not match the exact configured UUID and activation identity.');return $expected;
+}
+
+function unmRecoveryActivationPlan(array $manifest,array $point,string $activationId): array {
+    $uuid=strtolower((string)($manifest['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{32,36}$/',$uuid)||!preg_match('/^act-[a-f0-9]{24}$/',$activationId))throw new InvalidArgumentException('Invalid activation identity.');$byDestination=[];foreach((array)($manifest['storage']??[]) as $item)if(is_array($item))$byDestination[(string)($item['destination']??'')]=$item;
+    $root=unmRecoveryExpectedActivationRoot($uuid,$activationId);$objects=[];$maps=[];$seen=[];
+    foreach((array)($point['storage']??[]) as $index=>$pointItem){if(!is_array($pointItem))throw new RuntimeException('Recovery point storage metadata is invalid.');$destination=(string)($pointItem['destination']??'');$sourceSnapshot=$destination.'@'.(string)($pointItem['snapshot']??'');$kind=(string)($pointItem['kind']??'');$reservation=$byDestination[$destination]??null;
+        if(!is_array($reservation)||!in_array($kind,['zvol','dataset'],true)||$kind!==(string)($reservation['kind']??'')||isset($seen[$destination])||!unmZfsObjectNameSafe($destination))throw new RuntimeException('Recovery point storage does not match its exact replica reservation.');$seen[$destination]=true;$target=unmRecoveryActivationObjectName($destination,$activationId,(int)$index);$mountpoint='';$objectMaps=[];
+        if($kind==='zvol'){$sourcePath='/dev/zvol/'.(string)$reservation['source'];$targetPath='/dev/zvol/'.$target;$maps[$sourcePath]=$targetPath;$objectMaps[$sourcePath]=$targetPath;}
+        else{$mountpoint=$root.'/disk'.($index+1);foreach((array)($reservation['files']??[]) as $file){if(!is_array($file))continue;$source=(string)($file['source']??'');$relative=ltrim((string)($file['relativePath']??''),'/');if($source===''||$relative===''||str_contains($relative,'..')||str_contains($relative,"\0"))throw new RuntimeException('Recovery dataset file mapping is unsafe.');$targetPath=$mountpoint.'/'.$relative;if(isset($maps[$source]))throw new RuntimeException('Recovery XML source path is mapped more than once.');$maps[$source]=$targetPath;$objectMaps[$source]=$targetPath;}}
+        $objects[]=['kind'=>$kind,'replicaDataset'=>$destination,'sourceSnapshot'=>$sourceSnapshot,'sourceGuid'=>(string)($pointItem['guid']??''),'dataset'=>$target,'mountpoint'=>$mountpoint,'mappings'=>$objectMaps];
+    }
+    if(count($objects)!==count($byDestination)||(!$maps&&$objects))throw new RuntimeException('Activation plan does not cover every reserved VM disk.');return ['activationRoot'=>$root,'objects'=>$objects,'diskMaps'=>$maps];
+}
+
+function unmRecoveryTransformDomainXml(string $xml,array $diskMaps,bool $stripPinning=false): string {
+    if($xml===''||strlen($xml)>2097152||!str_contains($xml,'<domain'))throw new InvalidArgumentException('Recovery domain XML is invalid.');if(preg_match('~<hostdev\b~i',$xml))throw new RuntimeException('Recovery activation does not support PCI or USB host devices.');$used=[];
+    $xml=preg_replace_callback('~<disk\b([^>]*)>.*?</disk>~si',static function(array $match)use($diskMaps,&$used):string{
+        $block=$match[0];$device=preg_match('~\bdevice=(["\'])([^"\']+)\1~i',$match[1],$dm)?strtolower($dm[2]):'';
+        if($device==='cdrom')return (string)preg_replace('~\s*<source\b[^>]*/>~si','',$block);
+        if($device!=='disk')return $block;if(!preg_match('~<source\b([^>]*)/>~si',$block,$sourceMatch))throw new RuntimeException('A recovery disk has no local source path.');
+        if(!preg_match('~\b(file|dev)=(["\'])([^"\']+)\2~i',$sourceMatch[1],$pathMatch))throw new RuntimeException('Network and unsupported disk sources cannot be activated by recovery.');$original=html_entity_decode($pathMatch[3],ENT_QUOTES|ENT_XML1);if(!array_key_exists($original,$diskMaps))throw new RuntimeException('Recovery XML disk source is not covered by the activation plan: '.$original);$replacement=(string)$diskMaps[$original];$used[$original]=true;$escaped=htmlspecialchars($replacement,ENT_QUOTES|ENT_XML1);
+        $newSource=preg_replace('~\b'.preg_quote($pathMatch[1],'~').'=(["\'])[^"\']+\1~i',$pathMatch[1].'='.$pathMatch[2].$escaped.$pathMatch[2],$sourceMatch[0],1);return str_replace($sourceMatch[0],(string)$newSource,$block);
+    },$xml);
+    if(!is_string($xml)||count($used)!==count($diskMaps))throw new RuntimeException('Recovery XML does not reference every activation disk mapping exactly once.');
+    $xml=(string)preg_replace('~<on_poweroff\b[^>]*>.*?</on_poweroff>~si','<on_poweroff>destroy</on_poweroff>',$xml);$xml=(string)preg_replace('~<on_reboot\b[^>]*>.*?</on_reboot>~si','<on_reboot>restart</on_reboot>',$xml);$xml=(string)preg_replace('~<on_crash\b[^>]*>.*?</on_crash>~si','<on_crash>destroy</on_crash>',$xml);
+    if($stripPinning){$xml=(string)preg_replace('~\s*<cputune\b[^>]*>.*?</cputune>~si','',$xml);$xml=(string)preg_replace('~\s*<numatune\b[^>]*>.*?</numatune>~si','',$xml);$xml=(string)preg_replace_callback('~<vcpu\b([^>]*)>~si',static fn(array $m):string=>'<vcpu'.preg_replace('~\s+cpuset=(["\'])[^"\']*\1~i','',$m[1]).'>',$xml);}
+    return $xml;
+}
+
+function unmRecoveryDomainRuntimePlan(string $xml,array $diskMaps): array {
+    if(preg_match('~<hostdev\b~i',$xml))throw new RuntimeException('Recovery activation blocks all host-device passthrough.');$resources=unmHostResources();$vcpus=(int)trim(unmXmlValue($xml,'vcpu'));$memoryKiB=unmXmlMemoryKiB($xml);$reasons=[];$warnings=[];
+    if($vcpus<1||$vcpus>(int)($resources['cpuOnlineCount']??0))$reasons[]='VM vCPU count exceeds destination online CPUs.';if($memoryKiB<131072)$reasons[]='VM memory declaration is invalid.';elseif($memoryKiB*1024>(int)($resources['availableBytes']??0))$reasons[]='Destination does not currently have enough available memory for this VM.';
+    $pinning=unmCpuPinningInfo($xml);$compatibility=unmPinningCompatibility($pinning,$resources,$vcpus,$vcpus);$stripPinning=!empty($pinning['present'])&&empty($compatibility['valid']);if($stripPinning)$warnings=array_merge($warnings,(array)$compatibility['reasons'],['Destination-incompatible CPU and NUMA pinning will be removed from the recovered definition.']);
+    $loader=unmXmlValue($xml,'loader');if($loader!==''&&(!str_starts_with($loader,'/')||!is_file($loader)||is_link($loader)))$reasons[]='Destination firmware loader is missing or unsafe: '.$loader;
+    if(preg_match_all('~<interface\b([^>]*)>.*?</interface>~si',$xml,$interfaces,PREG_SET_ORDER))foreach($interfaces as $interface){$type=preg_match('~\btype=(["\'])([^"\']+)\1~i',$interface[1],$typeMatch)?strtolower($typeMatch[2]):'';
+        if($type==='bridge'&&preg_match('~<source\b[^>]*\bbridge=(["\'])([^"\']+)\1~i',$interface[0],$source)){$check=unmRun(['ip','link','show',$source[2]],null,8);if($check['code']!==0)$reasons[]='Destination bridge is unavailable: '.$source[2];}
+        elseif($type==='network'&&preg_match('~<source\b[^>]*\bnetwork=(["\'])([^"\']+)\1~i',$interface[0],$source)){$check=unmRun(['virsh','net-info',$source[2]],null,8);if($check['code']!==0||!preg_match('/^Active:\s+yes/mi',$check['stdout']))$reasons[]='Destination libvirt network is unavailable: '.$source[2];}
+        else $reasons[]='Recovery does not support this destination network interface type or source.';
+    }
+    $transformed=unmRecoveryTransformDomainXml($xml,$diskMaps,$stripPinning);return ['ready'=>!$reasons,'reasons'=>array_values(array_unique($reasons)),'warnings'=>array_values(array_unique($warnings)),'xml'=>$transformed,'stripPinning'=>$stripPinning,'resources'=>$resources,'vcpus'=>$vcpus,'memoryKiB'=>$memoryKiB];
+}
+
+function unmRecoveryZfsProperty(string $dataset,string $property): string {
+    $result=unmRun(['zfs','get','-H','-o','value',$property,$dataset],null,15);if($result['code']!==0)throw new RuntimeException('Unable to inspect ZFS property '.$property.' on '.$dataset.': '.trim($result['stderr']));return trim($result['stdout']);
+}
+
+function unmRecoveryAssertActivationObject(array $object,string $activationId): void {
+    $dataset=(string)($object['dataset']??'');$origin=(string)($object['sourceSnapshot']??'');if(!unmZfsObjectNameSafe($dataset)||!str_contains($origin,'@')||!preg_match('/^act-[a-f0-9]{24}$/',$activationId))throw new RuntimeException('Activation object journal is invalid.');
+    if(!hash_equals($origin,unmRecoveryZfsProperty($dataset,'origin'))||!hash_equals($activationId,unmRecoveryZfsProperty($dataset,'unmotion:activation')))throw new RuntimeException('Activation object ownership or origin does not match its durable journal: '.$dataset);
+}
+
+function unmRecoveryRemoveExactTree(string $path,string $base): void {
+    if(!unmPathWithin($path,$base)||$path===$base||is_link($path))throw new RuntimeException('Recovery cleanup path is outside its exact owned root: '.$path);if(!file_exists($path))return;
+    if(is_file($path)){if(!unlink($path))throw new RuntimeException('Unable to remove activation-owned file: '.$path);return;}if(!is_dir($path))throw new RuntimeException('Activation-owned path has an unsupported type: '.$path);
+    $items=scandir($path);if($items===false)throw new RuntimeException('Unable to inspect activation-owned directory: '.$path);foreach($items as $name){if($name==='.'||$name==='..')continue;$child=$path.'/'.$name;if(is_link($child))throw new RuntimeException('Activation-owned directory contains a symbolic link: '.$child);unmRecoveryRemoveExactTree($child,$base);}if(!rmdir($path))throw new RuntimeException('Unable to remove activation-owned directory: '.$path);
+}
+
+function unmRecoveryCopyExactTree(string $source,string $destination): void {
+    if(is_link($source))throw new RuntimeException('Recovery checkpoint contains a symbolic link.');if(is_file($source)){if(file_exists($destination)||is_link($destination))throw new RuntimeException('Activation host-state destination already exists: '.$destination);$parent=dirname($destination);if(!is_dir($parent)&&!mkdir($parent,0700,true)&&!is_dir($parent))throw new RuntimeException('Unable to create activation host-state parent.');if(!copy($source,$destination)||!chmod($destination,0600))throw new RuntimeException('Unable to install activation host-state file.');return;}
+    if(!is_dir($source)||file_exists($destination)||is_link($destination))throw new RuntimeException('Activation host-state directory is invalid or already exists.');if(!mkdir($destination,0700,true)&&!is_dir($destination))throw new RuntimeException('Unable to create activation host-state directory.');$items=scandir($source);if($items===false)throw new RuntimeException('Unable to inspect staged host state.');foreach($items as $name){if($name==='.'||$name==='..')continue;unmRecoveryCopyExactTree($source.'/'.$name,$destination.'/'.$name);}
+}
+
+function unmRecoveryPathContentHash(string $path): string {
+    if(is_link($path)||(!is_file($path)&&!is_dir($path)))throw new RuntimeException('Activation-owned host-state path is unavailable.');$entries=[];$base=is_dir($path)?$path:dirname($path);$walk=function(string $current)use(&$walk,&$entries,$base):void{if(is_link($current))throw new RuntimeException('Activation-owned host state contains a symbolic link.');if(is_file($current)){$relative=ltrim(substr($current,strlen($base)),'/');$entries[$relative]=hash_file('sha256',$current).':'.filesize($current);return;}foreach(scandir($current)?:[] as $name)if($name!=='.'&&$name!=='..')$walk($current.'/'.$name);};$walk($path);ksort($entries,SORT_STRING);return hash('sha256',unmRecoveryCanonicalJson($entries));
+}
+
+function unmRecoveryStateDestinationAllowed(string $path,string $kind,string $uuid): bool {
+    $uuid=strtolower($uuid);if($kind==='nvram')return (unmPathWithin($path,'/etc/libvirt/qemu/nvram')||unmPathWithin($path,'/var/lib/libvirt/qemu/nvram'))&&str_contains(strtolower(basename($path)),$uuid)&&str_ends_with(strtolower($path),'.fd');
+    if($kind!=='tpm'||strtolower(basename($path))!==$uuid)return false;foreach(['/etc/libvirt/qemu/swtpm/tpm-states','/etc/libvirt/qemu/swtpm','/var/lib/libvirt/swtpm','/var/lib/libvirt/qemu/swtpm','/etc/libvirt/swtpm'] as $base)if(unmPathWithin($path,$base)&&$path!==$base)return true;return false;
+}
+
+function unmRecoveryHostStateBinding(string $xml,string $uuid): array {
+    $uuid=strtolower($uuid);if(!preg_match('/^[a-f0-9-]{32,36}$/',$uuid)||$xml===''||!str_contains($xml,'<domain'))throw new InvalidArgumentException('Invalid recovery host-state XML binding input.');$nvram=trim(unmXmlValue($xml,'nvram'));if($nvram!==''&&!unmRecoveryStateDestinationAllowed($nvram,'nvram',$uuid))throw new RuntimeException('Transformed recovery XML contains an unsafe or non-UUID-scoped NVRAM path.');
+    $tpmPresent=preg_match('~<tpm\b.*?</tpm>~si',$xml,$tpmBlock)===1;$tpmPath='';if($tpmPresent&&preg_match('~<(?:source|backend)\b[^>]*\bpath=(["\'])([^"\']+)\1~i',$tpmBlock[0],$pathMatch)){$tpmPath=trim($pathMatch[2]);if(!unmRecoveryStateDestinationAllowed($tpmPath,'tpm',$uuid))throw new RuntimeException('Transformed recovery XML contains an unrecognized software TPM state path.');}
+    $tpmRoots=array_map(static fn(string $base):string=>$base.'/'.$uuid,['/etc/libvirt/qemu/swtpm/tpm-states','/etc/libvirt/qemu/swtpm','/var/lib/libvirt/swtpm','/var/lib/libvirt/qemu/swtpm','/etc/libvirt/swtpm']);$binding=['nvramPath'=>$nvram,'tpmPresent'=>$tpmPresent,'tpmPath'=>$tpmPath,'tpmAllowedRoots'=>$tpmRoots];$binding['bindingHash']=hash('sha256',unmRecoveryCanonicalJson($binding));return $binding;
+}
+
+function unmRecoveryAssertCheckpointDestinations(array $nvram,array $tpmRoots,array $binding,bool $needNvram,bool $needTpm): void {
+    $nvramPath=(string)($binding['nvramPath']??'');$tpmPath=(string)($binding['tpmPath']??'');$allowed=array_values(array_map('strval',(array)($binding['tpmAllowedRoots']??[])));$boundTpm=!empty($binding['tpmPresent']);
+    if($needNvram){if($nvramPath===''||count($nvram)!==1||!hash_equals($nvramPath,(string)array_key_first($nvram)))throw new RuntimeException('Checkpoint NVRAM destination does not equal the exact transformed XML nvram path.');}elseif($nvram||$nvramPath!=='')throw new RuntimeException('Checkpoint and transformed XML disagree about NVRAM state.');
+    if($needTpm){if(!$boundTpm||count($tpmRoots)!==1)throw new RuntimeException('Checkpoint and transformed XML disagree about software TPM state.');$destination=(string)array_key_first($tpmRoots);if($tpmPath!==''?!hash_equals($tpmPath,$destination):!in_array($destination,$allowed,true))throw new RuntimeException('Checkpoint TPM destination is not the exact recognized transformed XML state root.');}elseif($tpmRoots||$boundTpm)throw new RuntimeException('Checkpoint and transformed XML disagree about software TPM state.');
+}
+
+function unmRecoveryInstallCheckpoint(array $checkpoint,string $uuid,string $activationId,string $stagingRoot,bool $validateOnly=false,array $binding=[]): array {
+    if(!preg_match('/^act-[a-f0-9]{24}$/',$activationId)||!preg_match('/^[a-f0-9-]{32,36}$/i',$uuid))throw new InvalidArgumentException('Invalid checkpoint activation identity.');$archive=(string)($checkpoint['archivePath']??'');$archiveHash=strtolower((string)($checkpoint['archiveSha256']??''));
+    if(!is_file($archive)||is_link($archive)||!preg_match('/^[a-f0-9]{64}$/',$archiveHash)||!hash_equals($archiveHash,(string)hash_file('sha256',$archive)))throw new RuntimeException('Selected checkpoint archive failed exact SHA-256 validation.');if(!is_dir($stagingRoot)&&!mkdir($stagingRoot,0700,true)&&!is_dir($stagingRoot))throw new RuntimeException('Unable to create checkpoint staging root.');$stage=$stagingRoot.'/checkpoint-'.$activationId;
+    if(file_exists($stage)||is_link($stage))throw new RuntimeException('Checkpoint staging path already exists.');if(!mkdir($stage,0700,true))throw new RuntimeException('Unable to create checkpoint staging directory.');
+    $installed=[];$installedDestinations=[];try{$listed=unmRun(['tar','-tzf',$archive],null,30);if($listed['code']!==0)throw new RuntimeException('Unable to inspect checkpoint archive: '.trim($listed['stderr']));foreach(preg_split('/\R/',trim($listed['stdout']))?:[] as $entry){$entry=rtrim($entry,'/');if($entry===''||str_starts_with($entry,'/')||str_contains($entry,"\0")||in_array('..',explode('/',$entry),true))throw new RuntimeException('Checkpoint archive contains an unsafe path.');}
+        $extract=unmRun(['tar','--no-same-owner','--no-same-permissions','-xzf',$archive,'-C',$stage],null,60);if($extract['code']!==0)throw new RuntimeException('Unable to extract checkpoint archive: '.trim($extract['stderr']));$nvram=[];$tpmRoots=[];$iterator=new RecursiveIteratorIterator(new RecursiveDirectoryIterator($stage,FilesystemIterator::SKIP_DOTS),RecursiveIteratorIterator::SELF_FIRST);
+        foreach($iterator as $item){$path=$item->getPathname();if($item->isLink()||(!$item->isDir()&&!$item->isFile()))throw new RuntimeException('Checkpoint archive contains an unsupported filesystem object.');$relative=ltrim(substr($path,strlen($stage)),'/');$absolute='/'.$relative;$matched=false;
+            if($item->isFile()&&unmRecoveryStateDestinationAllowed($absolute,'nvram',$uuid)){$nvram[$absolute]=$path;$matched=true;}
+            foreach(['/etc/libvirt/qemu/swtpm/tpm-states','/etc/libvirt/qemu/swtpm','/var/lib/libvirt/swtpm','/var/lib/libvirt/qemu/swtpm','/etc/libvirt/swtpm'] as $base)if(unmPathWithin($absolute,$base.'/'.$uuid)){$tpmRoots[$base.'/'.$uuid]=$stage.'/'.ltrim($base.'/'.$uuid,'/');$matched=true;break;}
+            if(!$matched){$allowedParent=false;foreach(['/etc/libvirt/qemu/nvram','/var/lib/libvirt/qemu/nvram','/etc/libvirt/qemu/swtpm/tpm-states','/etc/libvirt/qemu/swtpm','/var/lib/libvirt/swtpm','/var/lib/libvirt/qemu/swtpm','/etc/libvirt/swtpm'] as $base)if(unmPathWithin($base,$absolute)){$allowedParent=true;break;}if(!$allowedParent)throw new RuntimeException('Checkpoint archive contains data outside UUID-scoped libvirt state.');}
+        }
+        $needNvram=!empty($checkpoint['nvramPresent']);$needTpm=!empty($checkpoint['tpmPresent']);if($needNvram&&count($nvram)!==1)throw new RuntimeException('Checkpoint does not contain one exact UUID-scoped NVRAM file.');if(!$needNvram&&$nvram)throw new RuntimeException('Checkpoint contains unexpected NVRAM state.');if($needTpm&&count($tpmRoots)!==1)throw new RuntimeException('Checkpoint does not contain one exact UUID-scoped TPM directory.');if(!$needTpm&&$tpmRoots)throw new RuntimeException('Checkpoint contains unexpected TPM state.');if(!$binding)throw new RuntimeException('Checkpoint installation requires an exact transformed XML host-state binding.');unmRecoveryAssertCheckpointDestinations($nvram,$tpmRoots,$binding,$needNvram,$needTpm);if($validateOnly){$intended=[];foreach(array_keys($nvram) as $destination)$intended[]=['kind'=>'nvram','path'=>$destination,'activationId'=>$activationId,'pending'=>true];foreach(array_keys($tpmRoots) as $destination)$intended[]=['kind'=>'tpm','path'=>$destination,'activationId'=>$activationId,'pending'=>true];return $intended;}
+        foreach($nvram as $destination=>$source){$installedDestinations[]=['kind'=>'nvram','path'=>$destination];unmRecoveryCopyExactTree($source,$destination);$installed[]=['kind'=>'nvram','path'=>$destination,'contentSha256'=>unmRecoveryPathContentHash($destination),'activationId'=>$activationId];}
+        foreach($tpmRoots as $destination=>$source){$installedDestinations[]=['kind'=>'tpm','path'=>$destination];unmRecoveryCopyExactTree($source,$destination);$installed[]=['kind'=>'tpm','path'=>$destination,'contentSha256'=>unmRecoveryPathContentHash($destination),'activationId'=>$activationId];}
+        return $installed;
+    }catch(Throwable $e){foreach(array_reverse($installedDestinations) as $owned){$destination=(string)$owned['path'];if(file_exists($destination)&&unmRecoveryStateDestinationAllowed($destination,(string)$owned['kind'],$uuid))try{unmRecoveryRemoveExactTree($destination,dirname($destination));}catch(Throwable $ignored){}}throw $e;}finally{if(file_exists($stage)&&!is_link($stage))unmRecoveryRemoveExactTree($stage,$stagingRoot);}
+}
+
+function unmRecoveryRemoveInstalledState(array $installed,string $uuid,string $activationId): array {
+    $removed=[];foreach($installed as $item){if(!is_array($item)||!hash_equals($activationId,(string)($item['activationId']??'')))throw new RuntimeException('Activation host-state ownership journal is invalid.');$kind=(string)($item['kind']??'');$path=(string)($item['path']??'');if(!unmRecoveryStateDestinationAllowed($path,$kind,$uuid))throw new RuntimeException('Activation host-state path is not exact and UUID-scoped: '.$path);if(file_exists($path)||is_link($path)){$base=$kind==='nvram'?dirname($path):dirname($path);unmRecoveryRemoveExactTree($path,$base);}$removed[]=$path;}return $removed;
+}
+
+function unmRecoveryCheckpointRetryBackup(array $installed,string $uuid,string $activationId,string $activationRoot,string $retryId): array {
+    unmRecoveryAssertActivationRoot($activationRoot,$uuid,$activationId);unmRecoveryTransactionId('retry',$retryId);$backupRoot=$activationRoot.'/retry-backup-'.$retryId;if(file_exists($backupRoot)||is_link($backupRoot)||!mkdir($backupRoot,0700,true))throw new RuntimeException('Unable to create exact checkpoint retry backup root.');$backups=[];
+    try{foreach(array_values($installed) as $index=>$item){if(!is_array($item)||!hash_equals($activationId,(string)($item['activationId']??'')))throw new RuntimeException('Checkpoint retry host-state ownership journal is invalid.');$kind=(string)($item['kind']??'');$path=(string)($item['path']??'');if(!unmRecoveryStateDestinationAllowed($path,$kind,$uuid)||(!is_file($path)&&!is_dir($path))||is_link($path))throw new RuntimeException('Checkpoint retry source state is missing or unsafe: '.$path);$current=$item;$current['contentSha256']=unmRecoveryPathContentHash($path);$backup=$backupRoot.'/state-'.$index;unmRecoveryCopyExactTree($path,$backup);if(!hash_equals((string)$current['contentSha256'],unmRecoveryPathContentHash($backup)))throw new RuntimeException('Checkpoint retry backup verification failed.');$backups[]=['kind'=>$kind,'path'=>$path,'backupPath'=>$backup,'contentSha256'=>$current['contentSha256'],'activationId'=>$activationId,'installed'=>$current];}return ['backupRoot'=>$backupRoot,'backups'=>$backups];}
+    catch(Throwable $e){if(file_exists($backupRoot)&&!is_link($backupRoot))try{unmRecoveryRemoveExactTree($backupRoot,$activationRoot);}catch(Throwable $ignored){}throw $e;}
+}
+
+function unmRecoveryCheckpointRetryRestore(array $journal,string $uuid,string $activationId,string $activationRoot): array {
+    unmRecoveryAssertActivationRoot($activationRoot,$uuid,$activationId);$retryId=unmRecoveryTransactionId('retry',(string)($journal['retryId']??''));$backupRoot=(string)($journal['backupRoot']??'');if(!hash_equals($activationRoot.'/retry-backup-'.$retryId,$backupRoot)||!is_dir($backupRoot)||is_link($backupRoot))throw new RuntimeException('Checkpoint retry backup root is missing or mismatched.');$restored=[];
+    foreach((array)($journal['backups']??[]) as $backup){if(!is_array($backup)||!hash_equals($activationId,(string)($backup['activationId']??'')))throw new RuntimeException('Checkpoint retry backup journal is invalid.');$kind=(string)($backup['kind']??'');$path=(string)($backup['path']??'');$source=(string)($backup['backupPath']??'');$hash=(string)($backup['contentSha256']??'');if(!unmRecoveryStateDestinationAllowed($path,$kind,$uuid)||!unmPathWithin($source,$backupRoot)||(!is_file($source)&&!is_dir($source))||is_link($source)||!preg_match('/^[a-f0-9]{64}$/',$hash)||!hash_equals($hash,unmRecoveryPathContentHash($source)))throw new RuntimeException('Checkpoint retry backup entry failed exact verification.');if(file_exists($path)||is_link($path))unmRecoveryRemoveExactTree($path,dirname($path));unmRecoveryCopyExactTree($source,$path);if(!hash_equals($hash,unmRecoveryPathContentHash($path)))throw new RuntimeException('Checkpoint retry rollback restoration failed exact verification.');$restored[]=(array)($backup['installed']??[]);}
+    return $restored;
+}
+
+function unmRecoveryCreateActivationObjects(array $objects,string $activationId): array {
+    $created=[];try{foreach($objects as $object){$dataset=(string)$object['dataset'];$snapshot=(string)$object['sourceSnapshot'];$guid=unmRun(['zfs','get','-H','-o','value','guid',$snapshot],null,15);if($guid['code']!==0||!hash_equals(trim((string)$object['sourceGuid']),trim($guid['stdout'])))throw new RuntimeException('Recovery snapshot GUID changed before activation: '.$snapshot);if(unmRun(['zfs','list','-H','-o','name',$dataset],null,10)['code']===0)throw new RuntimeException('Activation ZFS object already exists: '.$dataset);
+            $args=['zfs','clone','-o','readonly=off','-o','unmotion:activation='.$activationId];if((string)$object['kind']==='zvol')$args=array_merge($args,['-o','volmode=none','-o','snapdev=hidden']);else{$mountpoint=(string)$object['mountpoint'];if(!str_starts_with($mountpoint,'/mnt/')||str_contains($mountpoint,'/../'))throw new RuntimeException('Activation dataset mountpoint is unsafe.');if(!is_dir($mountpoint)&&!mkdir($mountpoint,0700,true)&&!is_dir($mountpoint))throw new RuntimeException('Unable to create activation dataset mountpoint.');$args=array_merge($args,['-o','canmount=noauto','-o','mountpoint='.$mountpoint]);}$args=array_merge($args,[$snapshot,$dataset]);$clone=unmRun($args,null,120);if($clone['code']!==0)throw new RuntimeException('Unable to create activation clone '.$dataset.': '.trim($clone['stderr']));$created[]=$object;unmRecoveryAssertActivationObject($object,$activationId);}
+        return unmRecoveryExposeActivationObjects($created,$activationId);
+    }catch(Throwable $e){try{unmRecoveryDestroyActivationObjects(array_reverse($created),$activationId);}catch(Throwable $cleanup){throw new RuntimeException($e->getMessage().' Exact partial activation cleanup also failed: '.$cleanup->getMessage(),0,$e);}throw $e;}
+}
+
+function unmRecoveryExposeActivationObjects(array $objects,string $activationId): array {
+    foreach($objects as $object){if(!is_array($object))throw new RuntimeException('Activation storage journal is invalid.');unmRecoveryAssertActivationObject($object,$activationId);$dataset=(string)$object['dataset'];$kind=(string)($object['kind']??'');
+        if($kind==='zvol'){$enable=unmRecoveryZfsProperty($dataset,'volmode')==='dev'?['code'=>0,'stderr'=>'']:unmRun(['zfs','set','volmode=dev',$dataset],null,30);}
+        elseif($kind==='dataset'){$enable=unmRecoveryZfsProperty($dataset,'mounted')==='yes'?['code'=>0,'stderr'=>'']:unmRun(['zfs','mount',$dataset],null,30);}else throw new RuntimeException('Activation object kind is invalid.');
+        if($enable['code']!==0)throw new RuntimeException('Unable to expose activation object '.$dataset.': '.trim((string)$enable['stderr']));foreach((array)($object['mappings']??[]) as $target)if(!file_exists((string)$target)||is_link((string)$target))throw new RuntimeException('Activation disk path did not appear safely after clone exposure: '.$target);
+    }return $objects;
+}
+
+function unmRecoveryDestroyActivationObjects(array $objects,string $activationId): array {
+    $removed=[];foreach($objects as $object){if(!is_array($object))throw new RuntimeException('Activation storage journal is invalid.');$dataset=(string)($object['dataset']??'');$exists=unmRun(['zfs','list','-H','-o','name',$dataset],null,10)['code']===0;if(!$exists)continue;unmRecoveryAssertActivationObject($object,$activationId);if((string)($object['kind']??'')==='dataset')unmRun(['zfs','unmount',$dataset],null,30);else unmRun(['zfs','set','volmode=none',$dataset],null,30);$destroy=unmRun(['zfs','destroy',$dataset],null,120);if($destroy['code']!==0)throw new RuntimeException('Unable to remove exact activation ZFS object '.$dataset.': '.trim($destroy['stderr']));$removed[]=$dataset;}return $removed;
+}
+
+function unmRecoveryEmbedActivationMetadata(string $xml,string $replicationId,string $activationId): string {
+    $metadata='<metadata><unmotion:activation xmlns:unmotion="urn:unmotion:recovery:1" replicationId="'.htmlspecialchars($replicationId,ENT_QUOTES|ENT_XML1).'">'.htmlspecialchars($activationId,ENT_QUOTES|ENT_XML1).'</unmotion:activation></metadata>';
+    if(preg_match('~<metadata\b[^>]*>.*?</metadata>~si',$xml))$xml=(string)preg_replace('~<metadata\b([^>]*)>~si','$0<unmotion:activation xmlns:unmotion="urn:unmotion:recovery:1" replicationId="'.htmlspecialchars($replicationId,ENT_QUOTES|ENT_XML1).'">'.$activationId.'</unmotion:activation>',$xml,1);else $xml=(string)preg_replace('~</domain>\s*$~',$metadata.'</domain>',$xml,1,$count);
+    if(!str_contains($xml,$activationId))throw new RuntimeException('Unable to bind activation ownership metadata into the domain XML.');return $xml;
+}
+
+function unmRecoveryDomainOwned(string $vmUuid,string $replicationId,string $activationId): bool {
+    $dump=unmRun(['virsh','dumpxml',$vmUuid,'--inactive'],null,15);if($dump['code']!==0)return false;$xml=$dump['stdout'];return str_contains($xml,'urn:unmotion:recovery:1')&&str_contains($xml,$activationId)&&str_contains($xml,$replicationId)&&strcasecmp(unmXmlValue($xml,'uuid'),$vmUuid)===0;
+}
+
+function unmRecoveryStopDomain(string $vmUuid,int $graceSeconds=45,bool $force=true): string {
+    $state=unmRecoveryVmState($vmUuid);if($state==='undefined')return $state;if($state==='shut off')return $state;unmRun(['virsh','shutdown',$vmUuid],null,15);$deadline=time()+max(5,min(120,$graceSeconds));do{sleep(2);$state=unmRecoveryVmState($vmUuid);if($state==='shut off'||$state==='undefined')return $state;}while(time()<$deadline);
+    if(!$force)throw new RuntimeException('Recovered VM did not stop within the graceful timeout.');$destroy=unmRun(['virsh','destroy',$vmUuid],null,30);if($destroy['code']!==0||unmRecoveryVmState($vmUuid)!=='shut off')throw new RuntimeException('Unable to force-stop the exact recovered VM: '.trim($destroy['stderr']));return 'shut off';
+}
+
+function unmRecoveryWaitGuestHealthy(string $vmUuid,int $timeoutSeconds=90): array {
+    $deadline=time()+max(15,min(300,$timeoutSeconds));$last='';do{$state=unmRecoveryVmState($vmUuid);if(!in_array($state,['running','idle'],true))throw new RuntimeException('Recovered VM left the running state before Guest Agent health succeeded.');$probe=unmRun(['virsh','qemu-agent-command',$vmUuid,'{"execute":"guest-ping"}'],null,8);$last=trim($probe['stderr']);if($probe['code']===0){$decoded=json_decode($probe['stdout'],true);if(is_array($decoded)&&array_key_exists('return',$decoded))return ['healthy'=>true,'at'=>gmdate('c'),'response'=>$decoded];}sleep(5);}while(time()<$deadline);throw new RuntimeException('QEMU Guest Agent did not become healthy within the recovery boot timeout'.($last!==''?': '.$last:'.'));
+}
+
+function unmRecoveryRevalidateAuthorityForStart(array $context,array $record,array $point): array {
+    $claim=(array)($record['claim']??[]);$kind=(string)($claim['kind']??'');$activationId=(string)($record['activationId']??'');$term=(int)$record['term'];
+    if($kind==='coordinated'){$reply=unmRecoveryRemoteCall($context,'recovery-activation-commit',$term,['activationId'=>$activationId,'pointId'=>(string)($claim['pointId']??''),'selectionHash'=>(string)($claim['selectionHash']??'')],30);$expires=strtotime((string)($reply['grantExpiresAt']??''));if(empty($reply['committed'])||empty($reply['sourceFenced'])||!hash_equals((string)($claim['selectionHash']??''),(string)($reply['selectionHash']??''))||$expires===false||$expires<=time()||$expires>time()+150)throw new RuntimeException('Source did not issue a fresh exact activation start grant.');return $reply;}
+    throw new RuntimeException('Beta2 starts require an authenticated coordinated source-fence claim; every other claim kind is fail-closed.');
+}
+
+function unmRecoveryActivationPhase(array $context,string $activationId,string $phase,array $changes=[]): array {
+    if(!preg_match('/^[A-Z][A-Z0-9_]{2,40}$/',$phase))throw new InvalidArgumentException('Invalid activation journal phase.');$replicationId=(string)$context['identity']['replicationId'];$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)($record['activationId']??''))||!isset($record['activation']))throw new RuntimeException('Activation ownership changed before journal phase '.$phase.'.');$record['activation']['phase']=$phase;$record['activation']['phaseAt']=gmdate('c');foreach($changes as $key=>$value)$record['activation'][$key]=$value;return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryStartActivationUnlocked(string $replicationId): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$lock=unmRecoveryAcquireLock($replicationId);
+    try{$record=unmRecoveryLoad((string)$context['path']);$state=(string)$record['state'];if((!in_array($state,['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true)&&!($state==='ACTIVATING'&&(string)($record['activation']['phase']??'')==='STARTING'))||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Recovered activation is not in a startable stopped state.');$activation=(array)($record['activation']??[]);$activationId=(string)($record['activationId']??'');$claim=(array)($record['claim']??[]);if(!hash_equals($activationId,(string)($activation['activationId']??'')))throw new RuntimeException('Activation ownership or its start claim is incomplete.');$point=unmRecoveryFindPoint((array)$context['manifest'],(string)($activation['pointId']??''));$checkpoint=unmRecoveryFindCheckpoint((array)$context['manifest'],$point,(string)($claim['checkpointId']??''));$expectedSelection=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!hash_equals($expectedSelection,(string)($claim['selectionHash']??'')))throw new RuntimeException('Activation selection no longer matches the durable claim.');}finally{unmRecoveryReleaseLock($lock);}
+    $actualState=unmRecoveryVmState((string)$context['identity']['vmUuid']);if(in_array($actualState,['running','idle'],true)){if(!unmRecoveryDomainOwned((string)$context['identity']['vmUuid'],$replicationId,$activationId)||!in_array((string)($activation['phase']??''),['STARTING','RUNNING'],true))throw new RuntimeException('An already-running VM cannot be reconciled to this exact activation start journal.');try{$health=unmRecoveryWaitGuestHealthy((string)$context['identity']['vmUuid']);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'RECOVERED_RUNNING');$record['activation']['phase']='RUNNING';$record['activation']['vmState']='running';$record['activation']['healthAt']=$health['at'];return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}}catch(Throwable $e){try{unmRecoveryStopDomain((string)$context['identity']['vmUuid'],20,true);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['lastError'=>$e->getMessage()]);$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['vmState']='shut off';unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}}catch(Throwable $stop){$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'SPLIT_BRAIN_UNRESOLVED',['authority'=>'UNKNOWN','lastError'=>$e->getMessage().' Local fencing failed: '.$stop->getMessage()]);unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}throw $stop;}throw $e;}}if($actualState!=='shut off')throw new RuntimeException('Recovered VM is not verifiably stopped before start.');unmRecoveryExposeActivationObjects((array)($activation['objects']??[]),$activationId);if(!unmRecoveryDomainOwned((string)$context['identity']['vmUuid'],$replicationId,$activationId))throw new RuntimeException('Defined recovered VM is not owned by this exact activation.');$startGrant=unmRecoveryRevalidateAuthorityForStart($context,$record,$point);$grantExpires=strtotime((string)($startGrant['grantExpiresAt']??''));if($grantExpires===false||$grantExpires<=time())throw new RuntimeException('Fresh source start grant expired before VM start.');$guestSilence=unmRecoveryAssertGuestAddressesSilent($point);$lock=unmRecoveryAcquireLock($replicationId);try{$fresh=unmRecoveryLoad((string)$context['path']);if(!hash_equals($expectedSelection,(string)($fresh['claim']['selectionHash']??''))||(int)$fresh['term']!==(int)$record['term'])throw new RuntimeException('Recovery selection or term changed after the fresh source grant.');$fresh['startGrant']=['selectionHash'=>$expectedSelection,'issuedAt'=>(string)$startGrant['grantIssuedAt'],'expiresAt'=>(string)$startGrant['grantExpiresAt'],'sourceHostId'=>(string)$context['identity']['sourceHostId'],'guestSilence'=>$guestSilence];$fresh['activation']['phase']='STARTING';$fresh['activation']['phaseAt']=gmdate('c');$fresh['activation']['vmState']='starting';unmRecoveryStore((string)$context['path'],$fresh);}finally{unmRecoveryReleaseLock($lock);}
+    if($grantExpires<=time())throw new RuntimeException('Fresh source start grant expired before the start command.');if(unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off'||!unmRecoveryDomainOwned((string)$context['identity']['vmUuid'],$replicationId,$activationId))throw new RuntimeException('Recovered VM ownership or stopped state changed immediately before start.');$started=unmRun(['virsh','start',(string)$context['identity']['vmUuid']],null,45);if($started['code']!==0)throw new RuntimeException('Unable to start recovered VM: '.trim($started['stderr']));
+    try{$health=unmRecoveryWaitGuestHealthy((string)$context['identity']['vmUuid']);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)($record['activationId']??'')))throw new RuntimeException('Activation authority changed while starting the VM.');$record=unmRecoveryTransition($record,'RECOVERED_RUNNING');$record['activation']['phase']='RUNNING';$record['activation']['vmState']='running';$record['activation']['startedAt']=$record['activation']['startedAt']??gmdate('c');$record['activation']['healthAt']=$health['at'];unset($record['lastError']);return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}}
+    catch(Throwable $e){try{unmRecoveryStopDomain((string)$context['identity']['vmUuid'],20,true);}catch(Throwable $stop){$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'SPLIT_BRAIN_UNRESOLVED',['authority'=>'UNKNOWN','lastError'=>$e->getMessage().' Local fencing failed: '.$stop->getMessage()]);unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}throw $stop;}$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['lastError'=>$e->getMessage()]);$record['activation']['vmState']='shut off';unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}throw $e;}
+}
+
+function unmRecoveryActivateUnlocked(string $replicationId,string $claimId,bool $startVm=true): array {
+    if(!preg_match('/^claim-[a-f0-9]{24}$/',$claimId))throw new InvalidArgumentException('Invalid recovery claim id.');$context=unmRecoveryIdentityFromReplica($replicationId);$manifest=(array)$context['manifest'];$lock=unmRecoveryAcquireLock($replicationId);
+    try{$record=unmRecoveryLoad((string)$context['path']);$claim=(array)($record['claim']??[]);$activationId=(string)($record['activationId']??'');$expires=strtotime((string)($claim['expiresAt']??''));if((string)$record['state']!=='RECOVERY_READY'||(string)$record['authority']!=='DESTINATION'||empty($claim['evidenceReady'])||!hash_equals($claimId,(string)($claim['claimId']??''))||$expires===false||$expires<=time()||!preg_match('/^act-[a-f0-9]{24}$/',$activationId))throw new RuntimeException('Recovery claim is stale, mismatched, or no longer ready.');$point=unmRecoveryFindPoint($manifest,(string)$claim['pointId']);}finally{unmRecoveryReleaseLock($lock);}
+    $eligibility=unmRecoveryPointEligibility($manifest,$point,time(),true);if(empty($eligibility['eligible']))throw new RuntimeException(implode(' ',(array)$eligibility['reasons']));$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,(string)($claim['checkpointId']??''));$expectedSelection=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!hash_equals($expectedSelection,(string)($claim['selectionHash']??'')))throw new RuntimeException('Recovery claim selection hash does not match the exact point and checkpoint.');$plan=unmRecoveryActivationPlan($manifest,$point,$activationId);$sourceXml=(string)file_get_contents((string)$point['sourceXmlPath']);if(!hash_equals((string)$point['sourceXmlSha256'],hash('sha256',$sourceXml)))throw new RuntimeException('Recovery source XML changed after claim.');$runtime=unmRecoveryDomainRuntimePlan($sourceXml,(array)$plan['diskMaps']);if(empty($runtime['ready']))throw new RuntimeException(implode(' ',(array)$runtime['reasons']));$xml=unmRecoveryEmbedActivationMetadata((string)$runtime['xml'],$replicationId,$activationId);$hostStateBinding=unmRecoveryHostStateBinding($xml,(string)$context['identity']['vmUuid']);$root=(string)$plan['activationRoot'];$xmlPath=$root.'/domain.xml';$activation=['activationId'=>$activationId,'pointId'=>(string)$point['id'],'checkpointId'=>(string)($checkpoint['checkpointId']??''),'selectionHash'=>$expectedSelection,'objects'=>$plan['objects'],'activationRoot'=>$root,'xmlPath'=>$xmlPath,'xmlSha256'=>hash('sha256',$xml),'hostStateBinding'=>$hostStateBinding,'installedState'=>[],'vmState'=>'undefined','phase'=>'PREPARED','createdAt'=>gmdate('c'),'warnings'=>$runtime['warnings']];
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']!=='RECOVERY_READY'||!hash_equals($claimId,(string)($record['claim']['claimId']??'')))throw new RuntimeException('Recovery claim changed before activation transaction.');$record=unmRecoveryTransition($record,'ACTIVATING',['activation'=>$activation]);unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+    $defined=false;$created=[];$installed=[];try{unmRecoveryActivationPhase($context,$activationId,'CREATING_ROOT');if(file_exists($root)||is_link($root))throw new RuntimeException('Activation root already exists before its durable transaction.');if(!mkdir($root,0700,true)&&!is_dir($root))throw new RuntimeException('Unable to create exact activation root.');unmRecoveryActivationPhase($context,$activationId,'WRITING_XML');if(file_exists($xmlPath)||is_link($xmlPath)||file_put_contents($xmlPath,$xml,LOCK_EX)!==strlen($xml)||!chmod($xmlPath,0600))throw new RuntimeException('Unable to write activation domain XML.');unmRecoveryAssertNoDomainConflict((string)$context['identity']['vmUuid'],(string)$context['identity']['vmName']);unmRecoveryActivationPhase($context,$activationId,'CREATING_STORAGE');$created=unmRecoveryCreateActivationObjects((array)$plan['objects'],$activationId);if($checkpoint){$intended=unmRecoveryInstallCheckpoint($checkpoint,(string)$context['identity']['vmUuid'],$activationId,$root,true,$hostStateBinding);unmRecoveryActivationPhase($context,$activationId,'INSTALLING_STATE',['objects'=>$created,'intendedState'=>$intended]);$installed=unmRecoveryInstallCheckpoint($checkpoint,(string)$context['identity']['vmUuid'],$activationId,$root,false,$hostStateBinding);}else unmRecoveryActivationPhase($context,$activationId,'STORAGE_READY',['objects'=>$created]);$freshContext=unmRecoveryIdentityFromReplica($replicationId);$freshPoint=unmRecoveryFindPoint((array)$freshContext['manifest'],(string)$claim['pointId']);$freshCheckpoint=unmRecoveryFindCheckpoint((array)$freshContext['manifest'],$freshPoint,(string)($claim['checkpointId']??''));$lock=unmRecoveryAcquireLock($replicationId);try{$freshRecord=unmRecoveryLoad((string)$freshContext['path']);$freshExpiry=strtotime((string)($freshRecord['claim']['expiresAt']??''));if((string)$freshRecord['state']!=='ACTIVATING'||$freshExpiry===false||$freshExpiry<=time()||!hash_equals($expectedSelection,(string)($freshRecord['claim']['selectionHash']??''))||!hash_equals($expectedSelection,unmRecoverySelectionHash($replicationId,$freshPoint,$freshCheckpoint,$activationId)))throw new RuntimeException('Recovery claim expired or its exact selection changed before VM definition.');}finally{unmRecoveryReleaseLock($lock);}unmRecoveryAssertNoDomainConflict((string)$context['identity']['vmUuid'],(string)$context['identity']['vmName']);unmRecoveryActivationPhase($context,$activationId,'DEFINING',['objects'=>$created,'installedState'=>$installed]);$define=unmRun(['virsh','define',$xmlPath],null,45);if($define['code']!==0)throw new RuntimeException('Unable to define recovered VM: '.trim($define['stderr']));$defined=true;if(!unmRecoveryDomainOwned((string)$context['identity']['vmUuid'],$replicationId,$activationId)||unmRecoveryVmState((string)$context['identity']['vmUuid'])!=='shut off')throw new RuntimeException('Recovered VM definition did not remain exact, owned, and stopped.');unmRecoverySetNativeAutostart((string)$context['identity']['vmUuid'],false);
+        $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']!=='ACTIVATING'||!hash_equals($activationId,(string)$record['activationId']))throw new RuntimeException('Recovery authority changed during activation.');$record=unmRecoveryTransition($record,'RECOVERED_STOPPED');$record['activation']['objects']=$created;$record['activation']['installedState']=$installed;$record['activation']['vmState']='shut off';$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['definedAt']=gmdate('c');unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+    }catch(Throwable $e){if(!$defined){try{if($installed)unmRecoveryRemoveInstalledState($installed,(string)$context['identity']['vmUuid'],$activationId);if($created)unmRecoveryDestroyActivationObjects(array_reverse($created),$activationId);}catch(Throwable $cleanup){$e=new RuntimeException($e->getMessage().' Exact activation rollback failed: '.$cleanup->getMessage(),0,$e);}}else try{unmRecoveryStopDomain((string)$context['identity']['vmUuid'],10,true);}catch(Throwable $ignored){}$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']==='ACTIVATING'){$record=unmRecoveryTransition($record,'RECOVERY_BOOT_FAILED',['lastError'=>$e->getMessage()]);$record['activation']['objects']=$created?:$plan['objects'];$record['activation']['installedState']=$installed;$record['activation']['vmState']=$defined?'shut off':'undefined';$record['activation']['partial']=!$defined;unmRecoveryStore((string)$context['path'],$record);}}finally{unmRecoveryReleaseLock($lock);}throw $e;}
+    return $startVm?unmRecoveryStartActivationUnlocked($replicationId):unmRecoveryLoad((string)$context['path']);
+}
+
+function unmRecoveryStopActivationUnlocked(string $replicationId): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$record['state'],['ACTIVATING','RECOVERED_STOPPED','RECOVERED_RUNNING','RECOVERY_BOOT_FAILED'],true)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Recovered activation is not stoppable under destination authority.');$activationId=(string)$record['activationId'];}finally{unmRecoveryReleaseLock($lock);}
+    $actual=unmRecoveryVmState((string)$context['identity']['vmUuid']);if(!in_array($actual,['running','idle','paused','shut off'],true)||!unmRecoveryDomainOwned((string)$context['identity']['vmUuid'],$replicationId,$activationId))throw new RuntimeException('VM is not exactly owned by this activation or has an unsafe runtime state.');if($actual!=='shut off')unmRecoveryStopDomain((string)$context['identity']['vmUuid'],45,true);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId']))throw new RuntimeException('Activation authority changed while stopping the VM.');$record=unmRecoveryTransition($record,'RECOVERED_STOPPED');$record['activation']['phase']='DEFINED_STOPPED';$record['activation']['vmState']='shut off';$record['activation']['stoppedAt']=gmdate('c');return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryRetryCheckpointUnlocked(string $replicationId,string $checkpointId,bool $startVm=true): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$manifest=(array)$context['manifest'];$uuid=(string)$context['identity']['vmUuid'];$lock=unmRecoveryAcquireLock($replicationId);
+    try{
+        $record=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$record['state'],['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Checkpoint retry requires a stopped destination-authoritative activation.');$activation=(array)($record['activation']??[]);$activationId=(string)$record['activationId'];if(!hash_equals($activationId,(string)($activation['activationId']??'')))throw new RuntimeException('Activation ownership journal is incomplete.');$activationRoot=unmRecoveryAssertActivationRoot((string)($activation['activationRoot']??''),$uuid,$activationId);$xmlPath=(string)($activation['xmlPath']??'');if(!hash_equals($activationRoot.'/domain.xml',$xmlPath)||!is_file($xmlPath)||is_link($xmlPath)||!hash_equals((string)($activation['xmlSha256']??''),(string)hash_file('sha256',$xmlPath)))throw new RuntimeException('Activation XML journal is missing, moved, or changed before checkpoint retry.');$hostStateBinding=unmRecoveryHostStateBinding((string)file_get_contents($xmlPath),$uuid);if(!hash_equals((string)($activation['hostStateBinding']['bindingHash']??''),(string)$hostStateBinding['bindingHash']))throw new RuntimeException('Activation host-state binding changed before checkpoint retry.');$point=unmRecoveryFindPoint($manifest,(string)$activation['pointId']);$currentCheckpoint=(string)($activation['checkpointId']??'');if(!hash_equals($currentCheckpoint,$checkpointId))throw new RuntimeException('Beta2 checkpoint retry is bound to the already authorized checkpoint; selecting a different checkpoint requires a new coordinated recovery claim.');$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,$checkpointId);$expectedSelection=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!hash_equals($expectedSelection,(string)($record['claim']['selectionHash']??''))||!hash_equals($expectedSelection,(string)($activation['selectionHash']??'')))throw new RuntimeException('Checkpoint retry selection no longer matches the exact authorized activation.');
+    }finally{unmRecoveryReleaseLock($lock);}
+    if(!$checkpoint)throw new RuntimeException('This activation has no TPM/NVRAM checkpoint to retry.');if(unmRecoveryVmState($uuid)!=='shut off'||!unmRecoveryDomainOwned($uuid,$replicationId,$activationId))throw new RuntimeException('Recovered VM is not exactly owned and stopped before checkpoint retry.');
+
+    $priorJournal=(array)($activation['checkpointRetry']??[]);if(in_array((string)($priorJournal['phase']??''),['PREPARED','SWAPPING'],true)){
+        $restored=unmRecoveryCheckpointRetryRestore($priorJournal,$uuid,$activationId,$activationRoot);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId']))throw new RuntimeException('Activation authority changed during checkpoint retry crash recovery.');$record['activation']['installedState']=$restored;$record['activation']['checkpointRetry']['phase']='ROLLED_BACK';$record['activation']['checkpointRetry']['rolledBackAt']=gmdate('c');$record['activation']['vmState']='shut off';unmRecoveryStore((string)$context['path'],$record);$activation=(array)$record['activation'];}finally{unmRecoveryReleaseLock($lock);}unmRecoveryRemoveExactTree((string)$priorJournal['backupRoot'],$activationRoot);
+    }elseif(in_array((string)($priorJournal['phase']??''),['COMPLETE','ROLLED_BACK'],true)&&is_dir((string)($priorJournal['backupRoot']??''))&&!is_link((string)$priorJournal['backupRoot']))unmRecoveryRemoveExactTree((string)$priorJournal['backupRoot'],$activationRoot);
+
+    unmRecoveryInstallCheckpoint($checkpoint,$uuid,$activationId,$activationRoot,true,$hostStateBinding);$retryId=unmRecoveryRandomId('retry');$backup=unmRecoveryCheckpointRetryBackup((array)($activation['installedState']??[]),$uuid,$activationId,$activationRoot,$retryId);$journal=['retryId'=>$retryId,'phase'=>'PREPARED','checkpointId'=>$checkpointId,'selectionHash'=>(string)($record['claim']['selectionHash']??''),'hostStateBindingHash'=>(string)$hostStateBinding['bindingHash'],'backupRoot'=>$backup['backupRoot'],'backups'=>$backup['backups'],'preparedAt'=>gmdate('c')];
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId'])||!in_array((string)$record['state'],['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true))throw new RuntimeException('Activation authority changed before checkpoint retry prepare.');$record['activation']['checkpointRetry']=$journal;unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+    $sourceFence=unmRecoveryRevalidateAuthorityForStart($context,$record,$point);$sourceFenceExpiry=strtotime((string)($sourceFence['grantExpiresAt']??''));if($sourceFenceExpiry===false||$sourceFenceExpiry<=time()||!hash_equals($expectedSelection,(string)($sourceFence['selectionHash']??'')))throw new RuntimeException('Source did not return a fresh exact fence grant for checkpoint retry.');
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($retryId,(string)($record['activation']['checkpointRetry']['retryId']??''))||!hash_equals($expectedSelection,(string)($record['claim']['selectionHash']??'')))throw new RuntimeException('Checkpoint retry journal or selection changed before swap.');$record['activation']['checkpointRetry']['phase']='SWAPPING';$record['activation']['checkpointRetry']['sourceFenceGrant']=['selectionHash'=>$expectedSelection,'issuedAt'=>(string)($sourceFence['grantIssuedAt']??''),'expiresAt'=>(string)$sourceFence['grantExpiresAt']];$record['activation']['checkpointRetry']['swapStartedAt']=gmdate('c');unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}if($sourceFenceExpiry<=time())throw new RuntimeException('Fresh source fence grant expired before checkpoint retry swap.');
+    try{
+        $old=array_map(static fn(array $item):array=>(array)$item['installed'],(array)$backup['backups']);if($old)unmRecoveryRemoveInstalledState($old,$uuid,$activationId);$installed=unmRecoveryInstallCheckpoint($checkpoint,$uuid,$activationId,$activationRoot,false,$hostStateBinding);
+        $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId'])||!hash_equals($retryId,(string)($record['activation']['checkpointRetry']['retryId']??'')))throw new RuntimeException('Activation authority changed during checkpoint retry.');$record['activation']['installedState']=$installed;$record['activation']['checkpointRetry']['phase']='COMPLETE';$record['activation']['checkpointRetry']['completedAt']=gmdate('c');$record['activation']['checkpointRetryAt']=gmdate('c');$record['activation']['vmState']='shut off';$record=unmRecoveryTransition($record,'RECOVERED_STOPPED');unset($record['lastError']);unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}unmRecoveryRemoveExactTree((string)$backup['backupRoot'],$activationRoot);
+    }catch(Throwable $e){
+        try{$restored=unmRecoveryCheckpointRetryRestore($journal,$uuid,$activationId,$activationRoot);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId']))throw new RuntimeException('Activation authority changed during checkpoint retry rollback.');$record['activation']['installedState']=$restored;$record['activation']['checkpointRetry']['phase']='ROLLED_BACK';$record['activation']['checkpointRetry']['rolledBackAt']=gmdate('c');$record['activation']['checkpointRetry']['error']=$e->getMessage();$record['activation']['vmState']='shut off';$record['lastError']=$e->getMessage();unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}unmRecoveryRemoveExactTree((string)$backup['backupRoot'],$activationRoot);}catch(Throwable $rollback){throw new RuntimeException($e->getMessage().' Exact checkpoint retry rollback failed: '.$rollback->getMessage(),0,$e);}throw $e;
+    }
+    return $startVm?unmRecoveryStartActivationUnlocked($replicationId):$record;
+}
+
+function unmRecoveryRemoveActivationUnlocked(string $replicationId,string $confirmation): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);if(!hash_equals('REMOVE '.(string)$context['identity']['vmName'],$confirmation))throw new RuntimeException('Activation removal confirmation phrase does not match the VM name.');$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$record['state'],['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Only a stopped destination-authoritative activation may be removed.');$activation=(array)($record['activation']??[]);$activationId=(string)$record['activationId'];if(!hash_equals($activationId,(string)($activation['activationId']??'')))throw new RuntimeException('Activation removal ownership journal is incomplete.');$root=unmRecoveryAssertActivationRoot((string)($activation['activationRoot']??''),(string)$context['identity']['vmUuid'],$activationId);}finally{unmRecoveryReleaseLock($lock);}
+    $uuid=(string)$context['identity']['vmUuid'];$vmState=unmRecoveryVmState($uuid);if(!in_array($vmState,['shut off','undefined'],true))throw new RuntimeException('Recovered VM must be stopped before activation removal.');if($vmState!=='undefined'){if(!unmRecoveryDomainOwned($uuid,$replicationId,$activationId))throw new RuntimeException('Defined VM is not owned by this exact activation.');$args=['virsh','undefine',$uuid];$kinds=array_column((array)($activation['installedState']??[]),'kind');if(in_array('nvram',$kinds,true))$args[]='--keep-nvram';if(in_array('tpm',$kinds,true))$args[]='--keep-tpm';$undefine=unmRun($args,null,45);if($undefine['code']!==0)throw new RuntimeException('Unable to undefine exact recovered VM while retaining owned state for verified cleanup: '.trim($undefine['stderr']));if(unmRecoveryVmState($uuid)!=='undefined')throw new RuntimeException('Recovered VM definition remained after undefine.');}
+    $stateJournal=[];foreach(array_merge((array)($activation['installedState']??[]),(array)($activation['intendedState']??[])) as $item)if(is_array($item))$stateJournal[(string)($item['kind']??'').'|'.(string)($item['path']??'')]=$item;$removedState=unmRecoveryRemoveInstalledState(array_values($stateJournal),$uuid,$activationId);$removedObjects=unmRecoveryDestroyActivationObjects(array_reverse((array)($activation['objects']??[])),$activationId);$base=dirname(dirname($root));if(file_exists($root)||is_link($root))unmRecoveryRemoveExactTree($root,$base);
+    $lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if(!hash_equals($activationId,(string)$record['activationId']))throw new RuntimeException('Activation authority changed before removal commit.');$record=unmRecoveryTransition($record,'FENCED',['lastRemovedActivation'=>['activationId'=>$activationId,'removedAt'=>gmdate('c'),'removedObjects'=>$removedObjects,'removedState'=>$removedState],'lastError'=>'Recovered activation was removed. Source authority was not restored automatically.']);unset($record['activation'],$record['activationId'],$record['claim']);return unmRecoveryStore((string)$context['path'],$record);}finally{unmRecoveryReleaseLock($lock);}
+}
+
+function unmRecoveryWithVmLock(string $replicationId,callable $operation): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$vmLock=unmRecoveryAcquireVmLock((string)$context['identity']['vmUuid']);try{return $operation();}finally{unmRecoveryReleaseLock($vmLock);}
+}
+
+function unmRecoveryStartActivation(string $replicationId): array {return unmRecoveryWithVmLock($replicationId,static fn():array=>unmRecoveryStartActivationUnlocked($replicationId));}
+function unmRecoveryActivate(string $replicationId,string $claimId,bool $startVm=true): array {return unmRecoveryWithVmLock($replicationId,static fn():array=>unmRecoveryActivateUnlocked($replicationId,$claimId,$startVm));}
+function unmRecoveryStopActivation(string $replicationId): array {return unmRecoveryWithVmLock($replicationId,static fn():array=>unmRecoveryStopActivationUnlocked($replicationId));}
+function unmRecoveryRetryCheckpoint(string $replicationId,string $checkpointId,bool $startVm=true): array {return unmRecoveryWithVmLock($replicationId,static fn():array=>unmRecoveryRetryCheckpointUnlocked($replicationId,$checkpointId,$startVm));}
+function unmRecoveryRemoveActivation(string $replicationId,string $confirmation): array {return unmRecoveryWithVmLock($replicationId,static fn():array=>unmRecoveryRemoveActivationUnlocked($replicationId,$confirmation));}
+
+function unmRecoveryColdFailbackPreflight(string $replicationId): array {
+    $context=unmRecoveryIdentityFromReplica($replicationId);$lock=unmRecoveryAcquireLock($replicationId);try{$record=unmRecoveryLoad((string)$context['path']);if((string)$record['state']!=='RECOVERED_STOPPED'||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Cold failback preflight requires a stopped recovered activation.');$activation=(array)($record['activation']??[]);$activationId=(string)$record['activationId'];$term=(int)$record['term'];}finally{unmRecoveryReleaseLock($lock);}$reasons=[];$uuid=(string)$context['identity']['vmUuid'];if(unmRecoveryVmState($uuid)!=='shut off')$reasons[]='Recovered destination VM is not verifiably stopped.';if(!unmRecoveryDomainOwned($uuid,$replicationId,$activationId))$reasons[]='Recovered destination definition is not owned by the exact activation.';
+    foreach((array)($activation['objects']??[]) as $object)try{unmRecoveryAssertActivationObject((array)$object,$activationId);}catch(Throwable $e){$reasons[]=$e->getMessage();}foreach((array)($activation['installedState']??[]) as $state){$path=(string)($state['path']??'');if(!unmRecoveryStateDestinationAllowed($path,(string)($state['kind']??''),$uuid)||!file_exists($path)||is_link($path))$reasons[]='Activation host state is missing or unsafe: '.$path;}
+    try{$source=unmRecoveryRemoteCall($context,'recovery-failback-preflight',$term,['activationId'=>$activationId],45);if(empty($source['ready']))$reasons=array_merge($reasons,(array)($source['reasons']??['Source rejected cold failback preflight.']));}catch(Throwable $e){$source=[];$reasons[]='Source cold-failback check failed: '.$e->getMessage();}
+    return ['ready'=>!$reasons,'reasons'=>array_values(array_unique($reasons)),'mode'=>'cold-preflight-only','transferStarted'=>false,'authorityChanged'=>false,'activationId'=>$activationId,'term'=>$term,'source'=>$source];
+}
+
+function unmRecoveryRunWorker(string $replicationId,string $expectedOperationId): array {
+    unmReplicationPath($replicationId);if(!preg_match('/^op-[a-f0-9]{24}$/',$expectedOperationId))throw new InvalidArgumentException('Invalid recovery worker operation id.');unmRecoveryEnsureRuntimeDir();$operationLock=fopen(unmRecoveryOperationLockPath($replicationId),'c');if($operationLock===false)throw new RuntimeException('Unable to open recovery operation lock.');@chmod(unmRecoveryOperationLockPath($replicationId),0600);if(!flock($operationLock,LOCK_EX|LOCK_NB)){fclose($operationLock);throw new RuntimeException('Another recovery worker already owns this policy operation.');}
+    try{$request=unmLoadJson(UNM_RECOVERY_RUNTIME_DIR.'/'.$replicationId.'.request.json');$operation=unmRecoveryOperation($replicationId);if(!$request||($request['schemaVersion']??null)!==1||!hash_equals($replicationId,(string)($request['replicationId']??''))||!hash_equals($expectedOperationId,(string)($request['operationId']??''))||!hash_equals($expectedOperationId,(string)($operation['operationId']??''))||(string)($operation['state']??'')!=='QUEUED')throw new RuntimeException('Recovery worker request was replaced, consumed, or is invalid.');$type=(string)($request['type']??'');$parameters=(array)($request['parameters']??[]);unmRecoveryOperationUpdate($replicationId,$type,'RUNNING',2,'Recovery worker started.',['pid'=>getmypid(),'operationId'=>$expectedOperationId]);
+        try{$result=match($type){'evidence'=>unmRecoveryCollectEvidence($replicationId,$parameters),'activate'=>unmRecoveryActivate($replicationId,(string)($parameters['claimId']??''),!empty($parameters['startVm'])),'start-activation'=>unmRecoveryStartActivation($replicationId),'retry-checkpoint'=>unmRecoveryRetryCheckpoint($replicationId,(string)($parameters['checkpointId']??''),!empty($parameters['startVm'])),'stop-activation'=>unmRecoveryStopActivation($replicationId),'remove-activation'=>unmRecoveryRemoveActivation($replicationId,(string)($parameters['confirmation']??'')),default=>throw new InvalidArgumentException('Unsupported recovery worker operation.')};return unmRecoveryOperationUpdate($replicationId,$type,'COMPLETE',100,'Recovery operation completed.',['completedAt'=>gmdate('c'),'result'=>is_array($result)?unmRecoveryPublicRecord($result):$result]);}
+        catch(Throwable $e){unmRecoveryOperationUpdate($replicationId,$type,'FAILED',100,$e->getMessage(),['failedAt'=>gmdate('c'),'error'=>$e->getMessage()]);throw $e;}
+    }finally{flock($operationLock,LOCK_UN);fclose($operationLock);}
 }
 
 
@@ -2558,10 +3762,10 @@ function unmCleanupAll(): void {
 }
 
 function unmFindPeerByHostId(string $hostId): array {
-    foreach (unmPeers() as $peer) {
-        if (($peer['hostId'] ?? '') === $hostId) return $peer;
-    }
-    throw new RuntimeException('No paired peer matches host ID ' . $hostId . '.');
+    $matches=[];foreach(unmPeers() as $peer)if(($peer['hostId']??'')===$hostId)$matches[]=$peer;
+    if(count($matches)>1)throw new RuntimeException('Multiple peer records match host ID '.$hostId.'; remove stale pairing records before continuing.');
+    if(!$matches)throw new RuntimeException('No paired peer matches host ID '.$hostId.'.');
+    return $matches[0];
 }
 
 function unmPathWithin(string $path, string $base): bool {
@@ -2820,7 +4024,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     $peer=unmTestPeer($peerId); $caps=$peer['lastCapabilities'];
     $peerHealth=unmPeerHealth($peerId);
     if($vm===''||preg_match('~[/\r\n\t]~',$vm)) throw new RuntimeException('VM name contains characters unsafe for a destination directory. Spaces are supported.');
-    $errors=$seedCompatibilityErrors; $warnings=[]; $plan=[]; $required=['zvol'=>0,'dataset'=>0,'image'=>0,'iso'=>0,'sourceStaging'=>0];
+    $errors=$seedCompatibilityErrors;try{unmRecoveryAssertLegacyVmAvailable((string)$uuid,$migrationMode==='cold'?'Move':'Warm Move');}catch(Throwable $e){$errors[]=$e->getMessage();}$warnings=[]; $plan=[]; $required=['zvol'=>0,'dataset'=>0,'image'=>0,'iso'=>0,'sourceStaging'=>0];
     $destinations=[]; $conflicts=[];
     if($migrationMode==='warm-cutover'&&!$seedCompatibilityErrors){
         foreach($warmSeed['storage']??[] as $item){

@@ -29,7 +29,13 @@ Replication deliberately excludes shared datasets, non-ZFS storage, encrypted da
 
 ## Beta2 development
 
-Beta2 begins the guarded recovery layer. The first committed slice adds explicit protocol-range negotiation scaffolding while continuing to advertise only protocol 5; protocol 6 will not be enabled until its fencing and witness RPCs, mixed-version behavior, and destructive lab tests exist. Recovery UI remains disabled while the state machine in [docs/RECOVERY.md](docs/RECOVERY.md) is implemented.
+Beta2 builds the guarded, manual-recovery layer. Legacy pairing, migration and replication commands continue to identify as protocol 5; beta2 peers additionally advertise a compatible range of 5-6 and negotiate protocol 6 only for the separately capability-gated recovery control plane. Arming requires the source VM to be shut off, disables native Unraid autostart, and hands managed starts to a persistent lifecycle/fencing daemon. A coordinated recovery requires the source to remain reachable and fenced, creates separate activation-owned ZFS clones, and verifies Guest Agent health before recording the recovered VM as running.
+
+Only one recovery destination may be armed for a VM in beta2. While a recovery policy is armed or unreconciled, legacy Move, Warm Move, Clone and replication-policy mutations are blocked so they cannot move the authoritative identity outside the recovery transaction. An activation-owned recovered VM is subject to the same interlock.
+
+While recovery is armed, retention may temporarily keep one additional destination point when the newest configured-retention point is replication-only. This prevents a healthy older recovery point from being pruned merely because a newer run lacked fresh Guest Agent evidence.
+
+Beta2 does not claim recovery from an unreachable source. Automatic failover, network-silence two-host claims, witness voting, alternate TPM/NVRAM checkpoint selection and failback transfer remain disabled; cold failback is preflight-only. See [docs/RECOVERY.md](docs/RECOVERY.md).
 
 ## Repository layout
 

@@ -48,11 +48,11 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Add scheduled, resumable replication of dedicated ZFS VM storage to a paired host.
-- Offer notched 5-minute to 24-hour RPOs and UTC-bucketed retention within the latest 24 hours.
-- Keep destination replicas inert and undefined while recording verified recovery-point inventory.
-- Capture QEMU Guest Agent consistency/network metadata and TPM/NVRAM checkpoint evidence.
-- Preserve protocol-5 migration compatibility; activation remains disabled while beta2 fencing is developed.
+- Preserve protocol-5 pairing, migration, cloning and replication while negotiating protocol 6 only for recovery protocol 1.
+- Add two-phase recovery arming, native-autostart control and persistent lifecycle/start fencing.
+- Add coordinated manual activation from verified Guest-Agent-eligible points using separate, exact activation-owned ZFS clones.
+- Add authenticated graceful holdoffs, stopped activation removal, exact-checkpoint retry and cold-failback preflight.
+- Keep retained replicas read-only and inert; automatic failover, unreachable-source claims, witnesses and failback transfer remain disabled.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF
@@ -68,7 +68,7 @@ echo "$MD5  \$TMP" | md5sum -c -
 mv -f "\$TMP" "&package;"
 chmod 600 "&package;"
 /sbin/upgradepkg --install-new "&package;"
-/etc/rc.d/rc.unmotion start || true
+/etc/rc.d/rc.unmotion restart || true
 rm -f "&payload;"
 </INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE>

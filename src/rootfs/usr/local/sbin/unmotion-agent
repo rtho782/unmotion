@@ -53,6 +53,26 @@ try {
                 echo json_encode(unmReplicaInventory($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             }else echo json_encode(['replicas'=>unmIncomingReplicas()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;
+        case 'recovery-key-install':
+            $encoded=(string)($argv[2]??'');if($encoded===''||strlen($encoded)>131072)throw new InvalidArgumentException('Invalid recovery signing-key request.');$decoded=base64_decode($encoded,true);$request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid recovery signing-key request.');echo json_encode(unmRecoveryInstallPeerSecret($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'recovery-legacy-interlock':
+            $uuid=strtolower(trim((string)($argv[2]??'')));$operation=(string)($argv[3]??'unMotion operation');if(!in_array($operation,['Move','Warm Move','Clone','Replication policy mutation'],true))throw new InvalidArgumentException('Invalid recovery legacy-interlock operation.');unmRecoveryAssertLegacyVmAvailable($uuid,$operation);echo json_encode(['success'=>true,'allowed'=>true,'vmUuid'=>$uuid],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'recovery-arm':
+        case 'recovery-disarm':
+        case 'recovery-hold':
+        case 'recovery-hold-release':
+        case 'recovery-status':
+        case 'recovery-fence-status':
+        case 'recovery-grant':
+        case 'recovery-claim-renew':
+        case 'recovery-activation-commit':
+        case 'recovery-failback-preflight':
+            $encoded=(string)($argv[2]??'');if($encoded===''||strlen($encoded)>131072)throw new InvalidArgumentException('Invalid recovery RPC request.');$decoded=base64_decode($encoded,true);$request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid recovery RPC request.');echo json_encode(unmRecoveryDispatchRpc($cmd,$request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
         case 'reciprocal-prepare':
             $encoded=(string)($argv[2]??'');
             $decoded=base64_decode($encoded,true);
