@@ -1,5 +1,16 @@
 # Reconstruction verification
 
+## 0.4.0 stable promotion verification — 2026-09-12
+
+Author: Richard Skinner
+
+- Stable promotes beta4's tested functionality without changing migration, clone, replication or recovery algorithms or protocol negotiation. Executable payload differences are limited to the application version constant; installed descriptions and GPL-3.0-only licence text are updated.
+- The full scripts/verify.sh suite passed on DEV01 with PHP, Bash and Node available, including new stable/beta feed selection and lexical/package upgrade-ordering tests. CA plugin/profile XML parsed successfully.
+- Both DEV01 and DEV02 successfully completed real plugin check/update from 0.4.0-beta4 to descriptor 0.4.0-stable / application 0.4.0. A temporary loopback-only feed served the exact candidate before public publication because Unraid's pre-update hook refreshes the candidate from the installed descriptor's feed. No Unraid hook or version comparator was modified. Temporary servers were stopped after the test.
+- Configuration, host identity and all pairing-file hashes remained unchanged on both hosts. Each host has a single stable unmotion.plg descriptor, one lifecycle daemon and one scheduler, and all lab VMs remain stopped. GPL licence text is installed. Production was not changed.
+- The PLG SHA-256 is 8928d3b4aabf0a49c09ba6313de47ab9ecf492f21faceec9a2556f32dd46ca09. The TXZ SHA-256 is c7a8a5f7adbd8b799adb270256a0b8c70cb2da44777533eb7295eaac5d88c9b5.
+- This is release-packaging/upgrade verification in addition to the beta4 live matrix below, not a new full destructive recovery campaign or a repeat of clean-install, uninstall, reboot and browser testing. The previously documented beta4 test limitations remain explicit.
+
 ## 0.4.0-beta4 verification — 2026-09-12
 
 Author: Richard Skinner

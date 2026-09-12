@@ -2,6 +2,14 @@
 
 Author: Richard Skinner
 
+## Stable channel (0.4.0 onward)
+
+Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-stable/unmotion.plg. Public/application version 0.4.0 uses descriptor version 0.4.0-stable and package token 0.4.0_stable. Unraid compares plugin versions with strcmp and package versions with sort -V; the suffix sorts after beta4 without changing Unraid itself. Build-time regressions cover this transition and subsequent versions.
+
+Publish the stable GitHub release and verify its assets before advancing either feed. For graduation from beta4, publish that same stable descriptor to both feeds. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
+
+The following beta-channel notes remain relevant for explicit prerelease installations.
+
 Starting in 0.4.0-beta3, the generated PLG includes this pluginURL:
 
 https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-beta/unmotion.plg

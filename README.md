@@ -1,8 +1,11 @@
 # unMotion
 
-unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. This source targets `0.4.0-beta4`. The recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
+unMotion is an Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery. This source targets stable `0.4.0`. The recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
 
-> **Beta software:** migrations change VM definitions and storage. Use disposable test hosts and verified backups. Do not treat a successful preflight as a substitute for a recovery plan.
+> **Keep verified backups:** migrations change VM definitions and storage. Test your workloads before relying on migration or recovery. Do not treat a successful preflight as a substitute for a recovery plan.
+
+Author: Richard Skinner. Copyright (C) 2026 Richard Skinner.
+Licensed under **GPL-3.0-only**, not "GPLv3 or later". See [LICENSE](LICENSE). Distributed modified versions must meet GPLv3 source and licensing obligations. Software is provided without warranty under the licence terms; preserved third-party notices retain their original terms.
 
 ## Supported transport and replication
 
@@ -17,15 +20,15 @@ unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, 
 - Cold same-host full-copy cloning for zvols, dedicated ZFS datasets, raw images and qcow2 images.
 - New KVM UUID, genid and NIC MAC addresses for clones, with autostart disabled.
 - Ubuntu Guest Agent customization that resets guest identity and replaces Netplan with DHCP before enabling cloned NIC links.
-- Scheduled full and incremental replication to a paired beta1 host for zvols and raw/qcow2 images in strictly dedicated ZFS datasets.
+- Scheduled full and incremental replication to a compatible paired host for zvols and raw/qcow2 images in strictly dedicated ZFS datasets.
 - RPO notches of 5, 15 and 30 minutes, then 1, 2, 4, 6, 8, 12 and 24 hours.
 - Up to 24 destination recovery points selected from UTC-aligned buckets across the latest 24 hours, within the limits imposed by the selected RPO.
 - Resumable interrupted receives, exact snapshot-GUID verification, QEMU Guest Agent consistency/network evidence, and TPM/NVRAM checkpoint metadata.
-- Inert destination replica inventory: replica storage is not mounted, exposed as a zvol device, defined in libvirt or started.
+- Inert destination replica inventory: retained replica storage is not mounted, exposed as a zvol device, defined in libvirt or started. Coordinated manual recovery uses separate activation-owned clones.
 
 Replication deliberately excludes shared datasets, non-ZFS storage, encrypted datasets and qcow2 backing chains. unMotion does not convert those layouts; use the ZFS Master plugin or another storage tool before enabling replication.
 
-`0.4.0-beta1` does **not** activate a replica or implement automatic failover, quorum/witness checks, managed autostart, split-brain prevention, or failback. A recovery point without verified Guest Agent evidence is storage-only and will not be eligible for a future activation path.
+Stable `0.4.0` supports coordinated manual recovery with a reachable, fenced source. It does **not** implement live migration, automatic failover, unreachable-source recovery, quorum/witness voting, alternate TPM checkpoint selection or failback transfer. A recovery point without verified Guest Agent evidence remains storage-only.
 
 ## Manual recovery (introduced in beta2)
 
@@ -54,7 +57,7 @@ If destination startup fails after transfer, **Resolve migration** checks both h
 ## Repository layout
 
 ```text
-src/rootfs/                 Current 0.4.0-beta4 package source, derived from beta7
+src/rootfs/                 Current 0.4.0 package source, derived from beta7
 release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
@@ -64,22 +67,22 @@ AGENTS.md                   Durable rules for Codex and contributors
 
 The beta7 baseline was recovered, not recreated, and was cross-checked against the separately published source tarball. RC1 and later releases contain explicitly documented post-recovery changes. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
-## Install 0.4.0-beta4
+## Install 0.4.0
 
-Build the beta4 descriptor from source (or download it once published), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
+Download `unmotion-0.4.0.plg` from the [0.4.0 release](https://github.com/rtho782/unmotion/releases/tag/0.4.0), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
 
 ```bash
 plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The final command must print `0.4.0-beta4`. Using the stable descriptor filename `unmotion.plg` avoids duplicate Plugins-tab entries. Upgrades preserve persistent plugin settings.
+The final command must print `0.4.0`. Unraid's Plugins tab shows `0.4.0-stable`: the suffix makes its lexical version comparison recognise an upgrade from beta4. Using the stable descriptor filename `unmotion.plg` avoids duplicate Plugins-tab entries. Upgrades preserve persistent plugin settings.
 
 Install the same version on both peers. Pair hosts from **Settings → unMotion**, then test connectivity before attempting a migration.
 
 ### Plugins-tab updates
 
-Beta3 and later include a beta-channel update URL. Use **Plugins → Check for Updates**, then **Update** for unMotion. The feed is maintained on the dedicated `codex/plugin-beta` branch and contains only the published release descriptor; development commits do not trigger updates. This channel deliberately includes beta releases.
+Use **Plugins → Check for Updates**, then **Update** for unMotion. Stable releases use the dedicated `codex/plugin-stable` feed. The beta feed will offer the same 0.4.0 stable descriptor so existing beta users can graduate through the Plugins tab; once installed, their updates follow the stable feed. Neither feed follows unfinished source commits. Future beta testing requires an explicit beta installation.
 
 Existing beta2 descriptors do not contain an update URL, so they need a one-time manual beta3 installation (or an administrator adding the beta feed URL to their installed descriptor). Subsequent updates use the GUI. The update does not re-pair hosts or reset settings. See [docs/PLUGIN-UPDATES.md](docs/PLUGIN-UPDATES.md).
 

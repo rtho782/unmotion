@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 - 2026-09-12
+
+- Promote the tested beta4 migration, cloning, replication and coordinated manual-recovery feature set to stable, without protocol or VM/storage operation changes.
+- Add GPL-3.0-only licensing, Copyright (C) 2026 Richard Skinner, including the installed licence text.
+- Separate stable and beta update feeds. Use plugin metadata 0.4.0-stable and package token 0.4.0_stable so Unraid recognises an upgrade from beta4; the application and GitHub release remain 0.4.0.
+- Refresh Community Applications metadata and public documentation. Live migration, automatic/unreachable-source failover and failback transfer remain outside this release.
+
 ## 0.4.0-beta4 - 2026-09-12
 
 - Added an in-page Resolve migration action after manual destination startup. Revalidate both hosts, recorded VM/disk identities and ownership; finish the original retain-and-rename, unregister or validated-delete policy without retransferring data or overwriting repaired destination configuration.

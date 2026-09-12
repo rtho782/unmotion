@@ -3,11 +3,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.0-beta4}"
+EXPECTED_VERSION="${1:-0.4.0}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 echo 'Checking recovered artifact hashes...'
+bash "$ROOT/tests/release-version-regressions.sh"
 (cd "$REL" && sha256sum -c SHA256SUMS)
 
 echo 'Extracting the PLG payload...'

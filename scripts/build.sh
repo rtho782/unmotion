@@ -4,13 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")}"
 AUTHOR="Richard Skinner"
-PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-beta/unmotion.plg"
-SAFE_VERSION="${VERSION//-/_}"
-# Slackware/Unraid compares package versions bytewise enough that an uppercase
-# _RC1 sorts before the recovered lowercase _beta7 package token.  Keep the
-# display/plugin version unchanged, but normalize the package token so RC1 is
-# recognized as the upgrade it is.
-SAFE_VERSION="${SAFE_VERSION,,}"
+test "$VERSION" = "$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")"
+source "$ROOT/scripts/release-version.sh"
 PKG="unmotion-${SAFE_VERSION}-noarch-1.txz"
 PLG="unmotion-${VERSION}.plg"
 STAGE="$ROOT/work/package-root"
@@ -19,6 +14,7 @@ DIST="$ROOT/dist"
 rm -rf "$STAGE"
 mkdir -p "$STAGE" "$DIST"
 cp -a "$ROOT/src/rootfs/." "$STAGE/"
+cp "$ROOT/LICENSE" "$STAGE/usr/local/emhttp/plugins/unmotion/LICENSE"
 
 find "$STAGE" -type d -exec chmod 0755 {} +
 chmod 0755 "$STAGE/etc/rc.d/rc.unmotion" "$STAGE/install/doinst.sh" "$STAGE/usr/local/sbin/"*
@@ -40,7 +36,7 @@ cat <<EOF
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "$AUTHOR">
-<!ENTITY version "$VERSION">
+<!ENTITY version "$PLUGIN_VERSION">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
 <!ENTITY package "&plgdir;/packages/$PKG">
@@ -49,6 +45,8 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
+- Stable 0.4.0 release of the tested beta4 feature set; GPL-3.0-only.
+- Stable update channel; plugin version includes -stable for Unraid upgrade ordering.
 - Resolve manually recovered migrations and finish their original source policy safely.
 - Verify ISO contents before reuse and after transfer.
 - Map byte-identical firmware and variable templates to valid destination paths.

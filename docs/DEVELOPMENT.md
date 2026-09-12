@@ -15,7 +15,7 @@ The script verifies the recovered beta7 artifacts independently, checks current 
 ## Build
 
 ```bash
-./scripts/build.sh 0.4.0-beta2
+./scripts/build.sh 0.4.0
 ```
 
 The script stages `src/rootfs`, applies package permissions, creates a Slackware-style TXZ and embeds it into a PLG under `dist/`. For a new release, update the `VERSION` file and release notes first, then pass the matching version.
@@ -23,11 +23,11 @@ The script stages `src/rootfs`, applies package permissions, creates a Slackware
 ## Test deployment
 
 ```bash
-scp dist/unmotion-<version>.plg root@UNRAID-DEV01:/tmp/unmotion-<version>.plg
-ssh root@UNRAID-DEV01 'plugin install /tmp/unmotion-<version>.plg forced && cp /tmp/unmotion-<version>.plg /boot/config/plugins/unmotion.plg && rm -f /boot/config/plugins/unmotion-<version>.plg /var/log/plugins/unmotion-<version>.plg'
+scp dist/unmotion-<version>.plg root@UNRAID-DEV01:/tmp/unmotion.plg
+ssh root@UNRAID-DEV01 'plugin install /tmp/unmotion.plg'
 ```
 
-Repeat for `UNRAID-DEV02`, verify the installed version, restart the plugin and test discovery/pairing before migration tests. The package filename uses a lowercase normalized version token internally (for example, `_rc1`) so Unraid orders it after `_beta7`; the displayed plugin version retains its release spelling.
+Repeat for `UNRAID-DEV02`, verify the installed version and test discovery/pairing before migration tests. Stable releases use a `-stable` descriptor suffix and `_stable` package token for upgrade ordering; the application version is unchanged. See `docs/PLUGIN-UPDATES.md`. The builder also includes the root GPL-3.0-only LICENSE in the installed plugin.
 
 ## Release discipline
 
