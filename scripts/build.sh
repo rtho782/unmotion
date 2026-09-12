@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERSION="${1:-$(tr -d '\r\n' < "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/VERSION")}"
 AUTHOR="Richard Skinner"
+PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-beta/unmotion.plg"
 SAFE_VERSION="${VERSION//-/_}"
 # Slackware/Unraid compares package versions bytewise enough that an uppercase
 # _RC1 sorts before the recovered lowercase _beta7 package token.  Keep the
@@ -45,14 +46,15 @@ cat <<EOF
 <!ENTITY package "&plgdir;/packages/$PKG">
 <!ENTITY payload "/tmp/unmotion-&version;.txz.b64">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" launch="&launch;" min="7.0.0" icon="exchange">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Preserve protocol-5 pairing, migration, cloning and replication while negotiating protocol 6 only for recovery protocol 1.
-- Add two-phase recovery arming, native-autostart control and persistent lifecycle/start fencing.
-- Add coordinated manual activation from verified Guest-Agent-eligible points using separate, exact activation-owned ZFS clones.
-- Add authenticated graceful holdoffs, stopped activation removal, exact-checkpoint retry and cold-failback preflight.
-- Keep retained replicas read-only and inert; automatic failover, unreachable-source claims, witnesses and failback transfer remain disabled.
+- Support custom pool-resident UEFI NVRAM beside a disk in a verified VM-owned directory for cold migration and Warm Move.
+- Rewrite the variables-file path with the disk mapping and verify SHA-256 before destination definition.
+- Carry dedicated-dataset NVRAM in ZFS transfers; explicitly copy it after shutdown on the sparse file-copy path.
+- Reject ambiguous ownership, unsafe paths and existing non-bundled NVRAM destinations during preflight.
+- Require beta3 on the destination for custom paths; preserve protocol-5 transport and beta2 recovery behavior.
+- Enable Unraid Plugins-tab updates through the published beta release feed.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF

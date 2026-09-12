@@ -18,7 +18,7 @@ REPLICATION_WORKER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-worker"
 REPLICATION_SCHEDULER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-scheduler"
 
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL[[:space:]]*=[[:space:]]*5;' "$LIB"
-grep -q "const UNM_VERSION = '0.4.0-beta2';" "$LIB"
+grep -q "const UNM_VERSION = '0.4.0-beta3';" "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MIN[[:space:]]*=[[:space:]]*5;' "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MAX[[:space:]]*=[[:space:]]*6;' "$LIB"
 grep -Fq "'protocolMinVersion'=>UNM_PROTOCOL_MIN" "$LIB"
@@ -181,3 +181,5 @@ grep -Fq 'function unmRecoveryAssertLegacyVmAvailable' "$LIB"
 grep -Fq "['activation']['phase']='STARTING'" "$LIB"
 ! sed -n '/^function unmRecoveryStatus/,/^}/p' "$LIB" | grep -Fq 'unmRecoveryReconcileActivationState('
 echo 'Static migration and scheduled-replication regression markers are present.'
+grep -Fq 'PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-beta/unmotion.plg"' "$ROOT/scripts/build.sh"
+grep -Fq 'pluginURL="$PLUGIN_URL"' "$ROOT/scripts/build.sh"

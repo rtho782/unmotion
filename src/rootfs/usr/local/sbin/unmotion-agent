@@ -8,6 +8,15 @@ try {
         case 'capabilities':
             echo json_encode(unmCapabilities(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;
+        case 'migration-nvram-check':
+        case 'migration-nvram-verify':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            if($raw===false||strlen($raw)>16384)throw new InvalidArgumentException('Invalid NVRAM request.');
+            $plan=json_decode($raw,true,32,JSON_THROW_ON_ERROR);
+            if(!is_array($plan))throw new InvalidArgumentException('Invalid NVRAM plan.');
+            unmMigrationNvramDestination($plan,$cmd==='migration-nvram-verify');
+            echo json_encode(['success'=>true])."\n";
+            break;
         case 'health':
             echo json_encode(unmHealth(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;

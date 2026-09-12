@@ -83,3 +83,26 @@ Beta2 preserves legacy pairing, migration, cloning and scheduled replication pro
 - The final two-host audit found every scheduled replication policy `IDLE`, every incoming manifest `READY`, no ZFS receive token, no running VM, and exactly one lifecycle daemon and one scheduler per host. The recovery test pair remains intentionally fenced at destination authority after activation removal; beta2 never restores source authority implicitly.
 
 The beta2 boundary remains deliberate: automatic failover, an unreachable-source two-host claim, witness voting, alternate-checkpoint selection and failback transfer are not advertised or accepted. Cold failback is preflight-only.
+
+## 0.4.0-beta3 verification — 2026-09-12
+
+Author: Richard Skinner
+
+This is a focused custom-NVRAM migration regression, not a repeat of beta2's full destructive recovery campaign. The Linux development VM ran scripts/verify.sh with PHP, Bash and Node available: recovered hashes, PHP syntax and behavioral tests, shell syntax and behavioral tests, JavaScript parsing and static invariants all passed. New filesystem tests cover pool-path mapping, escaped XML, old-peer capability refusal, missing variables, ambiguous sibling mappings, disk collisions, symlinks/hardlinks, live/inactive VM ownership, unavailable inventory, destination collisions and SHA-256 mismatches.
+
+Live tests used only disposable UNRAID-DEV01 and UNRAID-DEV02 after restoring their trial licenses and starting their arrays. Outer storage reference snapshots were confirmed present before migration/overwrite tests. Fresh 512 MiB Alpine fixtures used names containing Squid Proxy, retained disconnected NICs and did not touch production guest data.
+
+- Nine migrations completed: custom-NVRAM cold ZFS and shared-file copies; standard libvirt NVRAM cold transfer; custom-NVRAM Warm Move with native ZFS and file-copy seeds; reverse native ZFS overwrite; standard-NVRAM migration to an actual beta2 destination; and repeat native/file cold transfers with the final ownership/XML guards installed.
+- Both custom paths verified the final NVRAM SHA-256 before destination definition. Dedicated datasets used the existing non-recursive ZFS transfer, and shared-file migration explicitly copied the variables file after disk transfer. XML paths changed between cache and zfspool. Destination UEFI boot into Alpine was inspected by a libvirt screenshot.
+- Warm Move seeded while running and completed after graceful source shutdown. A concurrent second cutover was rejected by the existing single-worker lock; resuming it after the first job completed succeeded.
+- Retained source definitions remained stopped with autostart disabled and a migrated-name suffix. Reverse ZFS overwrite used existing matching-UUID ownership authorization.
+- With DEV01 genuinely running beta2 and DEV02 beta3, custom-NVRAM preflight refused the missing beta3 capability. A standard-NVRAM VM migrated successfully from beta3 to beta2. DEV01 was then restored to beta3.
+- Running-source cold preflight rejection and the real Unraid invalid-CSRF rejection were checked. Existing resume-token, held-snapshot, pairing/discovery, ISO, UEFI/TPM and progress-stream safeguards passed the automated suite; power-loss and replica-activation tests were not repeated for this migration-only patch.
+- Successive same-version lab candidates were explicitly reinstalled at the package level and installed source markers checked, because forcing descriptor installation alone does not replace an equal-version Slackware package.
+
+Final release assets:
+
+- PLG SHA-256: ddf36bff7d3486b256ddf598372bab9c54c05680de4e4c31dde296f935078647
+- TXZ SHA-256: ea326490641de6eca469250377bb5ef13699f60eeb14e0984913cefd486c7f19
+
+The descriptor adds Unraid's pluginURL for the dedicated published-beta feed. Post-publication check/update results are recorded in the GitHub release notes. Production hosts are to remain on beta2 with only a backed-up descriptor metadata bootstrap, leaving the user to choose Update in the Plugins tab.

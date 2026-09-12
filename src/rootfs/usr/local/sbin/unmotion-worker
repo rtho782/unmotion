@@ -152,6 +152,7 @@ LIVE_XML="$JOBDIR/live.xml"
 DEST_XML="$JOBDIR/destination.xml"
 MAP_TSV="$JOBDIR/mapping.tsv"
 HOST_ARCHIVE="$JOBDIR/host-state.tar.gz"
+NVRAM_PLAN="$JOBDIR/nvram-plan.json"
 DISK_MANIFEST="$JOBDIR/disks.json"
 USB_MANIFEST="${USB_MANIFEST:-$JOBDIR/usb-manifest.json}"
 : > "$MAP_TSV"
@@ -314,8 +315,18 @@ done
 
 ISO_DESTS=();for src in "${ISOS[@]}";do case "$ISO_ACTION" in copy) [[ "$src" == /mnt/*&&-f "$src"&&! -L "$src" ]]||{ log "ISO missing: $src";exit 28;};[[ "$DEST_ISO_DIR" == /mnt/* ]]||{ log "ISO copy requested but the destination ISO directory is not configured.";exit 28;};dst="$DEST_ISO_DIR/$(basename "$src")";ISO_DESTS+=("$dst");printf 'iso\t%s\t%s\n' "$src" "$dst" >>"$MAP_TSV";;remove)ISO_DESTS+=("");printf 'iso-remove\t%s\t%s\n' "$src" "$src">>"$MAP_TSV";;retain)ISO_DESTS+=("$src");;*)log "Invalid ISO action: $ISO_ACTION";exit 29;;esac;done
 
+/usr/local/sbin/unmotion-migration-nvram "$SOURCE_XML" "$DISK_MANIFEST" "$MAP_TSV" "$REMOTE_CAPS" "$NVRAM_PLAN" 2>>"$LOG" || { log 'UEFI NVRAM validation failed; see the preceding diagnostic.'; exit 30; }
+NVRAM_KIND="$(json_get "$NVRAM_PLAN" kind)"
+NVRAM_PATH="$(json_get "$NVRAM_PLAN" source)"
+NVRAM_DEST="$(json_get "$NVRAM_PLAN" destination)"
+NVRAM_BUNDLED="$(json_get "$NVRAM_PLAN" bundled)"
+if [[ "$NVRAM_KIND" == custom ]]; then
+  remote "/usr/local/sbin/unmotion-agent migration-nvram-check $(sq "$(base64 -w0 "$NVRAM_PLAN")")" >>"$LOG" 2>&1 || { log 'Destination UEFI NVRAM validation failed.'; exit 30; }
+  log "UEFI NVRAM: $NVRAM_PATH -> $NVRAM_DEST (dataset-contained=$NVRAM_BUNDLED)"
+fi
 human_bytes(){ php -r '$n=(float)$argv[1];$u=["B","KiB","MiB","GiB","TiB"];for($i=0;$n>=1024&&$i<count($u)-1;$i++)$n/=1024;echo ($n>=10?sprintf("%.0f",$n):sprintf("%.1f",$n))." ".$u[$i];' "$1"; }
 REQ_ZVOL=0;REQ_IMAGE=0;REQ_ISO=0;REQ_STAGE=0
+if [[ "$NVRAM_KIND" == custom && "$NVRAM_BUNDLED" != 1 ]]; then REQ_IMAGE="$(json_get "$NVRAM_PLAN" bytes)"; fi
 for src in "${ZVOLS[@]}";do if [[ "$DEST_ZVOL_READY" == 1&&-n "$DEST_ZVOL_DATASET" ]];then b="$(zfs get -pH -o value referenced "$src")";((REQ_ZVOL+=b));else b="$(zfs get -pH -o value volsize "$src")";((REQ_IMAGE+=b));((REQ_STAGE+=b));fi;done
 for src in "${DATASET_SRCS[@]}";do b="$(zfs get -pH -o value referenced "$src")";((REQ_IMAGE+=b));done
 for src in "${RSYNC_FILE_DISKS[@]}";do b="$(stat -c %s -- "$src")";((REQ_IMAGE+=b));done
@@ -330,7 +341,7 @@ check_capacity(){
 if ((WARM_MODE==0&&REMOTE_EXISTING_VM==0&&${#OVERWRITE_PATHS[@]}==0));then check_capacity;fi
 
 /usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
-STATE_PATHS=();NVRAM_PATH="$(sed -nE 's|.*<nvram[^>]*>([^<]+)</nvram>.*|\1|p' "$SOURCE_XML"|head -n1)";if [[ -n "$NVRAM_PATH" ]];then [[ "$NVRAM_PATH" == /etc/libvirt/qemu/nvram/*||"$NVRAM_PATH" == /var/lib/libvirt/qemu/nvram/* ]]||exit 30;[[ -f "$NVRAM_PATH"&&! -L "$NVRAM_PATH" ]]||exit 30;STATE_PATHS+=("$NVRAM_PATH");fi
+STATE_PATHS=();if [[ "$NVRAM_KIND" == legacy ]];then STATE_PATHS+=("$NVRAM_PATH");fi
 HAS_TPM=0;if grep -qE '<tpm([[:space:]>])' "$SOURCE_XML";then HAS_TPM=1;TPM_DIR="";for base in /etc/libvirt/qemu/swtpm/tpm-states /var/lib/libvirt/swtpm /var/lib/libvirt/qemu/swtpm /etc/libvirt/swtpm;do [[ -d "$base/$UUID" ]]&&{ TPM_DIR="$base/$UUID";break;};[[ -d "$base" ]]&&TPM_DIR="$(find "$base" -type d -name "$UUID" -print -quit 2>/dev/null||true)";[[ -n "$TPM_DIR" ]]&&break;done;[[ -n "$TPM_DIR" ]]||{ log "TPM state not found";exit 30;};STATE_PATHS+=("$TPM_DIR");fi
 
 CURRENT_STATE="$(virsh domstate "$VM_REF"|tr -d '\r')";[[ "$CURRENT_STATE" == running||"$CURRENT_STATE" == idle||"$CURRENT_STATE" == paused ]]&&SOURCE_WAS_RUNNING=1
@@ -340,6 +351,8 @@ if [[ "$CURRENT_STATE" != 'shut off' ]];then state SHUTTING_DOWN 5 'Requesting g
 if ((WARM_MODE==0))&&((REMOTE_EXISTING_VM==1||${#OVERWRITE_PATHS[@]}>0));then state PREPARING_DESTINATION 10 'Removing authorised stale destination copy';OVERWRITE_TSV="$JOBDIR/overwrite.tsv";:>"$OVERWRITE_TSV";for i in "${!OVERWRITE_PATHS[@]}";do printf '%s\t%s\n' "${OVERWRITE_KINDS[$i]}" "${OVERWRITE_PATHS[$i]}" >>"$OVERWRITE_TSV";done;OVERWRITE_JSON="$JOBDIR/overwrite.json";php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);$items[]=["kind"=>$p[0],"path"=>$p[1]];}file_put_contents($argv[5],json_encode(["vmUuid"=>$argv[2],"vmName"=>$argv[3],"destinationHostId"=>$argv[4],"storage"=>$items],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$OVERWRITE_TSV" "$UUID" "$VM_NAME" "$PEER_HOST_ID" "$OVERWRITE_JSON";remote "/usr/local/sbin/unmotion-agent prepare-overwrite $(sq "$(base64 -w0 "$OVERWRITE_JSON")")" >>"$LOG" 2>&1;check_capacity;fi
 virsh dumpxml "$VM_REF" --inactive >"$SOURCE_XML";/usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
 
+# Recheck the final powered-off XML and hash immediately before disk snapshots.
+/usr/local/sbin/unmotion-migration-nvram "$SOURCE_XML" "$DISK_MANIFEST" "$MAP_TSV" "$REMOTE_CAPS" "$NVRAM_PLAN" 2>>"$LOG" || { log 'UEFI NVRAM changed or failed final validation.'; exit 30; }
 ZFS_SOURCES=("${ZVOLS[@]}" "${DATASET_SRCS[@]}")
 if ((${#ZFS_SOURCES[@]}>0));then
   state SNAPSHOTTING 12 'Creating atomic final ZFS snapshot'
@@ -459,6 +472,17 @@ state TRANSFER_VERIFIED 70 "Storage transfer completed and verified"
 
 cancel_requested && finish_cancel
 state HOST_STATE 72 "Transferring XML, UEFI and TPM state"
+if [[ "$NVRAM_KIND" == custom ]]; then
+  [[ "$(virsh domstate "$VM_REF" | tr -d '\r')" == 'shut off' ]] || { log 'Source started before NVRAM handoff; refusing destination definition.'; exit 30; }
+  nvram_sha="$(sha256sum -- "$NVRAM_PATH" | cut -d ' ' -f1)"
+  [[ "$nvram_sha" == "$(json_get "$NVRAM_PLAN" sha256)" ]] || { log 'UEFI NVRAM changed after the final snapshot; start a new migration.'; exit 30; }
+  if [[ "$NVRAM_BUNDLED" != 1 ]]; then
+    remote "/usr/local/sbin/unmotion-agent migration-nvram-check $(sq "$(base64 -w0 "$NVRAM_PLAN")")" >>"$LOG" 2>&1 || { log 'UEFI NVRAM destination conflict before transfer.'; exit 30; }
+    transfer_file "$NVRAM_PATH" "$NVRAM_DEST" 72 1 'UEFI NVRAM'
+  fi
+  remote "/usr/local/sbin/unmotion-agent migration-nvram-verify $(sq "$(base64 -w0 "$NVRAM_PLAN")")" >>"$LOG" 2>&1 || { log 'UEFI NVRAM checksum or destination ownership verification failed.'; exit 30; }
+  log 'UEFI NVRAM SHA-256 verified at the mapped destination.'
+fi
 rm -f "$HOST_ARCHIVE"
 if (( ${#STATE_PATHS[@]} > 0 )); then rel=(); for p in "${STATE_PATHS[@]}"; do rel+=("${p#/}"); done; tar --xattrs --acls --numeric-owner -C / -czf "$HOST_ARCHIVE" "${rel[@]}"; gzip -t "$HOST_ARCHIVE"; fi
 REMOTE_STAGE="/boot/config/plugins/unmotion/incoming/$JOB_ID"

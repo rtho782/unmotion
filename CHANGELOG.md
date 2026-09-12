@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-beta3 - 2026-09-12
+
+- Added cold migration and Warm Move cutover support for custom UEFI NVRAM files beside a disk in a VM-owned directory on a direct pool path.
+- Map the NVRAM path with its sibling disk, preserve the variables file during native ZFS transfer or copy it explicitly on the file-transfer path, and verify SHA-256 before destination definition.
+- Check missing/unsafe NVRAM paths during preflight, reject ambiguous or shared ownership and file collisions, and require the beta3 destination capability for custom paths. Protocol 5 is unchanged.
+- Cloning and scheduled replication/recovery keep their existing NVRAM restrictions; this patch changes migration only.
+- Added a stable beta-release update feed for Unraid's Plugins-tab check/update actions, keeping the installed descriptor named unmotion.plg.
+
 ## 0.4.0-beta2 - 2026-08-11
 
 - Added a separately negotiated protocol-6 recovery control plane while preserving protocol 5 for pairing, migration, cloning and scheduled replication.

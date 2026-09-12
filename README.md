@@ -1,10 +1,10 @@
 # unMotion
 
-unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. The current development branch targets `0.4.0-beta2`; the latest published prerelease is `0.4.0-beta1`, and the recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
+unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. This source targets `0.4.0-beta3`. The recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
 
 > **Beta software:** migrations change VM definitions and storage. Use disposable test hosts and verified backups. Do not treat a successful preflight as a substitute for a recovery plan.
 
-## What the beta1 transport supports
+## Supported transport and replication
 
 - Peer discovery and reciprocal pairing over SSH (protocol version 5).
 - Cold migration of powered-off VMs.
@@ -27,7 +27,7 @@ Replication deliberately excludes shared datasets, non-ZFS storage, encrypted da
 
 `0.4.0-beta1` does **not** activate a replica or implement automatic failover, quorum/witness checks, managed autostart, split-brain prevention, or failback. A recovery point without verified Guest Agent evidence is storage-only and will not be eligible for a future activation path.
 
-## Beta2 development
+## Manual recovery (introduced in beta2)
 
 Beta2 builds the guarded, manual-recovery layer. Legacy pairing, migration and replication commands continue to identify as protocol 5; beta2 peers additionally advertise a compatible range of 5-6 and negotiate protocol 6 only for the separately capability-gated recovery control plane. Arming requires the source VM to be shut off, disables native Unraid autostart, and hands managed starts to a persistent lifecycle/fencing daemon. A coordinated recovery requires the source to remain reachable and fenced, creates separate activation-owned ZFS clones, and verifies Guest Agent health before recording the recovered VM as running.
 
@@ -37,10 +37,16 @@ While recovery is armed, retention may temporarily keep one additional destinati
 
 Beta2 does not claim recovery from an unreachable source. Automatic failover, network-silence two-host claims, witness voting, alternate TPM/NVRAM checkpoint selection and failback transfer remain disabled; cold failback is preflight-only. See [docs/RECOVERY.md](docs/RECOVERY.md).
 
+## Custom UEFI variables files (beta3)
+
+Cold migration and Warm Move now support a custom `.fd` variables file beside a writable disk in a VM-owned directory on a direct pool path. For example, `/mnt/cache/domains/My VM/OVMF_VARS.fd` is mapped alongside its disk to the destination pool. Dedicated datasets carry the file in the final ZFS snapshot; file-copy migrations explicitly copy it after shutdown. Both paths verify SHA-256 before defining the destination VM.
+
+Both peers must run beta3 for custom NVRAM paths. Standard libvirt NVRAM paths remain compatible with older peers. Ambiguous ownership, symlinks/hardlinks, user-share paths, nested NVRAM storage XML and existing non-bundled destination variables files are blocked. No arbitrary file relocation or broader deletion is introduced. Custom NVRAM support does not extend to Clone or scheduled replication/recovery. See [docs/NVRAM-MIGRATION.md](docs/NVRAM-MIGRATION.md).
+
 ## Repository layout
 
 ```text
-src/rootfs/                 Current 0.4.0-beta2 development package source, derived from beta7
+src/rootfs/                 Current 0.4.0-beta3 package source, derived from beta7
 release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
@@ -50,21 +56,24 @@ AGENTS.md                   Durable rules for Codex and contributors
 
 The beta7 baseline was recovered, not recreated, and was cross-checked against the separately published source tarball. RC1 and later releases contain explicitly documented post-recovery changes. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
-## Install 0.4.0-beta1
+## Install 0.4.0-beta3
 
-Build beta1, copy `dist/unmotion-0.4.0-beta1.plg` to a temporary path on the Unraid host, then run as `root`:
+Download the beta3 release descriptor (or build it from source), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
 
 ```bash
-plugin install /tmp/unmotion-0.4.0-beta1.plg forced
-cp /tmp/unmotion-0.4.0-beta1.plg /boot/config/plugins/unmotion.plg
-rm -f /boot/config/plugins/unmotion-0.4.0-beta1.plg \
-      /var/log/plugins/unmotion-0.4.0-beta1.plg
+plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The final command must print `0.4.0-beta1`. The exact versioned descriptor cleanup keeps the required stable `unmotion.plg` identity and prevents a duplicate Plugins-tab entry; it does not remove plugin state.
+The final command must print `0.4.0-beta3`. Using the stable descriptor filename `unmotion.plg` avoids duplicate Plugins-tab entries. Upgrades preserve persistent plugin settings.
 
 Install the same version on both peers. Pair hosts from **Settings → unMotion**, then test connectivity before attempting a migration.
+
+### Plugins-tab updates
+
+Beta3 and later include a beta-channel update URL. Use **Plugins → Check for Updates**, then **Update** for unMotion. The feed is maintained on the dedicated `codex/plugin-beta` branch and contains only the published release descriptor; development commits do not trigger updates. This channel deliberately includes beta releases.
+
+Existing beta2 descriptors do not contain an update URL, so they need a one-time manual beta3 installation (or an administrator adding the beta feed URL to their installed descriptor). Subsequent updates use the GUI. The update does not re-pair hosts or reset settings. See [docs/PLUGIN-UPDATES.md](docs/PLUGIN-UPDATES.md).
 
 ## Uninstall
 

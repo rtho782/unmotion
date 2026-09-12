@@ -1,7 +1,8 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.0-beta2';
+const UNM_VERSION = '0.4.0-beta3';
+require_once __DIR__.'/migration-nvram.php';
 const UNM_PROTOCOL = 5;
 // Legacy migration, cloning, pairing, and scheduled replication continue to
 // use protocol 5.  Protocol 6 is negotiated only for the recovery control
@@ -815,7 +816,7 @@ function unmCapabilities(): array {
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
+        'features'=>['customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -4217,6 +4218,22 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
         $plan[]=['kind'=>'iso','source'=>$iso,'destination'=>$dst,'action'=>$isoAction,'bytes'=>$bytes];
         if($isoAction==='copy'&&(!str_starts_with($iso,'/mnt/')||!is_file($iso)||is_link($iso))) $errors[]='Attached ISO is missing or unsafe: '.$iso;
     }
+
+    try {
+        $nvramMaps=[];
+        $local['nvram']=unmMigrationNvramXml(unmDomainXml((string)$local['uuid'],true));
+        foreach($plan as $item){
+            if(($item['kind']??'')==='zfs-filesystem')foreach($item['files']??[] as $file)$nvramMaps[]=array_merge($file,['bundled'=>true]);
+            elseif(($item['kind']??'')==='image')$nvramMaps[]=$item+['bundled'=>false];
+        }
+        $nvramPlan=unmMigrationNvramPlan($local,$nvramMaps,$caps);
+        if($nvramPlan['kind']==='custom'){
+            $result=unmRemote($peer,'/usr/local/sbin/unmotion-agent migration-nvram-check '.escapeshellarg(base64_encode(json_encode($nvramPlan,JSON_THROW_ON_ERROR))),30);
+            if($result['code']!==0)throw new RuntimeException('Destination UEFI NVRAM check failed: '.trim($result['stderr'].' '.$result['stdout']));
+            if(!$nvramPlan['bundled'])$required['image']+=$nvramPlan['bytes'];
+            $plan[]=$nvramPlan+['transferClass'=>$nvramPlan['bundled']?'dataset-contained-nvram':'file-nvram'];
+        }
+    }catch(Throwable $e){$errors[]=$e->getMessage();}
 
     $storageConflicts=array_values(array_filter($conflicts,static fn(array $c):bool=>in_array($c['kind']??'', ['zvol','dataset','image'], true)));
     if($conflicts) {

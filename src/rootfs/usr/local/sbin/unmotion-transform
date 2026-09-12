@@ -12,7 +12,15 @@ if(!in_array($usbAction,['retain','remove'],true)){fwrite(STDERR,"Invalid USB ac
 $xml=@file_get_contents($src);if($xml===false){fwrite(STDERR,"Unable to read XML\n");exit(3);}
 $maps=[];foreach(file($mapFile,FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,3);if(count($p)===3)$maps[]=$p;}
 foreach($maps as [$type,$old,$new]){
-    if($type==='iso-remove'){
+    if($type==='nvram'){
+        $doc=new DOMDocument();$doc->preserveWhiteSpace=true;
+        if(!@$doc->loadXML($xml,LIBXML_NONET)||$doc->doctype){fwrite(STDERR,"Invalid NVRAM XML\n");exit(5);}
+        $nodes=(new DOMXPath($doc))->query('/domain/os/nvram');
+        if($nodes->length!==1||trim($nodes->item(0)->textContent)!==$old){fwrite(STDERR,"NVRAM mapping does not match source XML\n");exit(5);}
+        $node=$nodes->item(0);while($node->firstChild)$node->removeChild($node->firstChild);
+        $node->appendChild($doc->createTextNode($new));
+        $xml=$doc->saveXML($doc->documentElement)."\n";
+    }elseif($type==='iso-remove'){
         $q=preg_quote($old,'~');$xml=preg_replace('~\s*<source\b(?=[^>]*\bfile=(["\'])'.$q.'\1)[^>]*/>\s*~s',"\n",$xml)??$xml;
     }elseif($type==='zvol-file'){
         $oldQuoted=preg_quote($old,'~');
