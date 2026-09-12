@@ -2,7 +2,7 @@
 
 Author: Richard Skinner
 
-This is a post-recovery addition in 0.4.0-beta3, not recovered beta7 behavior.
+This document describes custom UEFI variables-file handling in unMotion 0.4.0.
 
 ## Supported layout
 

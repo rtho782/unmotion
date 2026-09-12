@@ -10,7 +10,7 @@ Use a Linux/Unraid development environment with Bash, PHP CLI, Node.js (for Java
 ./scripts/verify.sh
 ```
 
-The script verifies the recovered beta7 artifacts independently, checks current version/protocol invariants, runs behavioral regressions and executes all available syntax checks.
+The script verifies regression fixtures, checks current version/protocol invariants, runs behavioral regressions and executes all available syntax checks.
 
 ## Build
 

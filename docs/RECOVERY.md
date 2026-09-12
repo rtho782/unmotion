@@ -2,7 +2,7 @@
 
 ## Scope and release boundary
 
-This document specifies the recovery control plane that sits above the inert scheduled-replication inventory described in [REPLICATION.md](REPLICATION.md). It is a post-recovery design, not recovered beta7 behavior.
+This document specifies the recovery control plane that sits above the inert scheduled-replication inventory described in [REPLICATION.md](REPLICATION.md). Implemented capabilities and deferred designs are distinguished below.
 
 Beta2 ships a coordinated, manual-recovery path:
 

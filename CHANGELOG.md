@@ -1,105 +1,30 @@
 # Changelog
 
-## 0.4.0 - 2026-09-12
+## 0.4.0 — 2026-09-12
 
-- Promote the tested beta4 migration, cloning, replication and coordinated manual-recovery feature set to stable, without protocol or VM/storage operation changes.
-- Add GPL-3.0-only licensing, Copyright (C) 2026 Richard Skinner, including the installed licence text.
-- Separate stable and beta update feeds. Use plugin metadata 0.4.0-stable and package token 0.4.0_stable so Unraid recognises an upgrade from beta4; the application and GitHub release remain 0.4.0.
-- Refresh Community Applications metadata and public documentation. Live migration, automatic/unreachable-source failover and failback transfer remain outside this release.
+Author: Richard Skinner
 
-## 0.4.0-beta4 - 2026-09-12
+### VM cloning and migration
 
-- Added an in-page Resolve migration action after manual destination startup. Revalidate both hosts, recorded VM/disk identities and ownership; finish the original retain-and-rename, unregister or validated-delete policy without retransferring data or overwriting repaired destination configuration.
-- Journal resolution for retries after partial renames, unregistration and lost acknowledgements. Preserve exact cleanup scope before destination startup; legacy jobs without sufficient deletion evidence remain blocked.
-- Map firmware loaders and variables templates by exact size/SHA-256, not identical installation paths. Require the beta4 firmware capability before transfer; no firmware upgrades or protocol changes.
-- Verify ISO contents before same-name reuse and after copying; reject collisions.
-- Use shared, ambiguity-rejecting TPM discovery and exact host-state cleanup evidence, including link and mount-boundary guards.
-- Extend owned custom NVRAM to cloning and replication/recovery, with canonical UUID-scoped checkpoint paths and dedicated-dataset isolation retained.
-- Add a brief description to the Plugins page. Keep source-deletion validation at five minutes.
+- Same-host full-copy cloning with independent storage, new virtual hardware identities and optional Ubuntu Guest Agent customization.
+- Cold migration and prepared Warm Move between paired Unraid hosts, with a powered-off final cutover.
+- Native ZFS transfers for zvols and isolated VM datasets, sparse-file fallback for shared storage, resumable receives and guarded source cleanup.
+- UEFI NVRAM and software TPM state handling, verified firmware-path mapping and ISO content checks.
+- Resolve migration after manual destination repair/start, completing the selected retain-and-rename, unregister or validated-delete source policy.
 
-## 0.4.0-beta3 - 2026-09-12
+### Replication and coordinated manual recovery
 
-- Added cold migration and Warm Move cutover support for custom UEFI NVRAM files beside a disk in a VM-owned directory on a direct pool path.
-- Map the NVRAM path with its sibling disk, preserve the variables file during native ZFS transfer or copy it explicitly on the file-transfer path, and verify SHA-256 before destination definition.
-- Check missing/unsafe NVRAM paths during preflight, reject ambiguous or shared ownership and file collisions, and require the beta3 destination capability for custom paths. Protocol 5 is unchanged.
-- Cloning and scheduled replication/recovery keep their existing NVRAM restrictions; this patch changes migration only.
-- Added a stable beta-release update feed for Unraid's Plugins-tab check/update actions, keeping the installed descriptor named unmotion.plg.
+- Scheduled replication of dedicated ZFS storage, configurable recovery-point objectives and retention.
+- Guest Agent consistency evidence, content-addressed host-state checkpoints and opportunistic powered-off TPM capture.
+- Authenticated recovery coordination, managed-autostart fencing and manual activation using separate recovery-owned storage.
+- Replica removal and cold-failback preflight without implicitly restoring source authority.
 
-## 0.4.0-beta2 - 2026-08-11
+### Distribution
 
-- Added a separately negotiated protocol-6 recovery control plane while preserving protocol 5 for pairing, migration, cloning and scheduled replication.
-- Added authenticated, replay-safe recovery RPCs using per-pair HMAC keys bootstrapped by the existing reciprocal Ed25519 pairing identities.
-- Added two-phase recovery arming/disarming, verified native-autostart control, a persistent lifecycle/fencing daemon and fail-closed source-start authorization.
-- Added coordinated manual recovery of Guest-Agent-eligible points. Activation creates exact, activation-owned ZFS clones, defines the VM stopped, revalidates source fencing, and requires Guest Agent boot health before recording it running.
-- Added durable graceful holdoffs, including bounded host-shutdown/reboot preparation, reply-loss reconciliation and startup fencing until the destination agrees.
-- Added stopped activation removal, exact authorized TPM/NVRAM checkpoint reinstall with crash-safe rollback, and read-only cold-failback preflight.
-- Added exact-claim renewal, crash-journalled activation phases and destination lifecycle reconciliation for interrupted define/start operations and reboots.
-- Enforced one armed recovery destination per VM and blocked legacy Move, Warm Move, Clone and replication-policy mutations while recovery authority or an activation-owned domain exists.
-- Kept retained replica datasets read-only and inert. Replication publication, base advancement and pruning are blocked whenever recovery authority is uncertain or belongs to the destination.
-- Preserved one extra eligible or repairable recovery point while recovery is armed if normal retention would otherwise leave only replication-only points.
-- Replaced native browser confirmation boxes with accessible in-page confirmation dialogs and locked recovery mutation controls while a durable operation is queued or running.
-- Restarted the exact lifecycle daemon and scheduler during in-place plugin upgrades so an older running process cannot outlive newly installed fencing code.
-- Deliberately kept automatic failover, unreachable-source two-host claims, witness voting, alternate-checkpoint selection and failback transfer disabled in beta2.
+- GPL-3.0-only licensing, Copyright (C) 2026 Richard Skinner.
+- Stable and beta update channels with a stable installed descriptor named unmotion.plg.
+- Community Applications listing metadata and an in-page plugin description.
 
-## 0.4.0-beta1 - 2026-08-10
+### Boundaries
 
-- Added scheduled, resumable replication of VM zvols and raw/qcow2 images held in strictly dedicated ZFS datasets.
-- Added RPO notches from 5 minutes through 24 hours and destination-side UTC-bucket retention of up to 24 recovery points from the latest 24 hours.
-- Kept protocol-5 pairing and migration compatibility while adding an explicit scheduled-replication capability for beta1 peers.
-- Kept replica datasets read-only, unmounted or hidden, and deliberately absent from libvirt; beta1 does not activate replicas or perform automatic failover.
-- Added crash-safe pending/base generations, retained ZFS receive tokens, exact GUID verification, source holds and destination-publication-before-source-pruning ordering.
-- Added QEMU Guest Agent command/network evidence and consistency classification. Replication may proceed without the agent, but those points are explicitly ineligible for later recovery.
-- Added content-addressed TPM and UEFI NVRAM checkpoint evidence, preserving the latest verified safe checkpoint while distinguishing powered-off safe copies from running best-effort copies.
-- Rejected shared datasets, non-ZFS storage, encrypted datasets and qcow2 backing chains for replication, with guidance to use ZFS Master for storage conversion.
-- Added scheduled-policy and incoming-replica UI inventory. Recovery activation, split-brain arbitration, witness protocol, managed autostart and failback remain deferred.
-- Hardened spaced-dataset hold parsing, multi-disk SSH control calls, source base commit/cleanup ordering, launch-state reconciliation and explicit incremental-base diagnostics during destructive lab regression testing.
-- Canonicalized aliased Unraid swtpm paths while rejecting genuinely distinct TPM stores, and required safe fallback archives to cover the same TPM/NVRAM devices without nested stale fallbacks.
-- Blocked replication reservation and recovery-point publication whenever the destination already defines any VM, running or stopped, with the replica UUID.
-- Required every checkpoint labelled safe to have an exact verified archive covering each declared TPM/NVRAM device, rechecked destination UUID isolation immediately before inventory commit, and garbage-collected only hash-owned checkpoint archives no longer referenced by retained points or safe fallbacks.
-
-## 0.3.1-RC2 — 2026-08-09
-
-- Added cold same-host VM cloning as a post-recovery feature without changing peer protocol version 5.
-- Made full independent copies of zvols and dedicated ZFS datasets with non-recursive send/receive, and sparse copies of shared raw/qcow2 images.
-- Assigned each clone a new domain UUID, genid and NIC MAC addresses; removed fixed graphics ports and disabled autostart.
-- Copied UEFI NVRAM to a new UUID-scoped libvirt path while blocking virtual TPM and PCIe passthrough clones in RC2.
-- Removed USB passthrough definitions from clones and retained attached ISO paths as read-only media.
-- Added an Ubuntu Guest Agent path that boots the clone with NIC links down, resets machine ID, hostname and SSH host keys, replaces Netplan with DHCP, then leaves the clone stopped.
-- Kept NIC links down with a visible warning whenever guest customization is skipped or cannot be completed.
-- Added clone preflight, job reporting, cancellation cleanup, UI controls and regression coverage.
-- Accepted internal spaces in exact, ownership-authorized ZFS overwrite targets while retaining control-character, snapshot, traversal, root-dataset and prefix guards.
-- Normalized every packaged directory to mode `0755` so installation cannot make Unraid's `/` group-writable and invalidate root SSH key authentication.
-- Made clone cancellation wait for the exact domain to stop, retry exact ZFS cleanup, verify destinations are absent, and report cleanup failures instead of falsely claiming success during a QEMU start race.
-- Removed successfully-destroyed source snapshots from the clone cleanup ledger without leaving empty sentinel entries that could falsely report incomplete cleanup.
-
-## 0.3.0-RC1 — 2026-08-09
-
-- Standardized the plugin and Community Applications author metadata as `Richard Skinner`.
-- Preserved recoverable ZFS seed and migration state when SSH returns before the destination Unraid array and ZFS datasets are available.
-- Distinguished a normally absent destination child dataset from an unavailable destination parent when probing for ZFS receive-resume state.
-- Fixed prepared-copy removal records with empty TSV fields so source holds and exact destination objects are cleaned correctly.
-- Rejected duplicate or active prepared-copy removal requests.
-- Fixed Warm Move rsync cutover by using `--partial-dir` only for non-`--inplace` transfers.
-- Restored read-only protection on prepared image files when Warm Move cutover fails or is cancelled before any destination start attempt, allowing safe retry.
-- Fixed quoted multi-record Avahi TXT parsing while retaining `\\032` display-name decoding and protocol 5.
-- Reset the settings Apply button after successful loading and saving.
-- Added RC1 shell/PHP regressions while retaining independent verification of the recovered beta7 artifacts.
-- Normalized the internal package version token to lowercase so Unraid correctly orders RC1 after the recovered beta7 package.
-- Advanced the RC1 lab package build as live recovery fixes landed so already staged test installs upgrade cleanly; the current candidate is `noarch-3`.
-
-## 0.3.0-beta7 — 2026-08-07
-
-- Fixed a Warm Move cutover failure in the transfer-progress allocator under Bash nounset mode.
-- Split local-variable declaration from arithmetic evaluation so `bytes` is initialized before use.
-- Added a debug transfer-plan summary before storage transfer begins.
-- Retained beta6 ISO handling, beta4 diagnostics and beta3 compressed/resumable ZFS replication.
-
-This entry is recovered verbatim in substance from the beta7 PLG metadata. The detailed beta6 release artifact was not present locally, so beta6-specific changes beyond “ISO handling” are not reconstructed here.
-
-## Earlier recovered lineage
-
-- `0.3.0-beta5` and `0.3.0-beta4` PLGs were present on the workstation but are not treated as the repository baseline.
-- `0.3.0-beta3` introduced stdout-silent ZFS progress parsing, compressed/resumable ZFS replication, retained interrupted receives, token-based resume and stronger failed-seed cleanup.
-- Earlier `0.3.0-beta1.x`, `0.3.0-beta2.x`, `0.2.x` and `0.1.x` artifacts also existed locally.
-
-The exact intermediate beta4–beta6 history is incomplete. Do not infer missing release notes from version numbers alone.
+Live migration, automatic failover, recovery from an unreachable source, witness voting, alternate TPM checkpoint selection and failback transfer are not supported. Replication requires dedicated ZFS storage. Keep verified backups.

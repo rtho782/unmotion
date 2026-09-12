@@ -2,10 +2,10 @@
 
 ## Scope and baseline
 
-- This is an Unraid Community Applications-style plugin. The recovered behavioral baseline is `0.3.0-beta7`; preserve it unless a task explicitly changes it.
+- This is an Unraid Community Applications-style plugin. Preserve released behavior unless a task explicitly changes it.
 - `src/rootfs/` is the package root. Paths below it map directly to `/` on Unraid.
 - Protocol version is `5`. Do not change it casually. A protocol change requires compatibility analysis, mixed-version tests and release notes.
-- Never describe guessed behavior as recovered beta7 behavior. Mark new scaffolding, tests and documentation as post-recovery additions.
+- Never describe guessed or planned behavior as implemented behavior. Distinguish current functionality, new changes and proposed designs.
 
 ## Non-negotiable behavior
 
@@ -28,10 +28,10 @@
 - Interrupted resumable ZFS receives must be retained unless the user explicitly chooses removal. Resume with the destination token; do not silently discard partial state.
 - ZFS progress parsers must never write human-readable progress to the binary stream.
 - Keep ZFS sends non-recursive for an individual VM dataset. Do not introduce `zfs snapshot -r`, `zfs send -R` or broad `zfs destroy -r` without an explicit, reviewed design.
-- Preserve beta7's destination dedup setting (`off` by default, with explicit `on`/`verify` choices) and its receive-time property handling. Do not silently alter source dedup settings or force a different destination policy without an explicit product decision and tests.
+- Preserve the destination dedup setting (`off` by default, with explicit `on`/`verify` choices) and its receive-time property handling. Do not silently alter source dedup settings or force a different destination policy without an explicit product decision and tests.
 - Treat datasets with unrelated contents or child datasets as shared storage; use the file-copy path unless isolation is proven.
 - Preserve sparse-file behavior in `rsync`/image transfers.
-- ISO handling is separate from writable VM disk handling. Preserve beta7's copy/map/omit choices and do not accidentally treat an ISO as a mutable disk.
+- ISO handling is separate from writable VM disk handling. Preserve copy/map/omit choices and do not accidentally treat an ISO as a mutable disk.
 
 ## Compatibility and tests
 
