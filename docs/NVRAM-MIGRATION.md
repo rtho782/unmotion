@@ -22,12 +22,12 @@ For example, a VM's vdisk1.qcow2 and OVMF_VARS.fd under /mnt/cache/domains/HomeA
 
 User-share aliases (/mnt/user and /mnt/user0), symlink parents, nested NVRAM storage XML, absent variables files, ambiguous mappings and shared ownership fail preflight. Separate arbitrary firmware directories and zvol-only VMs with nonstandard NVRAM have no sibling image mapping and are not supported by this patch.
 
-An existing non-bundled destination NVRAM file is never silently overwritten, even if disk overwrite was selected. Resolve the stale firmware copy explicitly before retrying. Dataset-contained variables files use the existing dataset ownership/conflict authorization. Source deletion is not broadened: a standalone custom variables file may remain after image cleanup, while a variables file inside an already-authorized dedicated dataset follows that dataset's existing cleanup.
+An existing non-bundled destination NVRAM file is never silently overwritten, even if disk overwrite was selected. Resolve the stale firmware copy explicitly before retrying. Dataset-contained variables files use the existing dataset ownership/conflict authorization. Beta4 records exact path, inode, device and content evidence before cutover, then revalidates it before removing standalone source state. Unexpected files, links, mounts or changes block cleanup. Variables inside an already-authorized dedicated dataset follow its existing cleanup.
 
-Clone and scheduled replication/recovery retain their previous NVRAM restrictions. This is not a custom TPM relocation feature.
+Beta4 extends owned custom NVRAM to Clone and replication/recovery. Clones receive independent UUID-scoped variables files with verified contents. Replication archives custom variables under a canonical UUID-scoped libvirt path; recovery transforms XML to that path. Exact owned variables files are allowed in dedicated datasets; unrelated files and child datasets remain blocked. This is not custom TPM relocation.
 
 ## Peer compatibility
 
 Migration remains protocol 5. A new customNvramMigration capability gates the new destination validation commands. A beta3 source refuses a custom path when the destination lacks that capability; standard libvirt paths do not require it. Beta2 recovery negotiation remains unchanged.
 
-Upgrade both peers before using custom NVRAM migration. Older sources still have their old path restriction, even when paired with beta3.
+Upgrade both peers before using custom NVRAM migration. Older sources still have their old path restriction, even when paired with beta3. Beta4 separately requires firmwareMapping for verified loader/template mapping and customNvramReplication for custom-state replication. Firmware mappings preserve XML format/security attributes and require byte-identical destination code/templates.

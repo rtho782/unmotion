@@ -49,12 +49,12 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Support custom pool-resident UEFI NVRAM beside a disk in a verified VM-owned directory for cold migration and Warm Move.
-- Rewrite the variables-file path with the disk mapping and verify SHA-256 before destination definition.
-- Carry dedicated-dataset NVRAM in ZFS transfers; explicitly copy it after shutdown on the sparse file-copy path.
-- Reject ambiguous ownership, unsafe paths and existing non-bundled NVRAM destinations during preflight.
-- Require beta3 on the destination for custom paths; preserve protocol-5 transport and beta2 recovery behavior.
-- Enable Unraid Plugins-tab updates through the published beta release feed.
+- Resolve manually recovered migrations and finish their original source policy safely.
+- Verify ISO contents before reuse and after transfer.
+- Map byte-identical firmware and variable templates to valid destination paths.
+- Share software TPM discovery and validate exact host-state evidence before cleanup.
+- Support owned custom NVRAM for cloning and capability-gated replication/recovery.
+- Add a concise description to the Unraid Plugins page; preserve the five-minute source-deletion delay.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF

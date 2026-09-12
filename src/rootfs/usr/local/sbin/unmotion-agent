@@ -5,6 +5,19 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 $cmd=$argv[1]??'capabilities';
 try {
     switch($cmd){
+        case 'migration-resolve':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            $request=$raw!==false&&strlen($raw)<=16384?json_decode($raw,true):null;
+            if(!is_array($request))throw new InvalidArgumentException('Invalid migration resolution request.');
+            echo json_encode(unmResolutionDestination($request),JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'firmware-plan':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            if($raw===false||strlen($raw)>16384)throw new InvalidArgumentException('Invalid firmware request.');
+            $request=json_decode($raw,true,32,JSON_THROW_ON_ERROR);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid firmware request.');
+            echo json_encode(['success'=>true,'plan'=>unmFirmwareResolve($request)],JSON_UNESCAPED_SLASHES)."\n";
+            break;
         case 'capabilities':
             echo json_encode(unmCapabilities(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;

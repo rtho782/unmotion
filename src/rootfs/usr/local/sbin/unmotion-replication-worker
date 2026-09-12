@@ -290,11 +290,13 @@ php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get
 
 SOURCE_XML="$RUN_DIR/source.xml"
 virsh dumpxml "$VM_UUID" --inactive > "$SOURCE_XML" || fail 'Source VM is no longer defined' 13
+declared_nvram="$(php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";echo unmMigrationNvramXml(file_get_contents($argv[1]));' "$SOURCE_XML")" || fail 'Unsupported source NVRAM XML' 13
+if [[ "$declared_nvram" == /mnt/* && "$(json_get "$REMOTE_CAPS" features.customNvramReplication)" != 1 ]]; then fail 'Custom NVRAM replication requires a beta4 destination' 13; fi
 (( $(stat -c %s "$SOURCE_XML") <= 524288 )) || fail 'Source VM XML is too large for inert recovery metadata' 13
 php -r '
 require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
 $plan=json_decode(file_get_contents($argv[1]),true);if(!is_array($plan))exit(2);
-$expected=[];foreach($plan as $item){$source=(string)($item["source"]??"");if($source!=="")$expected[$source]=true;if(($item["kind"]??"")==="dataset"){$mount=(string)($item["sourceMountpoint"]??"");$paths=[];foreach(($item["files"]??[]) as $file){$path=(string)($file["source"]??"");if($path!=="")$paths[]=$path;}if(!$paths||!unmCloneDatasetIsolated($source,$mount,$paths)){fwrite(STDERR,"Dataset is no longer dedicated to this VM: ".$source."\n");exit(4);}}elseif(($item["kind"]??"")==="zvol"&&unmReplicationZvolUsedByOtherVm($source,$argv[2])){fwrite(STDERR,"Zvol is referenced by another VM or ownership could not be proven: ".$source."\n");exit(5);}}
+$sourceVm=unmParseVm($argv[2]);$expected=[];foreach($plan as $item){$source=(string)($item["source"]??"");if($source!=="")$expected[$source]=true;if(($item["kind"]??"")==="dataset"){$mount=(string)($item["sourceMountpoint"]??"");$paths=[];foreach(($item["files"]??[]) as $file){$path=(string)($file["source"]??"");if($path!=="")$paths[]=$path;}if(!$paths||unmReplicationDatasetIsolationErrors($source,$mount,$paths,$sourceVm)){fwrite(STDERR,"Dataset is no longer dedicated to this VM: ".$source."\n");exit(4);}}elseif(($item["kind"]??"")==="zvol"&&unmReplicationZvolUsedByOtherVm($source,$argv[2])){fwrite(STDERR,"Zvol is referenced by another VM or ownership could not be proven: ".$source."\n");exit(5);}}
 $expected=array_keys($expected);sort($expected,SORT_STRING);$actual=unmVmReplicationSources(unmParseVm($argv[2]));
 if($expected!==$actual){fwrite(STDERR,"VM disk layout changed after replication was configured.\n");exit(3);}' "$PLAN_JSON" "$VM_UUID" || fail 'Source storage no longer matches its validated dedicated replication plan' 13
 SOURCE_XML_SHA256="$(sha256sum "$SOURCE_XML" | awk '{print $1}')"
@@ -451,21 +453,12 @@ if [[ "$(json_get "$PENDING_JSON" hostState.capturedAt 2>/dev/null || true)" != 
     fi
   fi
 else
-NVRAM_PATH="$(php -r '$x=file_get_contents($argv[1]);if(preg_match("~<nvram\\b[^>]*>(.*?)</nvram>~s",$x,$m))echo trim(html_entity_decode(strip_tags($m[1]),ENT_QUOTES|ENT_XML1));' "$SOURCE_XML")"
+NVRAM_PATH="$(/usr/local/sbin/unmotion-host-state nvram "$VM_UUID")" || fail 'NVRAM ownership validation failed' 17
 NVRAM_PRESENT=0; [[ -n "$NVRAM_PATH" ]] && NVRAM_PRESENT=1
-if [[ -n "$NVRAM_PATH" ]]; then
-  [[ "$NVRAM_PATH" == /etc/libvirt/qemu/nvram/* || "$NVRAM_PATH" == /var/lib/libvirt/qemu/nvram/* ]] && [[ -f "$NVRAM_PATH" && ! -L "$NVRAM_PATH" ]] || NVRAM_PATH=''
-fi
+if [[ "$NVRAM_PATH" == /mnt/* && "$(json_get "$REMOTE_CAPS" features.customNvramReplication)" != 1 ]]; then fail 'Custom NVRAM replication requires a beta4 destination' 17; fi
 TPM_DIR=''
 if ((TPM_PRESENT)) && [[ "$TPM_INITIAL_MODE" != none ]]; then
-  for candidate in "/etc/libvirt/qemu/swtpm/tpm-states/$VM_UUID" "/var/lib/libvirt/swtpm/$VM_UUID" "/var/lib/libvirt/qemu/swtpm/$VM_UUID" "/etc/libvirt/swtpm/$VM_UUID"; do
-    if [[ -d "$candidate" && ! -L "$candidate" ]]; then
-      candidate="$(readlink -f -- "$candidate")"
-      [[ -n "$candidate" && -d "$candidate" && ! -L "$candidate" ]] || fail 'TPM state directory could not be resolved safely' 17
-      if [[ -n "$TPM_DIR" && "$TPM_DIR" != "$candidate" ]]; then fail 'Multiple distinct TPM state directories match this VM UUID' 17; fi
-      TPM_DIR="$candidate"
-    fi
-  done
+  TPM_DIR="$(/usr/local/sbin/unmotion-host-state tpm "$VM_UUID" optional)" || fail 'TPM state directory discovery failed' 17
 fi
 TPM_CAPTURED=0; [[ -n "$TPM_DIR" ]] && TPM_CAPTURED=1
 NVRAM_CAPTURED=0; [[ -n "$NVRAM_PATH" ]] && NVRAM_CAPTURED=1
@@ -511,7 +504,15 @@ if ((${#STATE_PATHS[@]}>0)); then
     STAGING_STATE_BEFORE="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
     BEFORE_HASH="$(hash_host_state "$BEFORE_MANIFEST" || true)"
     ARCHIVE="$RUN_DIR/host-state.tar.gz"; rel=(); for path in "${STATE_PATHS[@]}"; do rel+=("${path#/}"); done
-    tar --xattrs --acls --numeric-owner -C / -czf "$ARCHIVE" "${rel[@]}"; gzip -t "$ARCHIVE"
+    if [[ "$NVRAM_PATH" == /mnt/* ]]; then
+      checkpoint_stage="$(mktemp -d "$RUN_DIR/nvram-checkpoint-XXXXXX")"
+      canonical_nvram="etc/libvirt/qemu/nvram/${VM_UUID}_VARS.fd"
+      mkdir -p "$checkpoint_stage/etc/libvirt/qemu/nvram"
+      cp -p -- "$NVRAM_PATH" "$checkpoint_stage/$canonical_nvram"
+      tpm_rel=(); [[ -z "$TPM_DIR" ]] || tpm_rel+=("${TPM_DIR#/}")
+      tar --xattrs --acls --numeric-owner -C / -czf "$ARCHIVE" "${tpm_rel[@]}" -C "$checkpoint_stage" "$canonical_nvram"
+    else tar --xattrs --acls --numeric-owner -C / -czf "$ARCHIVE" "${rel[@]}"; fi
+    gzip -t "$ARCHIVE"
     AFTER_HASH="$(hash_host_state "$AFTER_MANIFEST" || true)"
     STAGING_STATE_AFTER="$(virsh domstate "$VM_UUID" 2>/dev/null | tr -d '\r' || true)"
     if [[ -n "$BEFORE_HASH" && "$BEFORE_HASH" == "$AFTER_HASH" && "$STAGING_STATE_BEFORE" == 'shut off' && "$STAGING_STATE_AFTER" == 'shut off' ]]; then QUALITY=safe

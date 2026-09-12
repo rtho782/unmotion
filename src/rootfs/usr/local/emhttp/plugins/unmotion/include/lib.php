@@ -1,8 +1,11 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.0-beta3';
+const UNM_VERSION = '0.4.0-beta4';
 require_once __DIR__.'/migration-nvram.php';
+require_once __DIR__.'/host-state.php';
+require_once __DIR__.'/firmware.php';
+require_once __DIR__.'/migration-resolution.php';
 const UNM_PROTOCOL = 5;
 // Legacy migration, cloning, pairing, and scheduled replication continue to
 // use protocol 5.  Protocol 6 is negotiated only for the recovery control
@@ -816,7 +819,7 @@ function unmCapabilities(): array {
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
+        'features'=>['firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -1136,8 +1139,12 @@ function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options
 
     $nvram=(string)($vm['nvram']??'');
     if($nvram!==''){
-        if((!str_starts_with($nvram,'/etc/libvirt/qemu/nvram/')&&!str_starts_with($nvram,'/var/lib/libvirt/qemu/nvram/'))||!is_file($nvram)||is_link($nvram))$errors[]='UEFI NVRAM is missing or outside the verified libvirt NVRAM directories.';
-        else{$nvramDest=dirname($nvram).'/'.$cloneUuid.'_VARS.fd';if(file_exists($nvramDest)||is_link($nvramDest))$errors[]='Clone NVRAM destination already exists.';else{$plan[]=['kind'=>'nvram','source'=>$nvram,'destination'=>$nvramDest,'bytes'=>(int)filesize($nvram)];$maps[$nvram]=$nvramDest;}}
+        try{
+            $owned=unmOwnedNvram($vm);
+            $nvramDest=($owned['kind']==='custom'?'/etc/libvirt/qemu/nvram':dirname($nvram)).'/'.$cloneUuid.'_VARS.fd';
+            if(file_exists($nvramDest)||is_link($nvramDest))throw new RuntimeException('Clone NVRAM destination already exists.');
+            $plan[]=['kind'=>'nvram','source'=>$nvram,'destination'=>$nvramDest,'bytes'=>(int)filesize($nvram),'sha256'=>hash_file('sha256',$nvram)];$maps[$nvram]=$nvramDest;
+        }catch(Throwable $e){$errors[]=$e->getMessage();}
     }
     foreach($poolRequired as $pool=>$need){$r=unmRun(['zfs','get','-pH','-o','value','available',$pool],null,10);if($r['code']!==0)$errors[]='Unable to inspect available ZFS space in '.$pool.'.';elseif((int)trim($r['stdout'])<$need)$errors[]='Insufficient ZFS space in '.$pool.' for the clone.';}
     $fs=unmLocalFsCapacity(rtrim((string)$cfg['image_dir'],'/'));if($required['image']>0&&(int)($fs['available']??0)<$required['image'])$errors[]='Insufficient image-directory space for the clone.';
@@ -1805,7 +1812,18 @@ function unmReplicationTpmInitialMode(string $mode): string {
     return $mode;
 }
 
-function unmReplicationDatasetIsolationErrors(string $dataset,string $mountpoint,array $declaredFiles): array {
+function unmReplicationDatasetIsolationErrors(string $dataset,string $mountpoint,array $declaredFiles,?array $vm=null): array {
+    if($vm!==null){
+        try{
+            $nvram=unmOwnedNvram($vm);
+            if($nvram['kind']==='custom'&&unmPathWithin($nvram['source'],$mountpoint)){
+                // Only the exact inventory-verified variables file is allowed;
+                // it is host state, not another writable disk in the storage plan.
+                if(!in_array($nvram['diskSource'],$declaredFiles,true))throw new RuntimeException('Custom NVRAM sibling disk is outside this dataset plan.');
+                $declaredFiles[]=$nvram['source'];
+            }
+        }catch(Throwable $e){return ['Dataset '.$dataset.' NVRAM ownership cannot be proven: '.$e->getMessage()];}
+    }
     return unmCloneDatasetIsolated($dataset,$mountpoint,$declaredFiles)
         ? []
         : ['Dataset '.$dataset.' contains a child dataset, unrelated entry, symbolic link, mount escape, or missing VM image and is treated as shared storage.'];
@@ -1828,6 +1846,11 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
     $tpmMode=unmReplicationTpmInitialMode((string)($options['tpmInitialMode']??$options['tpm_initial_mode']??'none'));
     $vm=unmParseVm($vmIdentifier);$peer=unmTestPeer($peerId);$caps=(array)($peer['lastCapabilities']??[]);
     $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)($peer['hostId']??'')),0,16);
+    try{
+        $nvram=unmOwnedNvram($vm);
+        if($nvram['kind']==='custom'&&empty($caps['features']['customNvramReplication']))throw new RuntimeException('Custom NVRAM replication/recovery requires a beta4 destination.');
+        if(!empty($vm['tpm']))unmTpmStatePath((string)$vm['uuid'],unmDomainXml((string)$vm['uuid'],true),false);
+    }catch(Throwable $e){$errors[]=$e->getMessage();}
     try{unmRecoveryAssertLegacyVmAvailable((string)($vm['uuid']??''),'Replication policy mutation');}catch(Throwable $e){$errors[]=$e->getMessage();}
     if((string)($peer['pairingState']??'paired')!=='paired')$errors[]='Scheduled replication requires a completed reciprocal pairing.';
     if((int)($caps['replicationProtocolVersion']??$caps['features']['replicationProtocolVersion']??0)!==UNM_REPLICATION_PROTOCOL||empty($caps['features']['scheduledReplication']))$errors[]='Destination does not support scheduled replication protocol 1. Upgrade it to unMotion 0.4 or later.';
@@ -1867,7 +1890,7 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
         $encryption=unmRun(['zfs','get','-H','-o','value','encryption',$dataset],null,15);
         if($encryption['code']!==0||trim($encryption['stdout'])!=='off')$errors[]='Encrypted datasets are not supported for scheduled replication: '.$dataset.'.';
         $files=array_column($group['files'],'source');
-        foreach(unmReplicationDatasetIsolationErrors($dataset,(string)$group['mountpoint'],$files) as $error)$errors[]=$error.' Use the ZFS Master plugin to prepare a dedicated dataset.';
+        foreach(unmReplicationDatasetIsolationErrors($dataset,(string)$group['mountpoint'],$files,$vm) as $error)$errors[]=$error.' Use the ZFS Master plugin to prepare a dedicated dataset.';
         if($destImageRoot===''||$destImageDir===''||empty($destFeatures['dedicatedDatasetImages'])){$errors[]='Destination image directory is not an exact writable ZFS dataset, so it cannot receive an isolated VM dataset.';continue;}
         $diskNumber++;$destination=$destImageRoot.'/unmotion-replica-'.$short.'-disk'.$diskNumber;$destinationMount=$destImageDir.'/.unmotion-replicas/'.$short.'/disk'.$diskNumber;$mapped=[];
         foreach($group['files'] as $file)$mapped[]=$file+['destination'=>$destinationMount.'/'.ltrim((string)$file['relativePath'],'/')];
@@ -3267,6 +3290,15 @@ function unmRecoveryActivationPlan(array $manifest,array $point,string $activati
 
 function unmRecoveryTransformDomainXml(string $xml,array $diskMaps,bool $stripPinning=false): string {
     if($xml===''||strlen($xml)>2097152||!str_contains($xml,'<domain'))throw new InvalidArgumentException('Recovery domain XML is invalid.');if(preg_match('~<hostdev\b~i',$xml))throw new RuntimeException('Recovery activation does not support PCI or USB host devices.');$used=[];
+    $nvram=unmMigrationNvramXml($xml);
+    if($nvram!==''&&unmNvramPoolPath($nvram)){
+        $uuid=unmXmlValue($xml,'uuid');$name=unmXmlValue($xml,'name');$sibling=false;
+        foreach(array_keys($diskMaps) as $source)if(dirname($source)===dirname($nvram))$sibling=true;
+        if(!$sibling||!in_array(basename(dirname($nvram)),[$uuid,$name],true)||!str_ends_with(strtolower($nvram),'.fd')||!preg_match('/^[a-f0-9-]{36}$/i',$uuid))throw new RuntimeException('Custom recovery NVRAM is not bound to the original VM disk layout.');
+        $doc=new DOMDocument();$doc->loadXML($xml,LIBXML_NONET);$node=(new DOMXPath($doc))->query('/domain/os/nvram')->item(0);
+        while($node->firstChild)$node->removeChild($node->firstChild);
+        $node->appendChild($doc->createTextNode('/etc/libvirt/qemu/nvram/'.$uuid.'_VARS.fd'));$xml=$doc->saveXML($doc->documentElement);
+    }
     $xml=preg_replace_callback('~<disk\b([^>]*)>.*?</disk>~si',static function(array $match)use($diskMaps,&$used):string{
         $block=$match[0];$device=preg_match('~\bdevice=(["\'])([^"\']+)\1~i',$match[1],$dm)?strtolower($dm[2]):'';
         if($device==='cdrom')return (string)preg_replace('~\s*<source\b[^>]*/>~si','',$block);
@@ -3816,6 +3848,11 @@ function unmPrepareDestinationOverwrite(array $request): array {
         $xml = unmDomainXml($uuid, true);
         $nvram = unmXmlValue($xml, 'nvram');
         $staleVm = unmParseVm($uuid);
+        $staleState=[];$staleVm['name']=(string)($request['vmName']??$staleVm['name']);
+        if($nvram!==''){$owned=unmOwnedNvram($staleVm);$staleState[]=unmHostStateEvidence($owned['source'],'nvram',$uuid);}
+        $staleTpm=unmTpmStatePath($uuid,$xml);
+        if($staleTpm!=='')$staleState[]=unmHostStateEvidence($staleTpm,'tpm',$uuid);
+        unmValidateHostStateManifest($staleState,$uuid,$nvram,$staleTpm);
         foreach ((array)($staleVm['disks'] ?? []) as $disk) {
             $source = (string)($disk['source'] ?? '');
             $kind = (string)($disk['type'] ?? '');
@@ -3829,16 +3866,7 @@ function unmPrepareDestinationOverwrite(array $request): array {
         $undef = unmRun(['virsh','undefine',$uuid,'--keep-nvram','--keep-tpm'], null, 30);
         if ($undef['code'] !== 0) throw new RuntimeException('Unable to undefine the stale destination VM: ' . trim($undef['stderr']));
         $removed[] = 'VM definition';
-        if ($nvram !== '' && unmPathWithin($nvram, '/etc/libvirt/qemu/nvram') && str_contains(basename($nvram), $uuid)) {
-            @unlink($nvram); $removed[] = $nvram;
-        }
-        foreach ([
-            '/etc/libvirt/qemu/swtpm/tpm-states/' . $uuid,
-            '/var/lib/libvirt/swtpm/' . $uuid,
-            '/var/lib/libvirt/qemu/swtpm/' . $uuid,
-        ] as $tpm) {
-            if (is_dir($tpm)) { unmRun(['rm','-rf','--',$tpm], null, 30); $removed[] = $tpm; }
-        }
+        foreach($staleState as $evidence){unmRemoveHostStateEvidence($evidence);$removed[]=$evidence['path'];}
     }
 
     $uniqueItems=[];
@@ -3908,14 +3936,37 @@ function unmScheduleSourceCleanup(array $request): array {
 
 function unmFinalizeSourceCleanup(string $jobId, string $destinationHostId): array {
     if (!preg_match('/^[A-Za-z0-9_.-]+$/', $jobId)) throw new InvalidArgumentException('Invalid cleanup job ID.');
+    $manifest=unmLoadJson(UNM_JOBS_DIR.'/'.$jobId.'/source-cleanup.json');
+    $uuid=strtolower((string)($manifest['vmUuid']??''));
+    if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/',$uuid))throw new RuntimeException('Cleanup lock identity is unavailable.');
+    $global=unmResolutionLock('/var/run/unmotion.lock');$vmLock=null;
+    try{
+        $vmLock=unmResolutionLock('/var/lock/unmotion-'.$uuid.'.lock');
+        return unmFinalizeSourceCleanupLocked($jobId,$destinationHostId,$uuid);
+    }finally{if(is_resource($vmLock)){flock($vmLock,LOCK_UN);fclose($vmLock);}flock($global,LOCK_UN);fclose($global);}
+}
+
+function unmFinalizeSourceCleanupLocked(string $jobId, string $destinationHostId,string $lockedUuid): array {
+    if (!preg_match('/^[A-Za-z0-9_.-]+$/', $jobId)) throw new InvalidArgumentException('Invalid cleanup job ID.');
     $jobDir = UNM_JOBS_DIR . '/' . $jobId;
     $manifestPath = $jobDir . '/source-cleanup.json';
     $manifest = unmLoadJson($manifestPath);
     if (!$manifest) throw new RuntimeException('Source cleanup manifest was not found.');
     $uuid = trim((string)($manifest['vmUuid'] ?? ''));
     if (!preg_match('/^[A-Fa-f0-9-]{32,36}$/', $uuid)) throw new RuntimeException('Source cleanup manifest has an invalid VM UUID.');
+    if(strtolower($uuid)!==$lockedUuid||($manifest['jobId']??'')!==$jobId||($manifest['sourceHostId']??'')!==unmHostId())throw new RuntimeException('Cleanup manifest identity changed or belongs to another source.');
     if (($manifest['policy'] ?? '') !== 'delete') throw new RuntimeException('This migration was not authorised to delete its source copy.');
     if (($manifest['destinationHostId'] ?? '') !== $destinationHostId) throw new RuntimeException('Cleanup destination identity does not match the migration manifest.');
+    $marker = unmLoadJson(UNM_OWNERSHIP_DIR . '/' . $uuid . '.json');
+    if(($marker['jobId']??'')!==$jobId||($marker['vmUuid']??'')!==$uuid||($marker['ownerHostId']??'')!==$destinationHostId)throw new RuntimeException('Cleanup ownership does not match the exact job and VM.');
+    $completedJob=unmLoadJson($jobDir.'/job.json');
+    if(($marker['state']??'')==='source_deleted'&&($completedJob['state']??'')==='COMPLETE_CLEANED'&&($completedJob['sourceCleanup']['state']??'')==='complete'&&($completedJob['request']['VM_UUID']??'')===$uuid){
+        return ['success'=>true,'removed'=>(array)($completedJob['sourceCleanup']['removed']??[]),'alreadyCompleted'=>true];
+    }
+    if(is_file($jobDir.'/manual-resolution.json')){
+        $resolutionJob=unmLoadJson($jobDir.'/job.json');
+        unmResolutionDeleteManifest($jobDir,$resolutionJob,(string)file_get_contents($jobDir.'/source.xml'),$destinationHostId);
+    }
     $marker = unmLoadJson(UNM_OWNERSHIP_DIR . '/' . $uuid . '.json');
     if (($marker['ownerHostId'] ?? '') !== $destinationHostId || !in_array((string)($marker['state'] ?? ''), ['pending_cleanup','migrated_out'], true)) {
         throw new RuntimeException('Ownership marker does not authorise source deletion.');
@@ -3924,9 +3975,12 @@ function unmFinalizeSourceCleanup(string $jobId, string $destinationHostId): arr
     $removed = [];
     $nvram = trim((string)($manifest['nvramPath'] ?? ''));
     $tpm = trim((string)($manifest['tpmPath'] ?? ''));
-    if (unmRun(['virsh','dominfo',$uuid], null, 15)['code'] === 0) {
-        $state = trim(unmRun(['virsh','domstate',$uuid], null, 15)['stdout']);
-        if (!in_array($state, ['shut off','no state',''], true)) throw new RuntimeException('Source VM is no longer shut off; refusing cleanup.');
+    $hostState=(array)($manifest['hostState']??[]);
+    $sourceState=unmResolutionVmState($uuid);
+    if(!in_array($sourceState,['shut off','undefined'],true))throw new RuntimeException('Source state cannot be proved safe for cleanup.');
+    unmValidateHostStateManifest($hostState,$uuid,$nvram,$tpm);
+    if ($sourceState==='shut off') {
+        if (unmResolutionVmState($uuid)!=='shut off') throw new RuntimeException('Source VM is no longer shut off; refusing cleanup.');
         unmRun(['virsh','autostart','--disable',$uuid], null, 15);
         $undefArgs=['virsh','undefine',$uuid];
         if($nvram!=='')$undefArgs[]='--keep-nvram';
@@ -3957,13 +4011,11 @@ function unmFinalizeSourceCleanup(string $jobId, string $destinationHostId): arr
             }
         }
     }
-    if ($nvram !== '' && unmPathWithin($nvram, '/etc/libvirt/qemu/nvram') && str_contains(basename($nvram), $uuid) && file_exists($nvram)) {
-        @unlink($nvram); $removed[] = $nvram;
+    foreach($hostState as $evidence){
+        // A variables file inside an already-removed dataset is already gone.
+        if(!file_exists($evidence['path'])&&!is_link($evidence['path']))continue;
+        unmRemoveHostStateEvidence($evidence);$removed[]=$evidence['path'];
     }
-    $tpmAllowed = $tpm !== '' && str_contains($tpm, $uuid) && (
-        unmPathWithin($tpm, '/etc/libvirt/qemu/swtpm') || unmPathWithin($tpm, '/var/lib/libvirt/swtpm') || unmPathWithin($tpm, '/var/lib/libvirt/qemu/swtpm')
-    );
-    if ($tpmAllowed && is_dir($tpm)) { unmRun(['rm','-rf','--',$tpm], null, 60); $removed[] = $tpm; }
 
     $marker['state'] = 'source_deleted'; $marker['sourceDeletedAt'] = date(DATE_ATOM); $marker['updatedAt'] = date(DATE_ATOM);
     unmAtomicJson(UNM_OWNERSHIP_DIR . '/' . $uuid . '.json', $marker);
@@ -4095,7 +4147,15 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     if($imageDir===''||empty($checks['image_dir_exists'])||empty($checks['image_dir_writable'])) $errors[]='Destination image directory is unavailable or not writable.';
     $hasAttachedIsos=!empty($local['isos']);
     if($hasAttachedIsos&&$isoAction==='copy'&&($isoDir===''||empty($checks['iso_dir_exists'])||empty($checks['iso_dir_writable']))) $errors[]='Destination ISO directory is unavailable or not writable.';
-    if(($local['loader']??'')!==''&&unmRemote($peer,'test -f '.escapeshellarg($local['loader']),15)['code']!==0) $errors[]='Destination firmware is missing: '.$local['loader'];
+    try {
+        $firmware=unmFirmwareRequest(unmDomainXml($uuid,true));
+        if($firmware){
+            if(empty($features['firmwareMapping']))throw new RuntimeException('Firmware verification requires unMotion beta4 or later on the destination.');
+            $r=unmRemote($peer,'/usr/local/sbin/unmotion-agent firmware-plan '.escapeshellarg(base64_encode(json_encode($firmware,JSON_THROW_ON_ERROR))),45);
+            if($r['code']!==0)throw new RuntimeException('Destination firmware compatibility: '.trim($r['stderr'].' '.$r['stdout']));
+        }
+        if(!empty($local['tpm']))unmTpmStatePath($uuid,unmDomainXml($uuid,true));
+    }catch(Throwable $e){$errors[]=$e->getMessage();}
 
     $remoteVmName=''; $remoteVmState=''; $sameUuidVm=false;
     if($uuid!=='') {
@@ -4106,6 +4166,14 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             $remoteVmState=trim($stateResult['stdout']);
             $conflicts[]=['kind'=>'vm','path'=>$remoteVmName,'state'=>$remoteVmState,'sameUuid'=>true];
             if(!in_array($remoteVmState,['shut off','no state',''],true)) $errors[]='A VM with this UUID is running on the destination and cannot be overwritten.';
+            if($conflictAction==='overwrite'){
+                try{
+                    $xmlResult=unmRemote($peer,'virsh dumpxml '.escapeshellarg($uuid).' --inactive',20);
+                    if($xmlResult['code']!==0)throw new RuntimeException('Unable to inspect destination NVRAM before overwrite.');
+                    $oldNvram=unmMigrationNvramXml($xmlResult['stdout']);
+                    if($oldNvram!==''&&!unmNvramPoolPath($oldNvram)&&!unmRecoveryStateDestinationAllowed($oldNvram,'nvram',$uuid))throw new RuntimeException('Destination NVRAM filename is not UUID-scoped; automatic overwrite is refused. Retain it for manual inspection.');
+                }catch(Throwable $e){$errors[]=$e->getMessage();}
+            }
         }
     }
     $nameLookup=unmRemote($peer,'virsh domuuid '.escapeshellarg($vm).' 2>/dev/null',15);
@@ -4217,6 +4285,11 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
         if($isoAction==='copy') { $required['iso']+=$bytes; if(empty($caps['tools']['rsync'])) $errors[]='Destination rsync is unavailable for ISO copying.'; }
         $plan[]=['kind'=>'iso','source'=>$iso,'destination'=>$dst,'action'=>$isoAction,'bytes'=>$bytes];
         if($isoAction==='copy'&&(!str_starts_with($iso,'/mnt/')||!is_file($iso)||is_link($iso))) $errors[]='Attached ISO is missing or unsafe: '.$iso;
+        elseif($isoAction==='copy'){
+            $check=unmRemote($peer,'if test -e '.escapeshellarg($dst).' || test -L '.escapeshellarg($dst).'; then test -f '.escapeshellarg($dst).' && test ! -L '.escapeshellarg($dst).' && sha256sum -- '.escapeshellarg($dst).'; else printf MISSING; fi',300);
+            if($check['code']!==0)$errors[]='Unable to verify destination ISO: '.$dst;
+            elseif(trim($check['stdout'])!=='MISSING'&&!hash_equals((string)hash_file('sha256',$iso),substr(trim($check['stdout']),0,64)))$errors[]='Destination ISO filename already exists with different contents: '.$dst.'. Rename the ISO or choose omit/retain explicitly.';
+        }
     }
 
     try {
@@ -4227,6 +4300,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             elseif(($item['kind']??'')==='image')$nvramMaps[]=$item+['bundled'=>false];
         }
         $nvramPlan=unmMigrationNvramPlan($local,$nvramMaps,$caps);
+        if($sourceCleanupAction==='delete'&&$nvramPlan['kind']==='legacy'&&!unmRecoveryStateDestinationAllowed($nvramPlan['source'],'nvram',(string)$local['uuid']))throw new RuntimeException('Source NVRAM filename is not UUID-scoped. Select retain or unregister; automatic source deletion is blocked.');
         if($nvramPlan['kind']==='custom'){
             $result=unmRemote($peer,'/usr/local/sbin/unmotion-agent migration-nvram-check '.escapeshellarg(base64_encode(json_encode($nvramPlan,JSON_THROW_ON_ERROR))),30);
             if($result['code']!==0)throw new RuntimeException('Destination UEFI NVRAM check failed: '.trim($result['stderr'].' '.$result['stdout']));

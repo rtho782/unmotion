@@ -69,7 +69,7 @@ For every point, unMotion records Guest-Agent-observed interfaces, MAC addresses
 
 ## TPM and UEFI NVRAM
 
-TPM and NVRAM state is checkpointed separately from disk snapshots. Files are accepted only beneath known UUID-scoped libvirt paths, hashed deterministically, transferred as content-addressed artifacts and never extracted into live destination libvirt paths during replication.
+TPM and NVRAM state is checkpointed separately from disk snapshots, hashed deterministically, transferred as content-addressed artifacts and never extracted into live destination libvirt paths during replication. Beta4 additionally accepts an ownership-proven custom NVRAM file beside the VM image, archiving it at a canonical UUID-scoped libvirt path for recovery. TPM discovery is shared with migration and rejects multiple distinct UUID stores.
 
 Checkpoint quality is recorded as:
 

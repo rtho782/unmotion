@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0-beta4 - 2026-09-12
+
+- Added an in-page Resolve migration action after manual destination startup. Revalidate both hosts, recorded VM/disk identities and ownership; finish the original retain-and-rename, unregister or validated-delete policy without retransferring data or overwriting repaired destination configuration.
+- Journal resolution for retries after partial renames, unregistration and lost acknowledgements. Preserve exact cleanup scope before destination startup; legacy jobs without sufficient deletion evidence remain blocked.
+- Map firmware loaders and variables templates by exact size/SHA-256, not identical installation paths. Require the beta4 firmware capability before transfer; no firmware upgrades or protocol changes.
+- Verify ISO contents before same-name reuse and after copying; reject collisions.
+- Use shared, ambiguity-rejecting TPM discovery and exact host-state cleanup evidence, including link and mount-boundary guards.
+- Extend owned custom NVRAM to cloning and replication/recovery, with canonical UUID-scoped checkpoint paths and dedicated-dataset isolation retained.
+- Add a brief description to the Plugins page. Keep source-deletion validation at five minutes.
+
 ## 0.4.0-beta3 - 2026-09-12
 
 - Added cold migration and Warm Move cutover support for custom UEFI NVRAM files beside a disk in a VM-owned directory on a direct pool path.

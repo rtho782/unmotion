@@ -1,5 +1,30 @@
 # Reconstruction verification
 
+## 0.4.0-beta4 verification — 2026-09-12
+
+Author: Richard Skinner
+
+Post-recovery tests use only disposable DEV01/DEV02 guests. No production migration job or VM was changed. Recovered beta7 artifact checks remain unchanged.
+
+- Complete scripts/verify.sh passed with PHP, Bash and Node available, including portability and mocked migration-resolution transaction tests. Local Node syntax and git diff whitespace checks also passed.
+- Cold custom-NVRAM file move: job 20260912-120638-7738636a07 completed with retained-source rename.
+- Cold dedicated ZFS move: 20260912-120839-54fbfbf51a completed; a source-only loader path mapped to byte-identical destination OVMF. Same-name mismatched ISO was rejected before transfer, then ISO copy and checksum verification passed.
+- Same-host custom-NVRAM clone: 20260912-120605-clone-4d3038dc52 completed with a new UUID-scoped variables file; clone stopped and NIC links down.
+- TPM move/delete: 20260912-120927-dbc7c752e8 completed, then exact source VM/dataset/TPM cleanup completed after the unchanged 300-second validation.
+- Warm Move file path: 20260912-121928-d8835460b1 completed with retained-source rename. Dedicated ZFS path: 20260912-122034-0ef8f7fc1a completed with source unregister and storage retained.
+- Initial, delta and automatic shutdown-triggered custom-NVRAM replication passed for repl-bf50f78cb47b3917a4f480b8. QGA freeze/thaw worked; shutdown produced a safe checkpoint. Real archived canonical NVRAM bytes, recovery XML binding and validate-only checkpoint installation passed. Unrelated-file isolation rejection and retention pruning passed. Policy paused, source stopped and destination undefined afterward.
+- Startup-failure reproduction: 20260912-121155-e686098793 entered ATTENTION_REQUIRED after an intentionally unavailable destination socket path. Resolve refused while destination stopped; after manual correction/start, it finished the retain-and-rename policy. Destination inactive XML SHA-256 remained 5cf9a8bc4b1513c6aaa90180e6b68a6085adf2d93f9d0597b2519e239cef9149 before/after. Repeated completion did not repeat renaming.
+- Recovered unregister policy: 20260912-122303-b54c4567aa finished with the source definition absent and both source disk and NVRAM retained.
+- Recovered delete policy: 20260912-122225-923e37ae0f retained the source during a fresh 300-second validation, then completed exact source definition/disk/NVRAM cleanup. Repeating the completed cleanup acknowledgement returned alreadyCompleted without repeating deletion. All beta4 fixture VMs were left stopped; replication policy remains paused.
+- Final candidate PLG SHA-256: 664783ee3177c53c639bcf7a52fda1e47f67a7dedb362850284356e63236350a; TXZ SHA-256: 82a5736a883a42abe331c1ce0f18a08a391af0db06a9552e4b46caef084a15b9. Embedded payload, author Richard Skinner, stable plugin identity and version were verified. Both lab hosts have this candidate; publication/update feed and production hosts were not changed.
+- Mixed beta4-to-beta3 preflight rejected verified UEFI migration and custom-NVRAM replication before transfer. Legacy protocol stays 5; the existing separately negotiated recovery control plane stays 6.
+
+Browser control subsequently worked: DEV02 displayed v0.4.0-beta4, the Plugins description rendered, and the shared in-page confirmation dialog opened and cancelled without a native browser dialog or a destructive action. The Resolve-specific dialog was not visually exercised. Stale beta2 lab descriptors were identified alongside the correct beta4 descriptor and archived outside plugin discovery; plugin settings were preserved.
+
+Limitations: WSL was present but unable to start because its virtualization platform was unavailable. Final verification/build ran on authorized DEV01 instead. The custom-NVRAM recovery archive was validated but no live recovered activation was performed for the disconnected fixture. This beta4 run did not repeat every historical power-loss test; static/mocked safety regressions and the targeted live matrix above are distinguished from earlier release evidence.
+
+## Recovered baseline verification
+
 Completed on 2026-08-09.
 
 - The supplied PLG SHA-256 matches the historical release record: `20ace170707eaed65e55a7b2418e6e86fe5e98fbb48c1b5f2d5f509889e55656`.

@@ -198,6 +198,13 @@ try {
             $job['state']='STARTING'; $job['message']='Resume requested'; $job['updatedAt']=date(DATE_ATOM); unmAtomicJson($dir.'/job.json',$job);
             $pid=launchWorker($id,$dir); $job['pid']=$pid; unmAtomicJson($dir.'/job.json',$job);
             reply(['success'=>true,'pid'=>$pid]);
+        case 'migrationResolution':
+            requirePostMutation();
+            reply(['success'=>true,'resolution'=>unmResolveMigration((string)($_POST['job_id']??''),false)]);
+        case 'resolveMigration':
+            requirePostMutation();
+            if(($_POST['confirmation']??'')!=='finish-policy')throw new RuntimeException('Confirm completion of the original source policy.');
+            reply(['success'=>true,'job'=>unmResolveMigration((string)($_POST['job_id']??''),true)]);
         case 'cancelJob':
             reply(['success'=>true,'job'=>unmCancelJob((string)($_POST['job_id']??''))]);
         case 'removeJob':

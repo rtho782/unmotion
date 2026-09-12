@@ -1164,6 +1164,7 @@ function loadJobs() {
       (r.jobs||[]).slice(0,20).forEach(function(j) {
         var failed=['FAILED','INTERRUPTED'].indexOf(j.state)>=0,retry=failed&&(j.jobType||'migration')!=='clone';
         var actions='<input type="button" value="Log" class="unm-log" data-id="'+esc(j.id)+'"> ';
+        if(j.state==='ATTENTION_REQUIRED'&&(j.jobType||'migration')==='migration')actions+='<input type="button" value="Resolve migration" class="unm-resolve-migration" data-id="'+esc(j.id)+'"> ';
         if(retry)actions+='<input type="button" value="Resume" class="unm-resume" data-id="'+esc(j.id)+'"> ';
         if((isCancellable(j.state)||failed)&&j.state!=='CANCELLING')actions+='<input type="button" value="Cancel" class="unm-cancel-job" data-id="'+esc(j.id)+'"> ';
         var cleanupAction=((j.request||{}).SOURCE_CLEANUP_ACTION||'unregister');
@@ -1539,6 +1540,18 @@ $(function() {
     $(document).on('change','#unm-conflict-action',function(){if($(this).val()==='overwrite')recheckPreflight();else updateMigrationEligibility();});
     $(document).on('input','#unm-clone-name',function(){$('#unm-confirm-migrate').prop('disabled',true).attr('title','Recheck after changing the clone name.');});
     $(document).on('change','#unm-clone-customization',function(){activeCloneName=$('#unm-clone-name').val()||activeCloneName;showClonePreflight(activeVmId,activeVmName,activeCloneName,null);});
+    $(document).on('click','.unm-resolve-migration',function(){
+      var button=this,id=$(this).attr('data-id'),stop=setButtonBusy(button,'Checking both hosts');
+      post('migrationResolution',{job_id:id}).done(function(r){
+        var plan=r.resolution||{},policy=plan.sourcePolicy;
+        var action=policy==='delete'?'Rename the stopped source and schedule deletion only after a fresh five-minute destination validation.':(policy==='unregister'?'Unregister the stopped source VM, retaining all its storage.':'Rename and retain the stopped source VM with autostart disabled.');
+        requestConfirmation({title:'Finish recovered migration?',message:'Verified '+plan.vmName+' is running on '+plan.destination+'. '+action+' Record destination ownership without retransferring data or changing the running VM configuration. Never start the source copy.',acceptLabel:'Finish original migration policy',tone:policy==='delete'?'danger':'warning'}).done(function(accepted){
+          if(!accepted)return;
+          var finish=setButtonBusy(button,'Resolving');
+          post('resolveMigration',{job_id:id,confirmation:'finish-policy'}).done(function(){flash('Recovered migration handoff completed.');loadJobs();loadInventory();}).fail(err).always(finish);
+        });
+      }).fail(err).always(stop);
+    });
     $(document).on('click','.unm-remove-job',function() {
       var jobId=$(this).data('id');
       requestConfirmation({title:'Remove job history?',message:'Remove this completed or cancelled job and its local log. VM storage is not deleted.',acceptLabel:'Remove job'}).done(function(accepted){if(accepted)post('removeJob',{job_id:jobId}).done(function(){flash('Job removed from history.');loadJobs();}).fail(err);});

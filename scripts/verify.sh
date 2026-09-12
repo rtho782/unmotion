@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.0-beta3}"
+EXPECTED_VERSION="${1:-0.4.0-beta4}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -28,6 +28,8 @@ if command -v php >/dev/null; then
   if [[ -w /mnt ]]; then
     php "$ROOT/tests/nvram-regressions.php"
     php "$ROOT/tests/nvram-destination-regressions.php"
+    php "$ROOT/tests/portability-regressions.php"
+    php "$ROOT/tests/migration-resolution-regressions.php"
   else echo 'WARN: /mnt is not writable; run the NVRAM filesystem regressions with privileges on the development host.' >&2; fi
 else
   echo 'WARN: PHP unavailable; PHP syntax checks skipped.' >&2

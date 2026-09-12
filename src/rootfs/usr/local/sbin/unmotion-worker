@@ -41,6 +41,10 @@ if ! /usr/local/sbin/unmotion-agent recovery-legacy-interlock "$VM_UUID" "$LEGAC
 fi
 
 export UNM_WORKER_PID=$$
+if [[ ! -e "$JOBDIR/source-ownership-before.json" && -f "$BASE/ownership/$VM_UUID.json" ]]; then
+  cp -- "$BASE/ownership/$VM_UUID.json" "$JOBDIR/source-ownership-before.json"
+  chmod 600 "$JOBDIR/source-ownership-before.json"
+fi
 SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
 REMOTE="${PEER_USER}@${PEER_HOST}"
@@ -224,7 +228,7 @@ fi
 REMOTE_UUID_BY_NAME="$(remote "virsh domuuid $(sq "$VM_NAME") 2>/dev/null" | tr -d '\r' || true)"
 [[ -z "$REMOTE_UUID_BY_NAME" || "$REMOTE_UUID_BY_NAME" == "$UUID" ]] || { log "A different destination VM already uses the name $VM_NAME"; exit 22; }
 LOADER_PATH="$(sed -nE 's|.*<loader[^>]*>([^<]+)</loader>.*|\1|p' "$SOURCE_XML" | head -n1)"
-if [[ -n "$LOADER_PATH" ]]; then remote "test -f $(sq "$LOADER_PATH")" || { log "Destination firmware missing: $LOADER_PATH"; exit 23; }; fi
+# Firmware is fingerprinted and mapped after disk/ISO mappings are constructed.
 
 /usr/local/sbin/unmotion-inspect "$SOURCE_XML" > "$DISK_MANIFEST"
 mapfile -t ZVOLS < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach(($d["zvols"]??[]) as $v)echo $v,"\n";' "$DISK_MANIFEST")
@@ -315,6 +319,7 @@ done
 
 ISO_DESTS=();for src in "${ISOS[@]}";do case "$ISO_ACTION" in copy) [[ "$src" == /mnt/*&&-f "$src"&&! -L "$src" ]]||{ log "ISO missing: $src";exit 28;};[[ "$DEST_ISO_DIR" == /mnt/* ]]||{ log "ISO copy requested but the destination ISO directory is not configured.";exit 28;};dst="$DEST_ISO_DIR/$(basename "$src")";ISO_DESTS+=("$dst");printf 'iso\t%s\t%s\n' "$src" "$dst" >>"$MAP_TSV";;remove)ISO_DESTS+=("");printf 'iso-remove\t%s\t%s\n' "$src" "$src">>"$MAP_TSV";;retain)ISO_DESTS+=("$src");;*)log "Invalid ISO action: $ISO_ACTION";exit 29;;esac;done
 
+/usr/local/sbin/unmotion-firmware "$SOURCE_XML" "$PEER_ID" "$MAP_TSV" "$REMOTE_CAPS" 2>>"$LOG" || { log 'Firmware compatibility validation failed.'; exit 23; }
 /usr/local/sbin/unmotion-migration-nvram "$SOURCE_XML" "$DISK_MANIFEST" "$MAP_TSV" "$REMOTE_CAPS" "$NVRAM_PLAN" 2>>"$LOG" || { log 'UEFI NVRAM validation failed; see the preceding diagnostic.'; exit 30; }
 NVRAM_KIND="$(json_get "$NVRAM_PLAN" kind)"
 NVRAM_PATH="$(json_get "$NVRAM_PLAN" source)"
@@ -342,7 +347,12 @@ if ((WARM_MODE==0&&REMOTE_EXISTING_VM==0&&${#OVERWRITE_PATHS[@]}==0));then check
 
 /usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
 STATE_PATHS=();if [[ "$NVRAM_KIND" == legacy ]];then STATE_PATHS+=("$NVRAM_PATH");fi
-HAS_TPM=0;if grep -qE '<tpm([[:space:]>])' "$SOURCE_XML";then HAS_TPM=1;TPM_DIR="";for base in /etc/libvirt/qemu/swtpm/tpm-states /var/lib/libvirt/swtpm /var/lib/libvirt/qemu/swtpm /etc/libvirt/swtpm;do [[ -d "$base/$UUID" ]]&&{ TPM_DIR="$base/$UUID";break;};[[ -d "$base" ]]&&TPM_DIR="$(find "$base" -type d -name "$UUID" -print -quit 2>/dev/null||true)";[[ -n "$TPM_DIR" ]]&&break;done;[[ -n "$TPM_DIR" ]]||{ log "TPM state not found";exit 30;};STATE_PATHS+=("$TPM_DIR");fi
+HAS_TPM=0;TPM_DIR=''
+if grep -qE '<tpm([[:space:]>])' "$SOURCE_XML"; then
+  HAS_TPM=1
+  TPM_DIR="$(/usr/local/sbin/unmotion-host-state tpm "$UUID")" || { log 'Software TPM discovery failed.'; exit 30; }
+  STATE_PATHS+=("$TPM_DIR")
+fi
 
 CURRENT_STATE="$(virsh domstate "$VM_REF"|tr -d '\r')";[[ "$CURRENT_STATE" == running||"$CURRENT_STATE" == idle||"$CURRENT_STATE" == paused ]]&&SOURCE_WAS_RUNNING=1
 SOURCE_AUTOSTART="$(virsh dominfo "$VM_REF"|awk -F: '/^Autostart/{gsub(/^[[:space:]]+/,"",$2);print $2}')";virsh autostart "$VM_REF" --disable >/dev/null 2>&1||true
@@ -352,6 +362,8 @@ if ((WARM_MODE==0))&&((REMOTE_EXISTING_VM==1||${#OVERWRITE_PATHS[@]}>0));then st
 virsh dumpxml "$VM_REF" --inactive >"$SOURCE_XML";/usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
 
 # Recheck the final powered-off XML and hash immediately before disk snapshots.
+/usr/local/sbin/unmotion-host-state evidence "$UUID" "$JOBDIR/host-state-evidence.json" 2>>"$LOG" || { log 'Host-state ownership evidence failed.'; exit 30; }
+/usr/local/sbin/unmotion-firmware "$SOURCE_XML" "$PEER_ID" "$MAP_TSV" "$REMOTE_CAPS" 2>>"$LOG" || { log 'Firmware changed before cutover.'; exit 23; }
 /usr/local/sbin/unmotion-migration-nvram "$SOURCE_XML" "$DISK_MANIFEST" "$MAP_TSV" "$REMOTE_CAPS" "$NVRAM_PLAN" 2>>"$LOG" || { log 'UEFI NVRAM changed or failed final validation.'; exit 30; }
 ZFS_SOURCES=("${ZVOLS[@]}" "${DATASET_SRCS[@]}")
 if ((${#ZFS_SOURCES[@]}>0));then
@@ -467,7 +479,20 @@ for i in "${!ZVOL_DESTS[@]}";do b="${ZVOL_BYTES[$i]:-1}";span="$(next_span "$b")
 for i in "${!DATASET_DESTS[@]}";do b="${DATASET_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_zfs_object "${DATASET_SRCS[$i]}" "${DATASET_DESTS[$i]}" dataset "${DATASET_DEST_MOUNTS[$i]}" "$TRANSFER_CURSOR" "$span" "Dataset $(basename "${DATASET_SRCS[$i]}")" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)";((TRANSFER_CURSOR+=span));done
 for i in "${!CONVERT_ZVOLS[@]}";do src="${CONVERT_ZVOLS[$i]}";stage="${CONVERT_STAGES[$i]}";dst="${CONVERT_DESTS[$i]}";b="${CONVERT_BYTES[$i]:-1}";span="$(next_span "$b")";mkdir -p "${stage%/*}";convert_zvol "$src" "$stage" "$TRANSFER_CURSOR" "$((span/2))" "Converting $(basename "$src")";transfer_file "$stage" "$dst" "$((TRANSFER_CURSOR+span/2))" "$((span-span/2))" "Converted image $(basename "$stage")";((TRANSFER_CURSOR+=span));done
 for i in "${!RSYNC_FILE_DISKS[@]}";do b="${FILE_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_file "${RSYNC_FILE_DISKS[$i]}" "${FILE_DESTS[$i]}" "$TRANSFER_CURSOR" "$span" "Image $(basename "${RSYNC_FILE_DISKS[$i]}")";((TRANSFER_CURSOR+=span));done
-if [[ "$ISO_ACTION" == copy ]];then for i in "${!ISOS[@]}";do src="${ISOS[$i]}";dst="${ISO_DESTS[$i]}";b="${ISO_BYTES[$i]:-1}";span="$(next_span "$b")";if remote "test -f $(sq "$dst")";then log "Reusing existing ISO $dst";else transfer_file "$src" "$dst" "$TRANSFER_CURSOR" "$span" "ISO $(basename "$src")";fi;((TRANSFER_CURSOR+=span));done;fi
+if [[ "$ISO_ACTION" == copy ]]; then
+  for i in "${!ISOS[@]}"; do
+    src="${ISOS[$i]}";dst="${ISO_DESTS[$i]}";b="${ISO_BYTES[$i]:-1}";span="$(next_span "$b")"
+    iso_sha="$(sha256sum -- "$src" | cut -d ' ' -f1)"
+    if remote "test -e $(sq "$dst") || test -L $(sq "$dst")"; then
+      existing_sha="$(remote "test -f $(sq "$dst") && test ! -L $(sq "$dst") && sha256sum -- $(sq "$dst")" | cut -d ' ' -f1)"
+      [[ "$existing_sha" == "$iso_sha" ]] || { log "Destination ISO has different contents or is unsafe: $dst"; exit 28; }
+      log "Reusing checksum-verified ISO $dst"
+    else transfer_file "$src" "$dst" "$TRANSFER_CURSOR" "$span" "ISO $(basename "$src")"; fi
+    final_sha="$(remote "test -f $(sq "$dst") && test ! -L $(sq "$dst") && sha256sum -- $(sq "$dst")" | cut -d ' ' -f1)"
+    [[ "$final_sha" == "$iso_sha" && "$(sha256sum -- "$src" | cut -d ' ' -f1)" == "$iso_sha" ]] || { log 'ISO changed or failed checksum verification.'; exit 28; }
+    ((TRANSFER_CURSOR+=span))
+  done
+fi
 state TRANSFER_VERIFIED 70 "Storage transfer completed and verified"
 
 cancel_requested && finish_cancel
@@ -535,9 +560,12 @@ create_source_cleanup_manifest(){
   for src in "${ZVOLS[@]}"; do printf 'zvol\t%s\n' "$src" >> "$tsv"; done
   for src in "${DATASET_SRCS[@]}"; do printf 'dataset\t%s\n' "$src" >> "$tsv"; done
   for src in "${RSYNC_FILE_DISKS[@]}"; do printf 'image\t%s\n' "$src" >> "$tsv"; done
-  php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);if(count($p)===2)$items[]=["kind"=>$p[0],"path"=>$p[1]];} $d=["jobId"=>$argv[2],"vmUuid"=>$argv[3],"vmName"=>$argv[4],"retainedName"=>$argv[5],"policy"=>$argv[6],"sourceHostId"=>$argv[7],"destinationHostId"=>$argv[8],"destinationHost"=>$argv[9],"storage"=>$items,"nvramPath"=>$argv[10],"tpmPath"=>$argv[11],"createdAt"=>date(DATE_ATOM)];file_put_contents($argv[12],json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($argv[12],0600);' "$tsv" "$JOB_ID" "$UUID" "$VM_NAME" "${SOURCE_RETAINED_NAME:-$VM_NAME}" "$SOURCE_CLEANUP_ACTION" "$(cat "$BASE/host_id")" "$PEER_HOST_ID" "$PEER_NAME" "${NVRAM_PATH:-}" "${TPM_DIR:-}" "$JOBDIR/source-cleanup.json"
+  php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);if(count($p)===2)$items[]=["kind"=>$p[0],"path"=>$p[1]];} $d=["jobId"=>$argv[2],"vmUuid"=>$argv[3],"vmName"=>$argv[4],"retainedName"=>$argv[5],"policy"=>$argv[6],"sourceHostId"=>$argv[7],"destinationHostId"=>$argv[8],"destinationHost"=>$argv[9],"storage"=>$items,"nvramPath"=>$argv[10],"tpmPath"=>$argv[11],"hostState"=>json_decode(file_get_contents($argv[13]),true)["state"],"createdAt"=>date(DATE_ATOM)];file_put_contents($argv[12],json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($argv[12],0600);' "$tsv" "$JOB_ID" "$UUID" "$VM_NAME" "${SOURCE_RETAINED_NAME:-$VM_NAME}" "$SOURCE_CLEANUP_ACTION" "$(cat "$BASE/host_id")" "$PEER_HOST_ID" "$PEER_NAME" "${NVRAM_PATH:-}" "${TPM_DIR:-}" "$JOBDIR/source-cleanup.json" "$JOBDIR/host-state-evidence.json"
 }
 
+# Persist the exact source plan before a start attempt can leave an
+# attention-required job. Manual resolution must not reconstruct deletion scope.
+create_source_cleanup_manifest
 if [[ "$START_DESTINATION" == "1" ]]; then
   state STARTING_DESTINATION 88 "Starting VM on destination"
   DEST_START_ATTEMPTED=1

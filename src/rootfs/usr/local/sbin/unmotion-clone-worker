@@ -156,6 +156,9 @@ while IFS=$'\t' read -r ekind esource edestination emount ebytes; do
       CREATED_FILES+=("$destination"); state COPYING_STORAGE "$pct" "Copying $(basename "$source") ($bytes bytes)"
       rsync -aS --protect-args --numeric-ids -- "$source" "$destination"
       [[ "$(stat -c %s -- "$source")" == "$(stat -c %s -- "$destination")" ]] || exit 26
+      if [[ "$kind" == nvram ]]; then
+        php -r '$p=json_decode(file_get_contents($argv[1]),true);foreach($p["plan"]??[] as $i)if(($i["kind"]??"")==="nvram"&&($i["source"]??"")===$argv[2]){if(!hash_equals((string)($i["sha256"]??""),(string)hash_file("sha256",$argv[2]))||!hash_equals((string)$i["sha256"],(string)hash_file("sha256",$argv[3])))exit(1);exit(0);}exit(1);' "$PLAN_JSON" "$source" "$destination" || { log 'Clone NVRAM changed or failed checksum verification.'; exit 26; }
+      fi
       ;;
     *) log "Invalid clone plan item: $kind"; exit 27;;
   esac

@@ -1,6 +1,6 @@
 # unMotion
 
-unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. This source targets `0.4.0-beta3`. The recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
+unMotion is an experimental Unraid plugin for cloning libvirt virtual machines, moving them between paired Unraid hosts, and maintaining scheduled ZFS replicas on a standby peer. This source targets `0.4.0-beta4`. The recovered, hash-verified `0.3.0-beta7` baseline remains preserved under `release/0.3.0-beta7/`.
 
 > **Beta software:** migrations change VM definitions and storage. Use disposable test hosts and verified backups. Do not treat a successful preflight as a substitute for a recovery plan.
 
@@ -41,12 +41,20 @@ Beta2 does not claim recovery from an unreachable source. Automatic failover, ne
 
 Cold migration and Warm Move now support a custom `.fd` variables file beside a writable disk in a VM-owned directory on a direct pool path. For example, `/mnt/cache/domains/My VM/OVMF_VARS.fd` is mapped alongside its disk to the destination pool. Dedicated datasets carry the file in the final ZFS snapshot; file-copy migrations explicitly copy it after shutdown. Both paths verify SHA-256 before defining the destination VM.
 
-Both peers must run beta3 for custom NVRAM paths. Standard libvirt NVRAM paths remain compatible with older peers. Ambiguous ownership, symlinks/hardlinks, user-share paths, nested NVRAM storage XML and existing non-bundled destination variables files are blocked. No arbitrary file relocation or broader deletion is introduced. Custom NVRAM support does not extend to Clone or scheduled replication/recovery. See [docs/NVRAM-MIGRATION.md](docs/NVRAM-MIGRATION.md).
+Ambiguous ownership, symlinks/hardlinks, user-share paths, nested NVRAM storage XML and existing non-bundled destination variables files are blocked. Beta4 extends owned custom NVRAM to Clone and scheduled replication/recovery, using UUID-scoped libvirt variables paths for clones and recovery checkpoints. See [docs/NVRAM-MIGRATION.md](docs/NVRAM-MIGRATION.md).
+
+## Portability and manual migration resolution (beta4)
+
+Beta4 fingerprints firmware code and variables templates, mapping to a different destination path only when bytes and SHA-256 agree. This is not a firmware upgrade or Secure Boot conversion. Both peers must run beta4 for this verified firmware migration path. BIOS-only legacy migration remains protocol 5; recovery protocol negotiation is unchanged.
+
+ISO copy/reuse now verifies content instead of trusting filenames. Distinct TPM stores are rejected rather than choosing the first path. Exact host-state evidence gates cleanup; ambiguous legacy variables files remain transferable but not deletable.
+
+If destination startup fails after transfer, **Resolve migration** checks both hosts and completes the original source policy after manual repair: retain-and-rename, unregister while retaining storage, or the existing five-minute validated deletion. It never retransfers disks, restores old destination XML, or starts/stops either VM. Unreachable hosts, uncertain state and changed writable disk identities block resolution. Some older jobs lack sufficient evidence for deletion and must be inspected manually. See [docs/MIGRATION-RESOLUTION.md](docs/MIGRATION-RESOLUTION.md).
 
 ## Repository layout
 
 ```text
-src/rootfs/                 Current 0.4.0-beta3 package source, derived from beta7
+src/rootfs/                 Current 0.4.0-beta4 package source, derived from beta7
 release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
@@ -56,16 +64,16 @@ AGENTS.md                   Durable rules for Codex and contributors
 
 The beta7 baseline was recovered, not recreated, and was cross-checked against the separately published source tarball. RC1 and later releases contain explicitly documented post-recovery changes. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
-## Install 0.4.0-beta3
+## Install 0.4.0-beta4
 
-Download the beta3 release descriptor (or build it from source), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
+Build the beta4 descriptor from source (or download it once published), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
 
 ```bash
 plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The final command must print `0.4.0-beta3`. Using the stable descriptor filename `unmotion.plg` avoids duplicate Plugins-tab entries. Upgrades preserve persistent plugin settings.
+The final command must print `0.4.0-beta4`. Using the stable descriptor filename `unmotion.plg` avoids duplicate Plugins-tab entries. Upgrades preserve persistent plugin settings.
 
 Install the same version on both peers. Pair hosts from **Settings → unMotion**, then test connectivity before attempting a migration.
 
