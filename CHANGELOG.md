@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1-beta1 — unreleased
+
+- Add read-only diagnostic reports to migration and clone jobs, including running/stuck jobs.
+- Include selected logs, VM/storage metadata and source/destination host specifications with explicit freshness and availability labels.
+- Add report-local aliases, mandatory secret filtering, optional original paths, editable preview and explicit public-sharing review.
+- Download/copy reports without a GitHub account, or open a generic GitHub issue draft for user-controlled submission.
+- Keep published feeds unchanged during Community Applications review; no migration or protocol-version changes.
+
 ## 0.4.0 — 2026-09-12
 
 Author: Richard Skinner

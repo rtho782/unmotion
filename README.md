@@ -1,5 +1,7 @@
 # unMotion
 
+Development candidate: **0.4.1-beta1**, adding [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md). Not published; stable installation and update feeds remain on 0.4.0 during Community Applications review.
+
 unMotion is an Unraid plugin for cloning virtual machines, moving them between paired hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery. Current stable release: **0.4.0**.
 
 > Keep verified backups. Migration and recovery change VM definitions and storage. Test your workloads before relying on these operations; a successful preflight is not a substitute for a recovery plan.

@@ -219,6 +219,13 @@ try {
         case 'jobLog':
             $id=(string)($_REQUEST['job_id']??''); if(!preg_match('/^[A-Za-z0-9_.-]+$/',$id)) throw new InvalidArgumentException('Invalid job id.');
             $path=UNM_JOBS_DIR.'/'.$id.'/migration.log'; reply(['success'=>true,'log'=>is_file($path)?file_get_contents($path):'']);
+        case 'diagnosticReport':
+            requirePostMutation();
+            $original=filter_var($_POST['original_paths']??false,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);
+            $peer=filter_var($_POST['include_peer']??false,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);
+            if($original===null||$peer===null)throw new InvalidArgumentException('Invalid diagnostic options.');
+            header('Cache-Control: no-store');
+            reply(['success'=>true,'report'=>unmDiagnosticReport((string)($_POST['job_id']??''),$original,null,null,$peer)]);
         default: fail('Unknown action.',404);
     }
 } catch(Throwable $e) { fail($e); }

@@ -18,7 +18,7 @@ REPLICATION_WORKER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-worker"
 REPLICATION_SCHEDULER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-scheduler"
 
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL[[:space:]]*=[[:space:]]*5;' "$LIB"
-grep -q "const UNM_VERSION = '0.4.0';" "$LIB"
+grep -q "const UNM_VERSION = '0.4.1-beta1';" "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MIN[[:space:]]*=[[:space:]]*5;' "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MAX[[:space:]]*=[[:space:]]*6;' "$LIB"
 grep -Fq "'protocolMinVersion'=>UNM_PROTOCOL_MIN" "$LIB"

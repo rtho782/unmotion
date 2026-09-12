@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.0}"
+EXPECTED_VERSION="${1:-0.4.1-beta1}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -26,6 +26,7 @@ if command -v php >/dev/null; then
   find "$ROOT/src/rootfs" -type f \( -name '*.php' -o -name '*.page' \) -print0 |
     while IFS= read -r -d '' file; do php -l "$file" >/dev/null; done
   php "$ROOT/tests/php-regressions.php"
+  php "$ROOT/tests/diagnostic-regressions.php"
   if [[ -w /mnt ]]; then
     php "$ROOT/tests/nvram-regressions.php"
     php "$ROOT/tests/nvram-destination-regressions.php"
@@ -38,6 +39,7 @@ fi
 
 if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/unmotion.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/report.js"
 else
   echo 'WARN: Node.js unavailable; JavaScript syntax check skipped.' >&2
 fi

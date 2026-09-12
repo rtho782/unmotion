@@ -45,14 +45,11 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Stable 0.4.0 release of the tested beta4 feature set; GPL-3.0-only.
-- Stable update channel; plugin version includes -stable for Unraid upgrade ordering.
-- Resolve manually recovered migrations and finish their original source policy safely.
-- Verify ISO contents before reuse and after transfer.
-- Map byte-identical firmware and variable templates to valid destination paths.
-- Share software TPM discovery and validate exact host-state evidence before cleanup.
-- Support owned custom NVRAM for cloning and capability-gated replication/recovery.
-- Add a concise description to the Unraid Plugins page; preserve the five-minute source-deletion delay.
+- Beta candidate: read-only diagnostic reports for migration and clone jobs.
+- Review/edit redacted logs, VM configuration, storage evidence and both hosts' technical specifications.
+- Download/copy reports without a GitHub account; open an issue draft without storing GitHub credentials or uploading automatically.
+- Optional original paths and bounded current-peer specs; recorded metadata remains available when a peer cannot be contacted.
+- No migration algorithm or protocol-version changes. GPL-3.0-only.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
 EOF

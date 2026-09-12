@@ -5,6 +5,9 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 $cmd=$argv[1]??'capabilities';
 try {
     switch($cmd){
+        case 'diagnostic-host':
+            echo json_encode(unmDiagnosticHost(),JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)."\n";
+            break;
         case 'migration-resolve':
             $raw=base64_decode((string)($argv[2]??''),true);
             $request=$raw!==false&&strlen($raw)<=16384?json_decode($raw,true):null;

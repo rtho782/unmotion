@@ -1,7 +1,8 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.0';
+const UNM_VERSION = '0.4.1-beta1';
+require_once __DIR__.'/diagnostics.php';
 require_once __DIR__.'/migration-nvram.php';
 require_once __DIR__.'/host-state.php';
 require_once __DIR__.'/firmware.php';

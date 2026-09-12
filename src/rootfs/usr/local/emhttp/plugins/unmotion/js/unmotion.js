@@ -1164,6 +1164,7 @@ function loadJobs() {
       (r.jobs||[]).slice(0,20).forEach(function(j) {
         var failed=['FAILED','INTERRUPTED'].indexOf(j.state)>=0,retry=failed&&(j.jobType||'migration')!=='clone';
         var actions='<input type="button" value="Log" class="unm-log" data-id="'+esc(j.id)+'"> ';
+        actions+='<input type="button" value="Report a problem" class="unm-report-job" data-id="'+esc(j.id)+'"> ';
         if(j.state==='ATTENTION_REQUIRED'&&(j.jobType||'migration')==='migration')actions+='<input type="button" value="Resolve migration" class="unm-resolve-migration" data-id="'+esc(j.id)+'"> ';
         if(retry)actions+='<input type="button" value="Resume" class="unm-resume" data-id="'+esc(j.id)+'"> ';
         if((isCancellable(j.state)||failed)&&j.state!=='CANCELLING')actions+='<input type="button" value="Cancel" class="unm-cancel-job" data-id="'+esc(j.id)+'"> ';

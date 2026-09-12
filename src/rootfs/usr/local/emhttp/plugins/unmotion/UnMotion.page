@@ -12,6 +12,8 @@ $config = unmLoadConfig();
 ?>
 <link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
 <script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
+<script src="/plugins/unmotion/js/report.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
+<link rel="stylesheet" href="/plugins/unmotion/css/report.css?v=<?=rawurlencode(UNM_VERSION)?>">
 <div id="unm-flash" class="unm-flash"></div>
 <div class="unm-toolbar"><div><h2 style="margin:0">_(unMotion)_ <small class="unm-muted">v<?=htmlspecialchars(UNM_VERSION)?></small></h2><span class="unm-muted">_(Local VM cloning, scheduled ZFS replication, and Cold or reduced-downtime Warm Move between paired Unraid hosts)_</span></div><div class="unm-actions"><label>_(Destination)_: <select id="unm-peer-select"></select></label><span id="unm-selected-peer-health" class="unm-health-pill unm-health-checking">_(Checking health…)_</span><label>_(ISOs)_: <select id="unm-default-iso"><option value="copy">_(Copy)_</option><option value="remove">_(Leave empty)_</option><option value="retain">_(Retain paths)_</option></select></label><input type="button" id="unm-refresh" value="_(Refresh)_"><input type="button" value="_(Settings)_" onclick="location.href='/UnMotionSettings'"></div></div>
 <div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table unm-vm-table"><colgroup><col class="unm-col-vm"><col class="unm-col-state"><col class="unm-col-storage"><col class="unm-col-features"><col class="unm-col-vcpu"><col class="unm-col-ram"><col class="unm-col-autostart"><col class="unm-col-action"></colgroup><thead><tr><th>_(VM)_</th><th>_(State)_</th><th>_(Storage)_</th><th>_(Features)_</th><th>_(vCPUs)_</th><th>_(RAM)_</th><th>_(Autostart)_</th><th>_(Action)_</th></tr></thead><tbody id="unm-vm-body"><tr><td colspan="8">_(Loading...)_</td></tr></tbody></table></div>
@@ -28,3 +30,17 @@ $config = unmLoadConfig();
 <div id="unm-recovery-modal" class="unm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-recovery-modal-title"><div class="unm-modal-box unm-recovery-modal-box"><h2 id="unm-recovery-modal-title">_(Recovery control)_</h2><div id="unm-recovery-modal-content" aria-live="polite"></div><div class="unm-modal-actions"><input type="button" class="unm-recovery-refresh" value="_(Refresh status)_"><input type="button" class="unm-modal-close" value="_(Close)_"></div></div></div>
 <div id="unm-confirm-modal" class="unm-modal unm-confirm-modal" role="alertdialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-confirm-title" aria-describedby="unm-confirm-message"><div class="unm-modal-box unm-confirm-box"><h2 id="unm-confirm-title">_(Confirm action)_</h2><div id="unm-confirm-message" class="unm-confirm-message"></div><div class="unm-modal-actions"><input type="button" id="unm-confirm-cancel" value="_(Cancel)_"><input type="button" id="unm-confirm-accept" value="_(Continue)_"></div></div></div>
 <div id="unm-log-modal" class="unm-modal"><div class="unm-modal-box"><h2 id="unm-log-title">_(Job log)_</h2><pre id="unm-log-text" class="unm-pre"></pre><div class="unm-modal-actions"><input type="button" class="unm-modal-close" value="_(Close)_"></div></div></div>
+<div id="unm-report-modal" class="unm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-report-title"><div class="unm-modal-box unm-report-box">
+<h2 id="unm-report-title">_(Report a problem)_</h2>
+<p>_(Create a read-only troubleshooting report for this job. It does not cancel or resolve the job. Nothing is uploaded automatically.)_</p>
+<p class="unm-callout unm-callout-warning">_(GitHub issues and attachments are public. Redaction is best-effort, not a guarantee of anonymity. Review every section and remove anything you do not want to share.)_</p>
+<label><input type="checkbox" id="unm-report-paths"> _(Include original filenames and paths — potentially identifying)_</label><br>
+<label><input type="checkbox" id="unm-report-peer" checked> _(Collect current destination host specs over the existing SSH pairing; use recorded data if unavailable)_</label>
+<div class="unm-modal-inline-actions"><input type="button" id="unm-report-generate" value="_(Generate report)_"></div>
+<p id="unm-report-status" role="status" aria-live="polite"></p>
+<label for="unm-report-text">_(Report preview — edit before sharing; describe what happened at the top)_</label>
+<textarea id="unm-report-text" spellcheck="false" rows="18" maxlength="1048576"></textarea>
+<label><input type="checkbox" id="unm-report-reviewed"> _(I reviewed this report and understand that sharing it on GitHub makes it public.)_</label>
+<p>_(No GitHub account is needed to download the report. GitHub may ask you to sign in before submitting an issue. Keep this window open, attach the downloaded text file and submit on GitHub. You can also share the file through your support channel.)_</p>
+<div class="unm-modal-actions"><input type="button" class="unm-modal-close" value="_(Close)_"><input type="button" id="unm-report-copy" value="_(Copy report)_" disabled><input type="button" id="unm-report-download" value="_(Download report)_" disabled><input type="button" id="unm-report-github" value="_(Open GitHub issue draft)_" disabled></div>
+</div></div>
