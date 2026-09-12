@@ -8,7 +8,7 @@
 <!ENTITY package "&plgdir;/packages/unmotion-0.4.0_stable-noarch-1.txz">
 <!ENTITY payload "/tmp/unmotion-&version;.txz.b64">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-stable/unmotion.plg" launch="&launch;" min="7.0.0" icon="exchange">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion 0.4.0
 - Stable 0.4.0 release of the tested beta4 feature set; GPL-3.0-only.
