@@ -7,7 +7,7 @@ source "$ROOT/scripts/release-version.sh"
 test "$PLUGIN_VERSION" = 0.4.0-stable
 test "$SAFE_VERSION" = 0.4.0_stable
 test "$RELEASE_CHANNEL" = stable
-test "$PLUGIN_URL" = https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-stable/unmotion.plg
+test "$PLUGIN_URL" = https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg
 [[ "$PLUGIN_VERSION" > 0.4.0-beta4 ]]
 [[ "$PLUGIN_VERSION" > 0.4.0-RC1 ]]
 printf '%s\n' unmotion-0.4.0_beta4-noarch-1 unmotion-0.4.0_stable-noarch-1 | sort -V -C

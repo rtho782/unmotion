@@ -62,14 +62,14 @@ release/0.3.0-beta7/        Recovered, hash-verified PLG and TXZ
 scripts/                    New reproducible build/verification helpers
 tests/                      Static regression checks
 docs/                       Architecture, development and recovery notes
-AGENTS.md                   Durable rules for Codex and contributors
+AGENTS.md                   Durable contributor and automation guidance
 ```
 
 The beta7 baseline was recovered, not recreated, and was cross-checked against the separately published source tarball. RC1 and later releases contain explicitly documented post-recovery changes. See [docs/PROVENANCE.md](docs/PROVENANCE.md).
 
 ## Install 0.4.0
 
-Download `unmotion-0.4.0.plg` from the [0.4.0 release](https://github.com/rtho782/unmotion/releases/tag/0.4.0), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
+Download the [stable unmotion.plg](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg), copy it to `/tmp/unmotion.plg` on the Unraid host, then run as `root`:
 
 ```bash
 plugin install /tmp/unmotion.plg
@@ -82,7 +82,7 @@ Install the same version on both peers. Pair hosts from **Settings → unMotion*
 
 ### Plugins-tab updates
 
-Use **Plugins → Check for Updates**, then **Update** for unMotion. Stable releases use the dedicated `codex/plugin-stable` feed. The beta feed will offer the same 0.4.0 stable descriptor so existing beta users can graduate through the Plugins tab; once installed, their updates follow the stable feed. Neither feed follows unfinished source commits. Future beta testing requires an explicit beta installation.
+Use **Plugins → Check for Updates**, then **Update** for unMotion. Stable releases use the dedicated `plugin-stable` feed. The beta feed offers the same 0.4.0 stable descriptor so existing beta users can graduate through the Plugins tab; once installed, their updates follow the stable feed. Neither feed follows unfinished source commits. Future beta testing requires an explicit beta installation.
 
 Existing beta2 descriptors do not contain an update URL, so they need a one-time manual beta3 installation (or an administrator adding the beta feed URL to their installed descriptor). Subsequent updates use the GUI. The update does not re-pair hosts or reset settings. See [docs/PLUGIN-UPDATES.md](docs/PLUGIN-UPDATES.md).
 

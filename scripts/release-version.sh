@@ -13,6 +13,6 @@ if [[ "$VERSION" != *-* ]]; then
   PLUGIN_VERSION="$VERSION-stable"
   RELEASE_CHANNEL=stable
 fi
-PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-$RELEASE_CHANNEL/unmotion.plg"
+PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-$RELEASE_CHANNEL/unmotion.plg"
 SAFE_VERSION="${PLUGIN_VERSION//-/_}"
 SAFE_VERSION="${SAFE_VERSION,,}"

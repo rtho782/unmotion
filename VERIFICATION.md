@@ -4,6 +4,8 @@
 
 Author: Richard Skinner
 
+Post-release feed rename: the owner approved renaming the stable/beta feed branches without their development prefix. The new descriptor SHA-256 is 4f394188394a92f60e31e1e9236e8af4c0ad8b6ad993de4527f8ef9dd1574929; comparison against the original descriptor proves that only pluginURL changed, and the embedded TXZ hash remains c7a8a5f7adbd8b799adb270256a0b8c70cb2da44777533eb7295eaac5d88c9b5. Original versioned release assets remain immutable. All four owner hosts received backed-up URL-only descriptor edits and passed plugin check against the clean feeds with unchanged daemon PIDs; no package or VM operation was performed. Longcat and both lab hosts remained stable; Tacgnol remained beta4 with stable available for the user's update.
+
 - Stable promotes beta4's tested functionality without changing migration, clone, replication or recovery algorithms or protocol negotiation. Executable payload differences are limited to the application version constant; installed descriptions and GPL-3.0-only licence text are updated.
 - The full scripts/verify.sh suite passed on DEV01 with PHP, Bash and Node available, including new stable/beta feed selection and lexical/package upgrade-ordering tests. CA plugin/profile XML parsed successfully.
 - Both DEV01 and DEV02 successfully completed real plugin check/update from 0.4.0-beta4 to descriptor 0.4.0-stable / application 0.4.0. A temporary loopback-only feed served the exact candidate before public publication because Unraid's pre-update hook refreshes the candidate from the installed descriptor's feed. No Unraid hook or version comparator was modified. Temporary servers were stopped after the test.

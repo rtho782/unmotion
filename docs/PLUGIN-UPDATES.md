@@ -4,19 +4,25 @@ Author: Richard Skinner
 
 ## Stable channel (0.4.0 onward)
 
-Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-stable/unmotion.plg. Public/application version 0.4.0 uses descriptor version 0.4.0-stable and package token 0.4.0_stable. Unraid compares plugin versions with strcmp and package versions with sort -V; the suffix sorts after beta4 without changing Unraid itself. Build-time regressions cover this transition and subsequent versions.
+Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.0 uses descriptor version 0.4.0-stable and package token 0.4.0_stable. Unraid compares plugin versions with strcmp and package versions with sort -V; the suffix sorts after beta4 without changing Unraid itself. Build-time regressions cover this transition and subsequent versions.
 
 Publish the stable GitHub release and verify its assets before advancing either feed. For graduation from beta4, publish that same stable descriptor to both feeds. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
 
+## Initial feed-branch rename
+
+Before CA submission, the owner requested removal of the development prefix from both feed branches. This is a deliberate metadata-only exception to descriptor byte identity: the initial 0.4.0 feed descriptor changes only its pluginURL, retaining the exact released payload and version. Original GitHub release assets and tags are not rewritten. The CA template pins the corrected feed descriptor, not the historical asset. New packages use the clean URLs from the builder.
+
+Existing owner installations receive a backed-up, URL-only edit of their installed descriptor; no package installation, service restart or VM operation is required. Users of historical release assets must similarly update the feed URL. Do not rename or delete feeds with external installations without a compatibility migration.
+
 The following beta-channel notes remain relevant for explicit prerelease installations.
 
-Starting in 0.4.0-beta3, the generated PLG includes this pluginURL:
+Explicit beta installations use this pluginURL after the branch rename:
 
-https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-beta/unmotion.plg
+https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg
 
 Unraid reads the installed descriptor's pluginURL when checking for updates, downloads the candidate to /tmp/plugins/unmotion.plg and compares version strings. Its normal Plugins-tab update then runs the candidate installer. The stable installed name remains unmotion.plg; settings, pairings and job state are preserved by the upgrade.
 
-The dedicated codex/plugin-beta branch contains a copy of the published PLG, not a pointer to unfinished package source. Publish the tagged GitHub prerelease and its PLG/TXZ assets first, then advance that branch to the byte-identical PLG. Do not replace published release assets to deliver later code changes; increment the release version.
+The dedicated plugin-beta branch contains the released installer, not unfinished package source. Apart from the explicit initial URL-only migration above, publish the tagged GitHub prerelease and its PLG/TXZ assets first, then advance that branch to the byte-identical PLG. Do not replace published release assets to deliver later code changes; increment the release version.
 
 ## Release procedure
 

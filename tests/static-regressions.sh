@@ -181,5 +181,5 @@ grep -Fq 'function unmRecoveryAssertLegacyVmAvailable' "$LIB"
 grep -Fq "['activation']['phase']='STARTING'" "$LIB"
 ! sed -n '/^function unmRecoveryStatus/,/^}/p' "$LIB" | grep -Fq 'unmRecoveryReconcileActivationState('
 echo 'Static migration and scheduled-replication regression markers are present.'
-grep -Fq 'PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/codex/plugin-$RELEASE_CHANNEL/unmotion.plg"' "$ROOT/scripts/release-version.sh"
+grep -Fq 'PLUGIN_URL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-$RELEASE_CHANNEL/unmotion.plg"' "$ROOT/scripts/release-version.sh"
 grep -Fq 'pluginURL="$PLUGIN_URL"' "$ROOT/scripts/build.sh"
