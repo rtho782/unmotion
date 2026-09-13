@@ -2,11 +2,13 @@
 declare(strict_types=1);
 $root=sys_get_temp_dir().'/unmotion-archive-test-'.bin2hex(random_bytes(6));mkdir($root,0700);mkdir($root.'/seeds',0700);
 define('UNM_BOOT_DIR',$root);
+function unmLoadJson(string $path,array $default=[]):array {return is_file($path)?(json_decode(file_get_contents($path),true)?:$default):$default;}
 function unmSeedPath(string $id):string {if(!preg_match('/^seed-[a-f0-9]{24}$/D',$id))throw new RuntimeException('Invalid id');return UNM_BOOT_DIR.'/seeds/'.$id;}
 function unmSeed(string $id):array {return json_decode(file_get_contents(unmSeedPath($id).'/seed.json'),true,512,JSON_THROW_ON_ERROR);}
 function unmAtomicJson(string $path,array $value):void {file_put_contents($path,json_encode($value));}
 function archiveCheck(bool $ok,string $message):void {if(!$ok)throw new RuntimeException($message);}
 require __DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/seed-archive.php';
+require __DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/seed-concurrency.php';
 $id='seed-'.bin2hex(random_bytes(12));$dir=unmSeedPath($id);mkdir($dir,0700);
 $seed=['id'=>$id,'vmUuid'=>'74100000-1111-4111-8111-000000000001','state'=>'FAILED'];
 file_put_contents($dir.'/seed.json',json_encode($seed));file_put_contents($dir.'/request.cfg','ACTION="remove"');file_put_contents($dir.'/seed.log','Original failure and failed removal attempts');file_put_contents($dir.'/storage.tsv','');file_put_contents($dir.'/remove-source-candidates.txt',"pool/Squid Proxy\n");
@@ -20,12 +22,15 @@ try {
     $rebooted=$explicit;$rebooted['executionBootId']='different-boot';archiveCheck(!unmSeedNeverStarted($dir,$rebooted),'Pre-storage proof crossed a reboot');unlink($dir.'/remote-capabilities.json');
     symlink($dir.'/request.cfg',$dir.'/unexpected');archiveCheck(!unmSeedNeverStarted($dir,$seed),'Accepted unexpected symlink');unlink($dir.'/unexpected');
     unlink($dir.'/storage.tsv');symlink($dir.'/request.cfg',$dir.'/storage.tsv');archiveCheck(!unmSeedNeverStarted($dir,$seed),'Accepted allowlisted symlink');unlink($dir.'/storage.tsv');file_put_contents($dir.'/storage.tsv','');
-    unmSeedMarkStorageStarted($id);archiveCheck(unmArchiveUnstartedSeed($id)===null&&is_dir($dir),'Started transfer record was archived');file_put_contents($dir.'/seed.json',json_encode($seed));
+    unmSeedMarkStorageStarted($id);archiveCheck(unmArchiveUnstartedSeed($id)===null&&is_dir($dir),'Started transfer record was archived');
+    $staleRejected=false;try{unmRemoveSeed($id,true);}catch(RuntimeException $e){$staleRejected=str_contains($e->getMessage(),'archive-only');}
+    archiveCheck($staleRejected&&unmSeed($id)['storageStarted']===true&&is_dir($dir),'Stale archive-only request reached storage cleanup');
+    file_put_contents($dir.'/seed.json',json_encode($seed));
     $busy=fopen('/var/lock/unmotion-seed-'.$id.'.lock','c');flock($busy,LOCK_EX);
     $denied=false;try{unmArchiveUnstartedSeed($id);}catch(RuntimeException $e){$denied=true;}finally{fclose($busy);}
     archiveCheck($denied&&is_dir($dir),'Active worker not excluded');
     $hashes=[];foreach(glob($dir.'/*') as $file)$hashes[basename($file)]=hash_file('sha256',$file);
-    $result=unmArchiveUnstartedSeed($id);$archive=$result['archivePath'];
+    $result=unmRemoveSeed($id,true);$archive=$result['archivePath'];
     archiveCheck($result['recordOnly']&&!is_dir($dir)&&is_dir($archive),'Failed record not archived');
     foreach($hashes as $name=>$hash)archiveCheck(hash_file('sha256',$archive.'/'.$name)===$hash,'Archive changed evidence');
     $worker=file_get_contents(__DIR__.'/../src/rootfs/usr/local/sbin/unmotion-seed-worker');

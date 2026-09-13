@@ -1,6 +1,8 @@
 # unMotion
 
-Beta release: **[0.4.1-beta1](https://github.com/rtho782/unmotion/releases/tag/0.4.1-beta1)**, adding [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and never-started seed cleanup](docs/CONCURRENT-WARM-PREPARATION.md). Available through `plugin-beta`; the stable feed remains on 0.4.0.
+Beta release: **[0.4.1-beta2](https://github.com/rtho782/unmotion/releases/tag/0.4.1-beta2)**. Available through `plugin-beta`; the stable feed remains on 0.4.0.
+
+The beta includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Install beta2 on both peers for parallel cutover support. Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
 
 unMotion is an Unraid plugin for cloning virtual machines, moving them between paired hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery. Current stable release: **0.4.0**.
 

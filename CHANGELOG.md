@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.1-beta2 — 2026-09-13
+
+- Remove redundant TPM preparation/cutover and ordinary clone confirmations; retain data-deletion, recovery-ownership and genuine consistency warnings.
+- Present supported transfer fallbacks as neutral details, and show preparation warnings inline without a second confirmation.
+- Make failback preflight, exact-claim renewal and hold-acknowledgement retry single-click actions with unchanged backend validation.
+- Distinguish archive-only failed records from prepared-storage deletion. Reject stale archive-only requests without falling through to storage cleanup.
+- Separate preparation/update resource guidance from mandatory cold/cutover startup checks. Scope destination health to proven transfer dependencies; unknown dependencies remain conservative.
+- Expire timestamped OOM warnings after one hour and remove obsolete release-specific wording from runtime messages.
+- Disable prepared-copy controls during cutover, including queued and attention-required jobs; serialize admission and reject conflicting seed mutations on the server.
+- Hide optical-media choices for VMs without attached ISOs, with an explicit no-copy default.
+- Fingerprint the main browser script so same-version candidate updates refresh their controls correctly.
+- Allow independent Warm Move cutovers to overlap between capable beta2 peers, with retained-storage claims and aggregate pending RAM reservations. Serialize only the destination start check/start section.
+- Cold/overwrite/shared-ISO-copy and older-peer operations wait cancellably for exclusive access instead of failing on host-wide lock contention.
+- No protocol-version changes; partial receives, snapshot ownership, source cleanup and replication/recovery safeguards are retained.
+
 ## 0.4.1-beta1 — 2026-09-13
 
 - Add read-only diagnostic reports to migration and clone jobs, including running/stuck jobs.

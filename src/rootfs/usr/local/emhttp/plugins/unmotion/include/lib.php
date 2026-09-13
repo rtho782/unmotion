@@ -1,7 +1,9 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.1-beta1';
+const UNM_VERSION = '0.4.1-beta2';
+require_once __DIR__.'/preflight-policy.php';
+require_once __DIR__.'/migration-concurrency.php';
 require_once __DIR__.'/diagnostics.php';
 require_once __DIR__.'/seed-concurrency.php';
 require_once __DIR__.'/seed-archive.php';
@@ -805,7 +807,7 @@ function unmHealth(): array {
     $syslog='/var/log/syslog';
     if(is_file($syslog)){
         $r=unmRun('tail -n 2500 '.escapeshellarg($syslog).' | grep -Eai "out of memory|oom-killer|killed process" | tail -n 1',null,5);
-        if($r['code']===0&&trim($r['stdout'])!=='')unmHealthAdd($issues,'RECENT_OOM','warning','A recent out-of-memory event appears in syslog.',false,['event'=>trim($r['stdout'])]);
+        if($r['code']===0&&($event=unmRecentOomEvent($r['stdout'],time()))!==null)unmHealthAdd($issues,'RECENT_OOM','warning','An out-of-memory event occurred within the last hour ('.$event['occurredAt'].').',false,$event);
     }
     $rank=['healthy'=>0,'warning'=>1,'unhealthy'=>2];$status='healthy';
     foreach($issues as $issue){$candidate=($issue['severity']??'warning')==='critical'?'unhealthy':'warning';if($rank[$candidate]>$rank[$status])$status=$candidate;}
@@ -822,7 +824,7 @@ function unmCapabilities(): array {
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),
-        'features'=>['firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
+        'features'=>['parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -1078,7 +1080,7 @@ function unmCloneDatasetIsolated(string $dataset,string $mountpoint,array $diskP
  */
 function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options=[]): array {
     $cloneName=unmCloneName($cloneName);
-    $vm=unmParseVm($vmIdentifier);$cfg=unmLoadConfig();$errors=[];$warnings=[];$plan=[];$maps=[];
+    $vm=unmParseVm($vmIdentifier);$cfg=unmLoadConfig();$errors=[];$warnings=[];$notes=[];$plan=[];$maps=[];
     try{unmRecoveryAssertLegacyVmAvailable((string)($vm['uuid']??''),'Clone');}catch(Throwable $e){$errors[]=$e->getMessage();}
     $state=strtolower(trim((string)($vm['state']??'')));
     if($state!=='shut off')$errors[]='Power off the source VM before cloning.';
@@ -1088,7 +1090,7 @@ function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options
     $existing=unmRun(['virsh','dominfo',$cloneName],null,10);
     if($existing['code']===0)$errors[]='A local VM already uses the requested clone name.';
     if(!empty($vm['usb']))$warnings[]='USB passthrough definitions will be removed from the clone.';
-    if(!empty($vm['isos']))$warnings[]='Attached ISOs will retain their current read-only host paths.';
+    if(!empty($vm['isos']))$notes[]='Attached ISOs will retain their current read-only host paths.';
 
     $customization=(string)($options['guest_customization']??'ubuntu-dhcp');
     if(!in_array($customization,['ubuntu-dhcp','none-disconnected'],true))$errors[]='Invalid guest customization mode.';
@@ -1101,7 +1103,7 @@ function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options
     if(file_exists($cloneDir)||is_link($cloneDir))$errors[]='The clone image directory already exists: '.$cloneDir;
     $stem=unmCloneObjectStem($cloneName);$usedDest=[];$datasetGroups=[];$datasetNo=0;$required=['zfs'=>0,'image'=>0];$poolRequired=[];$datasetCandidates=[];$datasetIsolation=[];
     foreach(($vm['disks']??[]) as $disk)if(($disk['transferClass']??'')==='zfs-dataset-image')$datasetCandidates[(string)($disk['zfsDataset']??'')][]=(string)($disk['resolvedSource']??$disk['source']??'');
-    foreach($datasetCandidates as $dataset=>$paths){$first=null;foreach(($vm['disks']??[]) as $disk)if(($disk['zfsDataset']??'')===$dataset){$first=$disk;break;}$datasetIsolation[$dataset]=unmCloneDatasetIsolated($dataset,(string)($first['zfsMountpoint']??''),$paths);if(!$datasetIsolation[$dataset])$warnings[]='Dataset '.$dataset.' contains unrelated content or child datasets; cloning will copy only the VM disk files.';}
+    foreach($datasetCandidates as $dataset=>$paths){$first=null;foreach(($vm['disks']??[]) as $disk)if(($disk['zfsDataset']??'')===$dataset){$first=$disk;break;}$datasetIsolation[$dataset]=unmCloneDatasetIsolated($dataset,(string)($first['zfsMountpoint']??''),$paths);if(!$datasetIsolation[$dataset])$notes[]='Dataset '.$dataset.' contains unrelated content or child datasets; cloning will copy only the VM disk files.';}
 
     foreach(($vm['disks']??[]) as $i=>$disk){
         $source=(string)($disk['source']??'');$kind=(string)($disk['type']??'');$class=(string)($disk['transferClass']??'');
@@ -1153,7 +1155,7 @@ function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options
     $fs=unmLocalFsCapacity(rtrim((string)$cfg['image_dir'],'/'));if($required['image']>0&&(int)($fs['available']??0)<$required['image'])$errors[]='Insufficient image-directory space for the clone.';
     $xml=unmDomainXml((string)$vm['uuid'],true);$interfaceCount=preg_match_all('~<interface\b[^>]*>.*?</interface>~s',$xml);
     $identity=['uuid'=>$cloneUuid,'genid'=>$cloneGenid,'macs'=>unmNewDomainMacs((int)$interfaceCount),'sourceXmlSha256'=>hash('sha256',$xml)];
-    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'vm'=>$vm,'clone'=>['name'=>$cloneName,'directory'=>$cloneDir,'customization'=>$customization]+$identity,'plan'=>$plan,'pathMap'=>$maps,'capacity'=>['required'=>$required,'imageAvailable'=>(int)($fs['available']??0),'zfsPools'=>$poolRequired]];
+    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'notes'=>array_values(array_unique($notes)),'vm'=>$vm,'clone'=>['name'=>$cloneName,'directory'=>$cloneDir,'customization'=>$customization]+$identity,'plan'=>$plan,'pathMap'=>$maps,'capacity'=>['required'=>$required,'imageAvailable'=>(int)($fs['available']??0),'zfsPools'=>$poolRequired]];
 }
 
 function unmPeerPath(string $id, string $ext='json'): string {
@@ -2920,7 +2922,7 @@ function unmRecoveryStatus(string $replicationId): array {
         $policy=unmReplicationPolicy($replicationId);$identity=['replicationId'=>$replicationId,'vmUuid'=>(string)$policy['vmUuid'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
         $record=unmRecoveryLoad(unmRecoverySourcePath($replicationId),unmRecoveryDefaultRecord($identity,true));$public=unmRecoveryPublicRecord($record);$peer=unmPeer((string)$policy['peerId']);$interlocks=unmRecoveryInterlockStatus();$armReasons=[];$armWarnings=[];
         $armRetry=!empty($record['armed'])&&in_array((string)$record['state'],['ARMING','FENCED'],true)&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));if(!unmRecoveryPeerSupportsV6($peer))$armReasons[]='The paired destination has not negotiated protocol 6 and recovery protocol 1.';if(empty($interlocks['ready']))$armReasons=array_merge($armReasons,(array)$interlocks['reasons']);if(((string)$record['state']!=='REPLICATION_ONLY'||!empty($record['armed']))&&!$armRetry)$armReasons[]='Recovery is already armed or requires reconciliation.';
-        try{$vm=unmParseVm((string)$policy['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))$armReasons[]='Recovery beta2 does not support PCI or USB host-device passthrough.';if(strtolower(trim((string)($vm['state']??'')))!=='shut off')$armReasons[]='Power off the source VM before arming recovery; beta2 does not grandfather a running VM through the startup fence.';if(!empty($vm['tpm']))$armWarnings[]='Virtual TPM recovery is best effort unless a safe powered-off checkpoint is available.';}catch(Throwable $e){$armReasons[]=$e->getMessage();}
+        try{$vm=unmParseVm((string)$policy['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))$armReasons[]='Recovery does not support PCI or USB host-device passthrough.';if(strtolower(trim((string)($vm['state']??'')))!=='shut off')$armReasons[]='Power off the source VM before arming recovery; running VMs cannot bypass the startup fence.';if(!empty($vm['tpm']))$armWarnings[]='Virtual TPM recovery is best effort unless a safe powered-off checkpoint is available.';}catch(Throwable $e){$armReasons[]=$e->getMessage();}
         $nativeAutostart=null;try{$nativeAutostart=unmRecoveryNativeAutostart((string)$policy['vmUuid']);}catch(Throwable $e){$armReasons[]='Native VM autostart could not be inspected: '.$e->getMessage();}
         $arm=['ready'=>!$armReasons,'resumeTransaction'=>$armRetry,'reasons'=>array_values(array_unique($armReasons)),'warnings'=>array_values(array_unique($armWarnings)),'nativeAutostart'=>$nativeAutostart,'suggestedDesiredAutostart'=>$armRetry?!empty($record['desiredAutostart']):$nativeAutostart===true,'witnessSupported'=>false,'evidenceModes'=>unmRecoveryEvidenceModes(),'automaticFailover'=>false,'interlocks'=>$interlocks];
         return ['direction'=>'source','recovery'=>$public,'policy'=>['id'=>$replicationId,'vmUuid'=>$policy['vmUuid'],'vmName'=>$policy['vmName'],'peerId'=>$policy['peerId'],'peerHostId'=>$policy['peerHostId']],'points'=>[],'arm'=>$arm,'actions'=>unmRecoveryActionFlags($record,'source'),'operation'=>unmRecoveryOperation($replicationId)?:null];
@@ -3091,12 +3093,12 @@ function unmRecoveryDispatchRpc(string $command,array $request): array {
 }
 
 function unmRecoveryArmUnlocked(string $replicationId,bool $desiredAutostart,array $witnessPeerIds=[]): array {
-    if($witnessPeerIds)throw new RuntimeException('Witness voting is not implemented in beta2; no witness may be selected implicitly.');$context=unmRecoveryIdentityFromSource($replicationId);$identity=(array)$context['identity'];$interlocks=unmRecoveryInterlockStatus();if(empty($interlocks['ready']))throw new RuntimeException(implode(' ',(array)$interlocks['reasons']));
-    $vm=unmParseVm((string)$identity['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))throw new RuntimeException('Recovery beta2 does not support PCI or USB host-device passthrough.');
+    if($witnessPeerIds)throw new RuntimeException('Witness voting is not implemented; no witness may be selected implicitly.');$context=unmRecoveryIdentityFromSource($replicationId);$identity=(array)$context['identity'];$interlocks=unmRecoveryInterlockStatus();if(empty($interlocks['ready']))throw new RuntimeException(implode(' ',(array)$interlocks['reasons']));
+    $vm=unmParseVm((string)$identity['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))throw new RuntimeException('Recovery does not support PCI or USB host-device passthrough.');
     $lock=unmRecoveryAcquireLock($replicationId);$record=[];$native=false;
     try{
         $record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord($identity,true));unmRecoveryAssertSoleSourcePolicy((string)$identity['vmUuid'],$replicationId);$state=(string)$record['state'];$retry=in_array($state,['ARMING','FENCED'],true)&&!empty($record['armed'])&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));if(!$retry&&($state!=='REPLICATION_ONLY'||!empty($record['armed'])))throw new RuntimeException('Recovery is already armed or requires reconciliation.');if($retry&&$desiredAutostart!==!empty($record['desiredAutostart']))throw new RuntimeException('Recovery arm retry must retain the original managed autostart intent.');
-        if(unmRecoveryVmState((string)$identity['vmUuid'])!=='shut off')throw new RuntimeException('Power off the source VM before arming recovery. Beta2 does not grandfather a running VM through the startup fence.');
+        if(unmRecoveryVmState((string)$identity['vmUuid'])!=='shut off')throw new RuntimeException('Power off the source VM before arming recovery. Running VMs cannot bypass the startup fence.');
         if(!$retry){$native=unmRecoveryNativeAutostart((string)$identity['vmUuid']);$term=max(1,(int)$record['term']+1);$record=unmRecoveryTransition($record,'ARMING',['term'=>$term,'armed'=>true,'managedAutostart'=>true,'desiredAutostart'=>$desiredAutostart,'nativeAutostartBeforeArm'=>$native,'authority'=>'SOURCE','sourceBootId'=>unmRecoveryBootId(),'destinationBootId'=>'','armTransactionId'=>unmRecoveryRandomId('arm'),'armedAt'=>gmdate('c')]);unmRecoveryStore((string)$context['path'],$record);unmRecoverySetNativeAutostart((string)$identity['vmUuid'],false);}else{$record['sourceBootId']=unmRecoveryBootId();unmRecoveryStore((string)$context['path'],$record);unmRecoverySetNativeAutostart((string)$identity['vmUuid'],false);}
     }catch(Throwable $e){
         if($record&& !empty($record['armed'])){try{$record=unmRecoveryTransition($record,'FENCED',['authority'=>'UNKNOWN','lastError'=>$e->getMessage()]);unmRecoveryStore((string)$context['path'],$record);}catch(Throwable $ignored){}}
@@ -3240,7 +3242,7 @@ function unmRecoveryEvidenceSample(array $context,array $point,string $dnsProbe,
 function unmRecoveryEvidenceModes(): array {return ['coordinated'];}
 
 function unmRecoveryValidateEvidenceMode(string $mode): string {
-    if($mode==='two-host')throw new RuntimeException('Two-host recovery is fail-closed in beta2 because transport silence cannot prove that the source VM is powered off. Use coordinated recovery with the source durably fenced.');if(!in_array($mode,unmRecoveryEvidenceModes(),true))throw new InvalidArgumentException('Recovery evidence mode is not enabled.');return $mode;
+    if($mode==='two-host')throw new RuntimeException('Two-host recovery is unavailable because transport silence cannot prove that the source VM is powered off. Use coordinated recovery with the source durably fenced.');if(!in_array($mode,unmRecoveryEvidenceModes(),true))throw new InvalidArgumentException('Recovery evidence mode is not enabled.');return $mode;
 }
 
 function unmRecoveryCollectEvidence(string $replicationId,array $parameters): array {
@@ -3444,7 +3446,7 @@ function unmRecoveryWaitGuestHealthy(string $vmUuid,int $timeoutSeconds=90): arr
 function unmRecoveryRevalidateAuthorityForStart(array $context,array $record,array $point): array {
     $claim=(array)($record['claim']??[]);$kind=(string)($claim['kind']??'');$activationId=(string)($record['activationId']??'');$term=(int)$record['term'];
     if($kind==='coordinated'){$reply=unmRecoveryRemoteCall($context,'recovery-activation-commit',$term,['activationId'=>$activationId,'pointId'=>(string)($claim['pointId']??''),'selectionHash'=>(string)($claim['selectionHash']??'')],30);$expires=strtotime((string)($reply['grantExpiresAt']??''));if(empty($reply['committed'])||empty($reply['sourceFenced'])||!hash_equals((string)($claim['selectionHash']??''),(string)($reply['selectionHash']??''))||$expires===false||$expires<=time()||$expires>time()+150)throw new RuntimeException('Source did not issue a fresh exact activation start grant.');return $reply;}
-    throw new RuntimeException('Beta2 starts require an authenticated coordinated source-fence claim; every other claim kind is fail-closed.');
+    throw new RuntimeException('Recovery starts require an authenticated coordinated source-fence claim; every other claim kind is fail-closed.');
 }
 
 function unmRecoveryActivationPhase(array $context,string $activationId,string $phase,array $changes=[]): array {
@@ -3479,7 +3481,7 @@ function unmRecoveryStopActivationUnlocked(string $replicationId): array {
 function unmRecoveryRetryCheckpointUnlocked(string $replicationId,string $checkpointId,bool $startVm=true): array {
     $context=unmRecoveryIdentityFromReplica($replicationId);$manifest=(array)$context['manifest'];$uuid=(string)$context['identity']['vmUuid'];$lock=unmRecoveryAcquireLock($replicationId);
     try{
-        $record=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$record['state'],['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Checkpoint retry requires a stopped destination-authoritative activation.');$activation=(array)($record['activation']??[]);$activationId=(string)$record['activationId'];if(!hash_equals($activationId,(string)($activation['activationId']??'')))throw new RuntimeException('Activation ownership journal is incomplete.');$activationRoot=unmRecoveryAssertActivationRoot((string)($activation['activationRoot']??''),$uuid,$activationId);$xmlPath=(string)($activation['xmlPath']??'');if(!hash_equals($activationRoot.'/domain.xml',$xmlPath)||!is_file($xmlPath)||is_link($xmlPath)||!hash_equals((string)($activation['xmlSha256']??''),(string)hash_file('sha256',$xmlPath)))throw new RuntimeException('Activation XML journal is missing, moved, or changed before checkpoint retry.');$hostStateBinding=unmRecoveryHostStateBinding((string)file_get_contents($xmlPath),$uuid);if(!hash_equals((string)($activation['hostStateBinding']['bindingHash']??''),(string)$hostStateBinding['bindingHash']))throw new RuntimeException('Activation host-state binding changed before checkpoint retry.');$point=unmRecoveryFindPoint($manifest,(string)$activation['pointId']);$currentCheckpoint=(string)($activation['checkpointId']??'');if(!hash_equals($currentCheckpoint,$checkpointId))throw new RuntimeException('Beta2 checkpoint retry is bound to the already authorized checkpoint; selecting a different checkpoint requires a new coordinated recovery claim.');$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,$checkpointId);$expectedSelection=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!hash_equals($expectedSelection,(string)($record['claim']['selectionHash']??''))||!hash_equals($expectedSelection,(string)($activation['selectionHash']??'')))throw new RuntimeException('Checkpoint retry selection no longer matches the exact authorized activation.');
+        $record=unmRecoveryLoad((string)$context['path']);if(!in_array((string)$record['state'],['RECOVERED_STOPPED','RECOVERY_BOOT_FAILED'],true)||(string)$record['authority']!=='DESTINATION')throw new RuntimeException('Checkpoint retry requires a stopped destination-authoritative activation.');$activation=(array)($record['activation']??[]);$activationId=(string)$record['activationId'];if(!hash_equals($activationId,(string)($activation['activationId']??'')))throw new RuntimeException('Activation ownership journal is incomplete.');$activationRoot=unmRecoveryAssertActivationRoot((string)($activation['activationRoot']??''),$uuid,$activationId);$xmlPath=(string)($activation['xmlPath']??'');if(!hash_equals($activationRoot.'/domain.xml',$xmlPath)||!is_file($xmlPath)||is_link($xmlPath)||!hash_equals((string)($activation['xmlSha256']??''),(string)hash_file('sha256',$xmlPath)))throw new RuntimeException('Activation XML journal is missing, moved, or changed before checkpoint retry.');$hostStateBinding=unmRecoveryHostStateBinding((string)file_get_contents($xmlPath),$uuid);if(!hash_equals((string)($activation['hostStateBinding']['bindingHash']??''),(string)$hostStateBinding['bindingHash']))throw new RuntimeException('Activation host-state binding changed before checkpoint retry.');$point=unmRecoveryFindPoint($manifest,(string)$activation['pointId']);$currentCheckpoint=(string)($activation['checkpointId']??'');if(!hash_equals($currentCheckpoint,$checkpointId))throw new RuntimeException('Checkpoint retry is bound to the already authorized checkpoint; selecting a different checkpoint requires a new coordinated recovery claim.');$checkpoint=unmRecoveryFindCheckpoint($manifest,$point,$checkpointId);$expectedSelection=unmRecoverySelectionHash($replicationId,$point,$checkpoint,$activationId);if(!hash_equals($expectedSelection,(string)($record['claim']['selectionHash']??''))||!hash_equals($expectedSelection,(string)($activation['selectionHash']??'')))throw new RuntimeException('Checkpoint retry selection no longer matches the exact authorized activation.');
     }finally{unmRecoveryReleaseLock($lock);}
     if(!$checkpoint)throw new RuntimeException('This activation has no TPM/NVRAM checkpoint to retry.');if(unmRecoveryVmState($uuid)!=='shut off'||!unmRecoveryDomainOwned($uuid,$replicationId,$activationId))throw new RuntimeException('Recovered VM is not exactly owned and stopped before checkpoint retry.');
 
@@ -3561,7 +3563,7 @@ function unmSeed(string $id): array {
 }
 
 function unmSeeds(): array {
-    unmEnsureDirs();$out=[];
+    unmEnsureDirs();$out=[];$jobs=unmJobs();
     foreach(glob(UNM_SEEDS_DIR.'/*/seed.json')?:[] as $file){
         $seed=unmLoadJson($file);if(!$seed)continue;$changed=0;$unknown=false;
         if(($seed['state']??'')==='READY')foreach($seed['storage']??[] as $item){
@@ -3571,7 +3573,9 @@ function unmSeeds(): array {
                 if($r['code']===0)$changed+=(int)trim($r['stdout']);else $unknown=true;
             }elseif($kind==='image')$unknown=true;
         }
-        $seed['estimatedChangedBytes']=$changed;$seed['estimateIncomplete']=$unknown;$out[]=$seed;
+        $seed['estimatedChangedBytes']=$changed;$seed['estimateIncomplete']=$unknown;
+        $seed['archiveOnlyAvailable']=unmSeedNeverStarted(dirname($file),$seed);
+        $seed['activeJob']=unmActiveVmJob((string)($seed['vmUuid']??''),$jobs);$out[]=$seed;
     }
     usort($out,static fn(array $a,array $b):int=>strcmp((string)($b['updatedAt']??''),(string)($a['updatedAt']??'')));
     return $out;
@@ -3593,7 +3597,7 @@ function unmStartSeedAdmitted(string $vmIdentifier,string $peerId,string $action
         $pre=unmPreflight($vmIdentifier,$peerId,['migration_mode'=>'warm-prepare','iso_action'=>'remove','source_cleanup_action'=>'unregister']);
         if(empty($pre['ready'])) throw new RuntimeException(implode('; ',$pre['errors']??['Warm Move preparation preflight failed.']));
     } else {
-        $pre=unmPreflight($vmIdentifier,$peerId,['migration_mode'=>'warm-cutover','warm_seed_id'=>$id,'iso_action'=>'remove','source_cleanup_action'=>'unregister']);
+        $pre=unmPreflight($vmIdentifier,$peerId,['migration_mode'=>'warm-update','warm_seed_id'=>$id,'iso_action'=>'remove','source_cleanup_action'=>'unregister']);
         if(empty($pre['ready'])) throw new RuntimeException(implode('; ',$pre['errors']??['Prepared-copy update preflight failed.']));
     }
     $peer=unmTestPeer($peerId);$dir=unmSeedPath($id);
@@ -3637,7 +3641,7 @@ function unmJobs(): array {
 }
 
 function unmActiveJobStates(): array {
-    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'];
+    return ['STARTING','WAITING_FOR_MIGRATION','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'];
 }
 
 function unmCleanupCloneJob(array $job,string $dir): void {
@@ -4065,10 +4069,14 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     $warmSeed=[];$warmSeedDestinations=[];$warmBaseSnapshot='';$seedCompatibilityErrors=[];
     if(!in_array($sourceCleanupAction,['unregister','retain','delete'],true)) throw new InvalidArgumentException('Invalid source cleanup action.');
     if(!in_array($conflictAction,['cancel','overwrite'],true)) throw new InvalidArgumentException('Invalid destination conflict action.');
-    if(!in_array($migrationMode,['cold','warm-prepare','warm-cutover'],true)) throw new InvalidArgumentException('Invalid migration mode.');
+    if(!in_array($migrationMode,['cold','warm-prepare','warm-update','warm-cutover'],true)) throw new InvalidArgumentException('Invalid migration mode.');
+    $storageOnly=in_array($migrationMode,['warm-prepare','warm-update'],true);
+    $usesSeed=in_array($migrationMode,['warm-update','warm-cutover'],true);
+    $notes=[];
 
     $local=unmParseVm($vmIdentifier); $vm=$local['name']; $uuid=$local['uuid'];
-    if($migrationMode==='warm-cutover'){
+    unmAssertVmJobIdle((string)$uuid);
+    if($usesSeed){
         if($warmSeedId==='')throw new InvalidArgumentException('Select a prepared copy for Warm Move cutover.');
         $warmSeed=unmSeed($warmSeedId);
         if(($warmSeed['vmUuid']??'')!==$uuid||($warmSeed['peerId']??'')!==$peerId||($warmSeed['state']??'')!=='READY')throw new RuntimeException('The prepared copy is missing, stale, or belongs to a different VM/destination.');
@@ -4088,7 +4096,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     if($vm===''||preg_match('~[/\r\n\t]~',$vm)) throw new RuntimeException('VM name contains characters unsafe for a destination directory. Spaces are supported.');
     $errors=$seedCompatibilityErrors;try{unmRecoveryAssertLegacyVmAvailable((string)$uuid,$migrationMode==='cold'?'Move':'Warm Move');}catch(Throwable $e){$errors[]=$e->getMessage();}$warnings=[]; $plan=[]; $required=['zvol'=>0,'dataset'=>0,'image'=>0,'iso'=>0,'sourceStaging'=>0];
     $destinations=[]; $conflicts=[];
-    if($migrationMode==='warm-cutover'&&!$seedCompatibilityErrors){
+    if($usesSeed&&!$seedCompatibilityErrors){
         foreach($warmSeed['storage']??[] as $item){
             $kind=(string)($item['kind']??'');$src=(string)($item['source']??'');$dst=(string)($item['destination']??'');$snap=(string)($item['snapshot']??$warmBaseSnapshot);
             if(in_array($kind,['zvol','dataset'],true)&&$src!==''&&$dst!==''&&$snap!==''){
@@ -4107,7 +4115,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
         }
     }
     if($migrationMode==='cold'&&strtolower(trim((string)($local['state']??'')))!=='shut off') $errors[]='Power off the VM before a cold migration.';
-    if(!empty($local['pci'])) $errors[]='PCIe passthrough is present and is unsupported in 0.3.';
+    if(!empty($local['pci'])) $errors[]='PCIe passthrough is present and is not supported for migration.';
     foreach(($local['disks']??[]) as $disk)if(($disk['transferClass']??'')==='unsupported-backing-chain'){
         $detail=(string)($disk['backingInfo']['error']??'');
         $errors[]=$detail!==''?$detail:'External qcow2 backing chain; flatten before migration.';
@@ -4115,10 +4123,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     if(!empty($local['tpm'])&&empty($caps['features']['tpm'])) $errors[]='The destination does not report software TPM support.';
     if(($caps['protocolVersion']??null)!==UNM_PROTOCOL) $errors[]='Destination protocol version is incompatible.';
     foreach(['virsh','tar','ssh'] as $tool) if(empty($caps['tools'][$tool])) $errors[]="Destination command is unavailable: $tool";
-    foreach(($peerHealth['issues']??[]) as $issue){
-        $message='Destination health: '.(string)($issue['message']??$issue['code']??'Unknown issue');
-        if(!empty($issue['blocksMigration']))$errors[]=$message;else $warnings[]=$message;
-    }
+    // Scope host-health findings after constructing the storage plan.
 
     $destResources=(array)($caps['resources']??[]);
     $sourceVcpus=max(1,(int)($local['vcpus']??1));
@@ -4131,11 +4136,8 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     $destCpuCount=(int)($destResources['cpuOnlineCount']??0);
     $destMemAvail=(int)($destResources['availableBytes']??0);
     $destMemTotal=(int)($destResources['totalBytes']??0);
-    if($destCpuCount<=0) $errors[]='Unable to determine the destination online CPU count.';
-    elseif($requestedVcpus>$destCpuCount) $errors[]="Requested vCPU count ($requestedVcpus) exceeds the destination online CPU count ($destCpuCount).";
-    if($destMemAvail<=0) $errors[]='Unable to determine destination available memory.';
-    elseif($requestedMemoryKiB*1024>$destMemAvail) $errors[]='Insufficient currently available RAM on the destination for the requested VM memory.';
-    elseif(($destMemAvail-$requestedMemoryKiB*1024)<max(1073741824,(int)($destMemTotal*.05))) $warnings[]='The requested VM memory leaves little immediately available RAM on the destination.';
+    $resourceMessages=unmMigrationResourceMessages($requestedVcpus,$requestedMemoryKiB,$destResources,$storageOnly);
+    $errors=array_merge($errors,$resourceMessages['errors']);$warnings=array_merge($warnings,$resourceMessages['warnings']);$notes=array_merge($notes,$resourceMessages['notes']);
 
     $pinning=unmPinningCompatibility((array)($local['cpuPinning']??[]),$destResources,$sourceVcpus,$requestedVcpus);
     $requestedPin=(string)($options['cpu_pinning_action']??'');
@@ -4144,22 +4146,22 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     if(empty($pinning['present'])) $effectivePin='none';
     elseif(empty($pinning['valid'])) {
         $effectivePin='remove';
-        foreach($pinning['reasons'] as $reason) $warnings[]=$reason;
-        $warnings[]='Existing CPU/NUMA pinning is not valid on the destination and will be removed.';
+        if($storageOnly)$notes[]='Existing CPU/NUMA pinning will need review at cutover.';
+        else {$warnings=array_merge($warnings,$pinning['reasons']);$warnings[]='Existing CPU/NUMA pinning is not valid on the destination and will be removed.';}
     } else $effectivePin=$requestedPin!==''?$requestedPin:(!empty($cfg['remove_cpu_pinning'])?'remove':'retain');
-    if($requestedPin==='retain'&&empty($pinning['valid'])) $warnings[]='Retain was requested, but invalid pinning is being forcibly stripped.';
+    if(!$storageOnly&&$requestedPin==='retain'&&empty($pinning['valid'])) $warnings[]='Retain was requested, but invalid pinning is being forcibly stripped.';
 
     $storage=$caps['storage']??[]; $checks=$caps['checks']??[]; $features=$caps['features']??[];
     $imageDir=(string)($storage['imageDirectory']??''); $zvolDataset=(string)($storage['zvolDataset']??''); $isoDir=(string)($storage['isoDirectory']??'');
     $imageZfsDataset=(string)($storage['imageZfsDataset']??'');
     $destZvolReady=!empty($features['zvol'])&&!empty($checks['zvol_dataset_exists'])&&$zvolDataset!=='';
-    if($imageDir===''||empty($checks['image_dir_exists'])||empty($checks['image_dir_writable'])) $errors[]='Destination image directory is unavailable or not writable.';
+    // Require image storage only when used by the plan, including custom NVRAM.
     $hasAttachedIsos=!empty($local['isos']);
     if($hasAttachedIsos&&$isoAction==='copy'&&($isoDir===''||empty($checks['iso_dir_exists'])||empty($checks['iso_dir_writable']))) $errors[]='Destination ISO directory is unavailable or not writable.';
     try {
         $firmware=unmFirmwareRequest(unmDomainXml($uuid,true));
         if($firmware){
-            if(empty($features['firmwareMapping']))throw new RuntimeException('Firmware verification requires unMotion beta4 or later on the destination.');
+            if(empty($features['firmwareMapping']))throw new RuntimeException('The destination does not advertise firmware-path verification; update its unMotion plugin.');
             $r=unmRemote($peer,'/usr/local/sbin/unmotion-agent firmware-plan '.escapeshellarg(base64_encode(json_encode($firmware,JSON_THROW_ON_ERROR))),45);
             if($r['code']!==0)throw new RuntimeException('Destination firmware compatibility: '.trim($r['stderr'].' '.$r['stdout']));
         }
@@ -4207,15 +4209,18 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             }
         }
         unset($device);
-        $warnings[]='USB passthrough is present: '.$matched.' of '.count($local['usb']).' devices have a VID:PID match on the destination. Choose retain, remove, or cancel.';
-        if($nonPortable>0) $warnings[]="$nonPortable live USB attachment(s) are unresolved or VID:PID-ambiguous and cannot be portably retained.";
+        if($storageOnly)$notes[]='USB passthrough is not changed by preparation. Choose retain or remove at cutover.';
+        else {
+            $warnings[]='USB passthrough: '.$matched.' of '.count($local['usb']).' devices have a VID:PID match on the destination. Choose retain or remove below.';
+            if($nonPortable>0)$warnings[]="$nonPortable live USB attachment(s) are unresolved or VID:PID-ambiguous and cannot be portably retained.";
+        }
     }
 
     foreach($local['disks'] as $disk) {
         if($disk['type']==='zvol') {
             $src=substr($disk['source'],strlen('/dev/zvol/'));
             $enc=unmRun(['zfs','get','-H','-o','value','encryption',$src],null,15);
-            if($enc['code']===0&&trim($enc['stdout'])!=='off') $errors[]='Native ZFS encryption is not supported for zvol replication in 0.3 beta1: '.$src;
+            if($enc['code']===0&&trim($enc['stdout'])!=='off') $errors[]='Native ZFS encryption is not supported for zvol replication: '.$src;
             $rr=unmRun(['zfs','get','-pH','-o','value','referenced',$src],null,15);
             $rs=unmRun(['zfs','get','-pH','-o','value','volsize',$src],null,15);
             if($rr['code']!==0||$rs['code']!==0) { $errors[]='Unable to inspect source zvol: '.$src; $referenced=$volsize=0; }
@@ -4223,12 +4228,12 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             if($destZvolReady) {
                 $dst=rtrim($zvolDataset,'/').'/'.basename($src);
                 $transferBytes=$referenced;
-                if($migrationMode==='warm-cutover'&&$warmBaseSnapshot!==''){
+                if($usesSeed&&$warmBaseSnapshot!==''){
                     $delta=unmRun(['zfs','get','-pH','-o','value','written@'.$warmBaseSnapshot,$src],null,15);
                     if($delta['code']===0)$transferBytes=max(0,(int)trim($delta['stdout']));
                 }
                 $required['zvol']+=$transferBytes;
-                $plan[]=['kind'=>'zvol','source'=>$src,'destination'=>$dst,'bytes'=>$transferBytes,'seeded'=>$migrationMode==='warm-cutover'];
+                $plan[]=['kind'=>'zvol','source'=>$src,'destination'=>$dst,'bytes'=>$transferBytes,'seeded'=>$usesSeed];
                 if(empty($caps['tools']['zfs'])) $errors[]='Destination zfs command is unavailable for zvol receive.';
                 if(!isset($warmSeedDestinations[$dst])&&unmRemote($peer,'zfs list '.escapeshellarg($dst).' >/dev/null 2>&1',15)['code']===0) { $usedResult=unmRemote($peer,'zfs get -pH -o value used '.escapeshellarg($dst),15); $conflicts[]=['kind'=>'zvol','path'=>$dst,'reclaimBytes'=>$usedResult['code']===0?(int)trim($usedResult['stdout']):0]; }
             } else {
@@ -4236,7 +4241,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
                 $plan[]=['kind'=>'zvol-to-image','source'=>$src,'destination'=>$dst,'bytes'=>$volsize,'format'=>'raw'];
                 if(!unmTool('qemu-img')) $errors[]='Source qemu-img is unavailable for zvol-to-image conversion.';
                 if(empty($caps['tools']['rsync'])) $errors[]='Destination rsync is unavailable for image transfer.';
-                $warnings[]='Destination zvol storage is unavailable; '.$src.' will be converted to a sparse raw image.';
+                $notes[]='Storage format: '.$src.' will be converted to a sparse raw image because destination zvol storage is unavailable.';
                 if(!isset($warmSeedDestinations[$dst])&&unmRemote($peer,'test -e '.escapeshellarg($dst),15)['code']===0) { $spaceResult=unmRemote($peer,'stat -c '.escapeshellarg('%b %B').' '.escapeshellarg($dst),15); $reclaim=0; if($spaceResult['code']===0&&preg_match('/^(\d+)\s+(\d+)$/',trim($spaceResult['stdout']),$sm))$reclaim=(int)$sm[1]*(int)$sm[2]; $conflicts[]=['kind'=>'image','path'=>$dst,'reclaimBytes'=>$reclaim]; }
             }
             if(isset($destinations[$dst])) $errors[]="Multiple VM disks map to the same destination: $dst"; else $destinations[$dst]=true;
@@ -4246,7 +4251,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             $bytes=is_file($source)?(int)filesize($source):0;
             $nativeDataset=($disk['transferClass']??'')==='zfs-dataset-image'&&$imageZfsDataset!==''&&!empty($caps['tools']['zfs']);
             if($nativeDataset){
-                if(!empty($disk['sourceViaFuse']))$warnings[]='A VM disk uses /mnt/user (FUSE); a direct pool/disk path is recommended.';
+                if(!empty($disk['sourceViaFuse']))$notes[]='The /mnt/user disk path was resolved to its underlying storage for this transfer.';
                 $srcDataset=(string)($disk['zfsDataset']??'');$srcMount=(string)($disk['zfsMountpoint']??'');
                 $destDataset=rtrim($imageZfsDataset,'/').'/'.basename($srcDataset);
                 $destMount=rtrim($imageDir,'/').'/'.basename($srcMount);
@@ -4254,12 +4259,12 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
                 if(!isset($destinations[$groupKey])){
                     $usedResult=unmRun(['zfs','get','-pH','-o','value','referenced',$srcDataset],null,15);
                     $datasetBytes=$usedResult['code']===0?(int)trim($usedResult['stdout']):$bytes;
-                    if($migrationMode==='warm-cutover'&&$warmBaseSnapshot!==''){
+                    if($usesSeed&&$warmBaseSnapshot!==''){
                         $delta=unmRun(['zfs','get','-pH','-o','value','written@'.$warmBaseSnapshot,$srcDataset],null,15);
                         if($delta['code']===0)$datasetBytes=max(0,(int)trim($delta['stdout']));
                     }
                     $required['dataset']+=$datasetBytes;
-                    $plan[]=['kind'=>'zfs-filesystem','source'=>$srcDataset,'destination'=>$destDataset,'sourceMountpoint'=>$srcMount,'destinationMountpoint'=>$destMount,'bytes'=>$datasetBytes,'seeded'=>$migrationMode==='warm-cutover','files'=>[]];
+                    $plan[]=['kind'=>'zfs-filesystem','source'=>$srcDataset,'destination'=>$destDataset,'sourceMountpoint'=>$srcMount,'destinationMountpoint'=>$destMount,'bytes'=>$datasetBytes,'seeded'=>$usesSeed,'files'=>[]];
                     $destinations[$groupKey]=count($plan)-1;
                     if(!isset($warmSeedDestinations[$destDataset])&&unmRemote($peer,'zfs list '.escapeshellarg($destDataset).' >/dev/null 2>&1',15)['code']===0){$used=unmRemote($peer,'zfs get -pH -o value used '.escapeshellarg($destDataset),15);$conflicts[]=['kind'=>'dataset','path'=>$destDataset,'reclaimBytes'=>$used['code']===0?(int)trim($used['stdout']):0];}
                 }
@@ -4270,7 +4275,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
             }else{
                 $dst=rtrim($imageDir,'/').'/'.$vm.'/'.basename($source);
                 $transferBytes=$bytes;
-                if($migrationMode==='warm-cutover'&&isset($warmSeedDestinations[$dst])){
+                if($usesSeed&&isset($warmSeedDestinations[$dst])){
                     $srcStat=unmRun(['stat','-c','%b %B',$source],null,10);$srcAllocated=$bytes;
                     if($srcStat['code']===0&&preg_match('/^(\d+)\s+(\d+)$/',trim($srcStat['stdout']),$sm))$srcAllocated=(int)$sm[1]*(int)$sm[2];
                     $dstStat=unmRemote($peer,'stat -c '.escapeshellarg('%b %B').' '.escapeshellarg($dst),15);$dstAllocated=0;
@@ -4278,14 +4283,12 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
                     $transferBytes=max(67108864,$srcAllocated-$dstAllocated);
                 }
                 $required['image']+=$transferBytes;
-                $plan[]=['kind'=>'image','source'=>$source,'destination'=>$dst,'bytes'=>$transferBytes,'seeded'=>$migrationMode==='warm-cutover','storageClass'=>$disk['transferClass']??'non-zfs-image'];
+                $plan[]=['kind'=>'image','source'=>$source,'destination'=>$dst,'bytes'=>$transferBytes,'seeded'=>$usesSeed,'storageClass'=>$disk['transferClass']??'non-zfs-image'];
                 if(empty($caps['tools']['rsync'])) $errors[]='Destination rsync is unavailable for image transfer.';
                 if(isset($destinations[$dst])) $errors[]="Multiple VM disks map to the same destination: $dst"; else $destinations[$dst]=true;
                 if(!isset($warmSeedDestinations[$dst])&&unmRemote($peer,'test -e '.escapeshellarg($dst),15)['code']===0) { $spaceResult=unmRemote($peer,'stat -c '.escapeshellarg('%b %B').' '.escapeshellarg($dst),15); $reclaim=0; if($spaceResult['code']===0&&preg_match('/^(\d+)\s+(\d+)$/',trim($spaceResult['stdout']),$sm))$reclaim=(int)$sm[1]*(int)$sm[2]; $conflicts[]=['kind'=>'image','path'=>$dst,'reclaimBytes'=>$reclaim]; }
-                if(!empty($disk['sourceViaFuse']))$warnings[]='A VM disk uses /mnt/user (FUSE); a direct pool/disk path is recommended.';
-                if(($disk['transferClass']??'')==='shared-zfs-image')$warnings[]='A VM image is in a shared ZFS dataset; Warm Move uses two-pass rsync.';
-                elseif(($disk['transferClass']??'')==='encrypted-zfs-image')$warnings[]='A VM image is in an encrypted ZFS dataset; Warm Move uses two-pass rsync.';
-                elseif(($disk['transferClass']??'')==='non-zfs-image')$warnings[]='A VM image is not on ZFS; Warm Move uses two-pass rsync.';
+                if(!empty($disk['sourceViaFuse']))$notes[]='The /mnt/user disk path was resolved to its underlying storage for this transfer.';
+                $notes[]=$migrationMode==='cold'?'File images use sparse rsync copying.':'File images use an online rsync seed and a final powered-off rsync pass; cutover may take longer than native ZFS replication.';
             }
         } else $errors[]='Unsupported disk source: '.$disk['source'];
     }
@@ -4318,6 +4321,14 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
         }
     }catch(Throwable $e){$errors[]=$e->getMessage();}
 
+    $healthScope=unmMigrationHealthScope($plan,$caps);
+    if($healthScope['image']&&($imageDir===''||empty($checks['image_dir_exists'])||empty($checks['image_dir_writable'])))$errors[]='Destination image directory is unavailable or not writable.';
+    foreach(($peerHealth['issues']??[]) as $issue){
+        $level=unmMigrationHealthDisposition($issue,$healthScope,$storageOnly,(string)$uuid);
+        $message='Destination health: '.(string)($issue['message']??$issue['code']??'Unknown issue');
+        if($level==='error')$errors[]=$message;elseif($level==='warning')$warnings[]=$message;elseif($level==='note')$notes[]=$message;
+    }
+    if($storageOnly)$notes[]='Storage preparation does not start a destination VM. CPU, RAM, USB and final TPM/UEFI state will be checked at cutover.';
     $storageConflicts=array_values(array_filter($conflicts,static fn(array $c):bool=>in_array($c['kind']??'', ['zvol','dataset','image'], true)));
     if($conflicts) {
         if($conflictAction==='cancel') {
@@ -4382,6 +4393,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     ];
     return [
         'ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),
+        'notes'=>array_values(array_unique($notes)),'storageOnly'=>$storageOnly,
         'vm'=>$local,'peer'=>$peer,'peerHealth'=>$peerHealth,'destination'=>$caps,'plan'=>$plan,'resourcePlan'=>$resourcePlan,'migrationMode'=>$migrationMode,'warmSeed'=>$warmSeed,
         'capacity'=>['required'=>$required,'available'=>['zvol'=>$zfree+$reclaimable['zvol'],'image'=>$ifree+$reclaimable['image'],'iso'=>$isofree,'sourceStaging'=>$stageFree],'currentlyFree'=>['zvol'=>$zfree,'image'=>$ifree,'iso'=>$isofree],'reclaimable'=>$reclaimable,'zfsPools'=>$poolAvail],
         'sourceCleanup'=>['action'=>$sourceCleanupAction,'soakSeconds'=>300],

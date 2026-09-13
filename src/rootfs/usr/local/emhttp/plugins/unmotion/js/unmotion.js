@@ -279,7 +279,7 @@ function flags(vm) {
     if((vm.pci||[]).length)x.push(featureBadge('PCI blocked','PCIe passthrough is not currently supported and blocks migration.','unm-bad'));
     if(vm.hasCpuPinning)x.push(featureBadge('CPU Pinning','CPU pinning can be retained only when it is valid on the destination; otherwise it must be removed.'));
     if((vm.guestAgent||{}).connected)x.push(featureBadge('Guest agent','QEMU Guest Agent is connected. unMotion can request graceful shutdown and briefly quiesce filesystems for Warm Move snapshots.','unm-ok'));
-    if(vm.storageReadiness==='amber')x.push(featureBadge('Warm Move: rsync','Warm Move will use an online seed plus a final powered-off rsync pass. This is less efficient than native ZFS replication.','unm-warn'));
+    if(vm.storageReadiness==='amber')x.push(featureBadge('Warm Move: rsync','Warm Move will use an online seed plus a final powered-off rsync pass. Cutover may take longer than native ZFS replication.'));
     if(vm.storageReadiness==='green')x.push(featureBadge('Warm Move: ZFS','Native ZFS snapshots and incremental send/receive are available, reducing cutover downtime.','unm-ok'));
     return '<div class="unm-feature-list">'+x.join('')+'</div>';
     
@@ -323,13 +323,20 @@ function renderInventory() {
       if(peerId)actions+='<input type="button" class="unm-replicate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" data-replication-id="'+esc(replication?replication.id:'')+'" value="'+(replication?'Configure replication':'Replicate')+'">';
       else actions+='<input type="button" value="Replicate" disabled title="Select a paired destination first">';
       if((vm.pci||[]).length)actions+='<input type="button" value="Clone blocked by PCIe" disabled title="Remove PCIe passthrough before cloning">';
-      else if(vm.tpm)actions+='<input type="button" value="Clone blocked by TPM" disabled title="RC2 does not clone virtual TPM identity or secrets">';
+      else if(vm.tpm)actions+='<input type="button" value="Clone blocked by TPM" disabled title="Cloning virtual TPM identity or secrets is not supported">';
       else actions+='<input type="button" class="unm-clone" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="'+(poweredOff?'Clone locally':'Power off before clone')+'" '+(poweredOff?'':'disabled')+'>';
       actions+='</div>';
+      if(seed&&seed.activeJob)actions=disableSeedActions(actions,seed.activeJob.message);
       var managedRecovery=recoveryPolicyForVm(vm.uuid),autostartHtml=managedRecovery?'<span class="unm-badge unm-recovery-warning">Managed by unMotion</span><br><small class="unm-muted">Native autostart disabled; startup is fenced</small>':esc(vm.autostart);
       body.append('<tr><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td class="unm-storage-cell">'+esc(storageText(vm))+storageDetailHtml(vm)+'</td><td class="unm-features-cell">'+flags(vm)+'</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+autostartHtml+'</td><td>'+actions+'</td></tr>');
     });
     if(!latestVms.length)body.html('<tr><td colspan="8">No VMs found.</td></tr>');
+  }
+
+function disableSeedActions(html,message) {
+    var content=$('<div>').html(html);
+    content.find('input').not('.unm-seed-log, .unm-replicate').prop('disabled',true).attr('title',message);
+    return content.html();
   }
 
 function renderSeeds() {
@@ -338,8 +345,9 @@ function renderSeeds() {
       var actions='<input type="button" value="Log" class="unm-seed-log" data-id="'+esc(seed.id)+'"> ';
       if(seed.state==='READY')actions+='<input type="button" value="Update" class="unm-warm-update" data-vm-id="'+esc(seed.vmUuid)+'" data-seed-id="'+esc(seed.id)+'"> <input type="button" value="Cut over" class="unm-warm-cutover" data-vm-id="'+esc(seed.vmUuid)+'" data-vm-name="'+esc(seed.vmName)+'" data-seed-id="'+esc(seed.id)+'"> <input type="button" value="Remove" class="unm-remove-seed" data-id="'+esc(seed.id)+'">';
       else if(seed.state==='INTERRUPTED')actions+='<input type="button" value="Resume" class="unm-resume-seed" data-id="'+esc(seed.id)+'"> <input type="button" value="Remove failed seed" class="unm-remove-seed" data-id="'+esc(seed.id)+'">';
-      else if(seed.state==='FAILED')actions+='<input type="button" value="Remove failed seed" class="unm-remove-seed" data-id="'+esc(seed.id)+'">';
-      body.append('<tr><td>'+esc(seed.vmName)+'</td><td>'+esc(seed.peerName||seed.peerId)+'</td><td>'+esc(seed.state)+'</td><td>'+esc(seed.lastSyncAt||'—')+'</td><td>'+esc(seed.estimateIncomplete?'At least '+fmtBytes(seed.estimatedChangedBytes):fmtBytes(seed.estimatedChangedBytes))+'</td><td>'+actions+'</td></tr>');
+      else if(seed.state==='FAILED')actions+='<input type="button" value="'+(seed.archiveOnlyAvailable?'Archive failed record':'Delete prepared storage')+'" class="unm-remove-seed" data-record-only="'+(seed.archiveOnlyAvailable?'1':'0')+'" data-id="'+esc(seed.id)+'">';
+      if(seed.activeJob)actions=disableSeedActions(actions,seed.activeJob.message);
+      body.append('<tr><td>'+esc(seed.vmName)+'</td><td>'+esc(seed.peerName||seed.peerId)+'</td><td>'+esc(seed.activeJob?'BUSY / '+seed.activeJob.state:seed.state)+'</td><td>'+esc(seed.lastSyncAt||'—')+'</td><td>'+esc(seed.estimateIncomplete?'At least '+fmtBytes(seed.estimatedChangedBytes):fmtBytes(seed.estimatedChangedBytes))+'</td><td>'+actions+'</td></tr>');
     });
     if(!seeds.length)body.html('<tr><td colspan="6">No prepared moves.</td></tr>');
   }
@@ -436,7 +444,7 @@ function showReplicationModal(vmId,vmName,replicationId) {
     var tpmHtml=vm.tpm
       ? '<div class="unm-callout unm-callout-warning"><strong>Virtual TPM detected.</strong> Recovery is more reliable without a TPM. unMotion retains the last safe powered-off TPM copy and labels best-effort captures.</div><div class="unm-choice-list"><label><input type="radio" name="unm-rep-tpm-mode" value="power-cycle" '+(tpmMode==='power-cycle'?'checked':'')+'><strong>Power cycle (recommended)</strong><br><small>Briefly stop and restart the VM to establish an initial safe TPM and firmware checkpoint.</small></label><label><input type="radio" name="unm-rep-tpm-mode" value="best-effort" '+(tpmMode==='best-effort'?'checked':'')+'><strong>Best-effort stun</strong><br><small>Pause the VM while copying TPM files. The checkpoint is labelled best effort and may not be bootable with every disk point.</small></label></div>'
       : '<input type="hidden" name="unm-rep-tpm-mode" value="none"><p class="unm-muted">No virtual TPM was detected; TPM checkpoint selection is not required.</p>';
-    var html='<div class="unm-callout unm-callout-info"><strong>Beta2 recovery boundary:</strong> Scheduled replication always leaves replica storage read-only and undefined. A separate, explicitly armed coordinated-recovery workflow may create activation-owned ZFS clones and define a stopped VM; automatic failover remains disabled.</div>'+
+    var html='<div class="unm-callout unm-callout-info"><strong>Recovery behaviour:</strong> Scheduled replication always leaves replica storage read-only and undefined. A separate, explicitly armed coordinated-recovery workflow may create activation-owned ZFS clones and define a stopped VM; automatic failover remains disabled.</div>'+
       '<div class="unm-form-row"><label for="unm-rep-peer">Destination</label><div><select id="unm-rep-peer" '+(activeReplicationId?'disabled':'')+'><option value="">Select a paired host</option>'+peerOptions+'</select>'+(activeReplicationId?'<small class="unm-muted">Remove and recreate the policy to use a different destination.</small>':'')+'</div></div>'+
       '<div class="unm-form-row"><label for="unm-rep-rpo">Recovery point objective</label><div class="unm-slider-field"><input type="range" id="unm-rep-rpo" min="0" max="9" step="1" value="'+rpoIdx+'" list="unm-rep-rpo-notches"><datalist id="unm-rep-rpo-notches">'+rpoTicks+'</datalist><div class="unm-slider-value" id="unm-rep-rpo-value"></div><div class="unm-slider-notches">'+tickLabels+'</div></div></div>'+
       '<div class="unm-form-row"><label for="unm-rep-retention">Recovery points retained in 24 hours</label><div class="unm-slider-field"><input type="range" id="unm-rep-retention" min="1" max="'+max+'" step="1" value="'+retention+'" list="unm-rep-retention-notches"><datalist id="unm-rep-retention-notches"></datalist><div class="unm-slider-value" id="unm-rep-retention-value"></div><small id="unm-rep-retention-help" class="unm-muted"></small></div></div>'+
@@ -748,7 +756,7 @@ function recoverySourceControlsHtml(payload,state) {
       var desiredAutostart=arm.suggestedDesiredAutostart===true||arm.nativeAutostart===true||recovery.desiredAutostart===true;
       html+='<label class="unm-toggle"><input type="checkbox" id="unm-recovery-desired-autostart" '+(desiredAutostart?'checked':'')+'><span class="unm-toggle-slider"></span><span class="unm-toggle-label">Start this VM only after unMotion completes startup fencing checks</span></label>';
       if(arm.witnessSupported===true)html+='<div class="unm-form-row"><label>Optional recovery witnesses</label><div class="unm-choice-list unm-witness-list">'+recoveryWitnessOptions(recovery.witnessPeerIds||recovery.witnesses||[],payload)+'</div></div>';
-      else html+='<p class="unm-muted">Witness quorum is not advertised by this beta2 control plane. No witness can be selected implicitly.</p>';
+      else html+='<p class="unm-muted">Witness quorum is not advertised by this recovery control plane. No witness can be selected implicitly.</p>';
       html+='<div class="unm-modal-inline-actions"><input type="button" class="unm-recovery-arm" value="Arm recovery" '+(ready?'':'disabled')+'></div>';
       return html;
     }
@@ -789,7 +797,7 @@ function recoveryDestinationControlsHtml(payload,state) {
     }
     if(activation&&Object.keys(activation).length)html+='<div class="unm-callout unm-callout-info"><strong>Activation '+esc(activation.activationId||'')+'</strong><div class="unm-recovery-detail-grid"><span>VM state</span><span>'+esc(activation.vmState||activation.state||'unknown')+'</span><span>Point</span><code>'+esc(activation.pointId||'unavailable')+'</code><span>Checkpoint</span><code>'+esc(activation.checkpointId||'none')+'</code>'+(activation.startedAt?'<span>Started</span><span>'+esc(fmtWhen(activation.startedAt))+'</span>':'')+(activation.healthAt?'<span>Guest healthy</span><span>'+esc(fmtWhen(activation.healthAt))+'</span>':'')+'</div></div>';
     if(state==='RECOVERY_BOOT_FAILED'||state==='RECOVERED_STOPPED'){
-      if(state==='RECOVERY_BOOT_FAILED')html+='<div class="unm-callout unm-callout-danger"><strong>Boot health failed.</strong> Beta2 can crash-safely reinstall the exact checkpoint authorized by the coordinated claim. Selecting a different TPM/NVRAM backup requires a new reviewed control transaction and is deferred.</div>';
+      if(state==='RECOVERY_BOOT_FAILED')html+='<div class="unm-callout unm-callout-danger"><strong>Boot health failed.</strong> unMotion can crash-safely reinstall the exact checkpoint authorized by the coordinated claim. Selecting a different TPM/NVRAM backup requires a new reviewed control transaction and is deferred.</div>';
       if(state==='RECOVERED_STOPPED'&&recoveryActionAllowed(payload,'canStartActivation'))html+='<div class="unm-modal-inline-actions"><input type="button" class="unm-recovery-start-activation" value="Start recovered VM"></div>';
       if(recoveryActionAllowed(payload,'canRetryCheckpoint')&&activeRecoveryCheckpointId)html+='<div class="unm-modal-inline-actions"><input type="button" class="unm-recovery-retry-checkpoint" value="'+(state==='RECOVERY_BOOT_FAILED'?'Reinstall authorized checkpoint and retry':'Start with authorized checkpoint')+'"></div>';
     }
@@ -798,7 +806,7 @@ function recoveryDestinationControlsHtml(payload,state) {
       if(recoveryActionAllowed(payload,'canStopActivation'))html+='<div class="unm-modal-inline-actions"><input type="button" class="unm-recovery-stop-activation" value="Stop recovered VM"></div>';
     }
     if(state==='RECOVERED_STOPPED'||state==='RECOVERY_BOOT_FAILED'){
-      html+='<div class="unm-danger-zone"><h3>Stopped recovered activation</h3><div class="unm-callout unm-callout-info"><strong>Cold failback is preflight-only in beta2.</strong> This check does not transfer storage, start the source VM, or change authority.</div>';
+      html+='<div class="unm-danger-zone"><h3>Stopped recovered activation</h3><div class="unm-callout unm-callout-info"><strong>Cold failback is preflight-only.</strong> This check does not transfer storage, start the source VM, or change authority.</div>';
       if(recoveryActionAllowed(payload,'canFailbackPreflight'))html+='<div class="unm-modal-inline-actions"><input type="button" class="unm-recovery-failback" value="Check cold failback prerequisites"></div>';
       if(recoveryActionAllowed(payload,'canRemoveActivation')){
         var phrase='REMOVE '+vmName;
@@ -806,7 +814,7 @@ function recoveryDestinationControlsHtml(payload,state) {
       }
       html+='</div>';
     }
-    if(state.indexOf('SPLIT_BRAIN')===0||state==='FENCED')html+='<div class="unm-callout unm-callout-danger"><strong>Fail closed.</strong> Split-brain or authority uncertainty locks activation, replication advancement, pruning, and failback. Beta2 offers no implicit survivor selection.</div>';
+    if(state.indexOf('SPLIT_BRAIN')===0||state==='FENCED')html+='<div class="unm-callout unm-callout-danger"><strong>Fail closed.</strong> Split-brain or authority uncertainty locks activation, replication advancement, pruning, and failback. unMotion does not choose a survivor implicitly.</div>';
     return html;
   }
 
@@ -827,7 +835,7 @@ function renderRecoveryModal(payload) {
       $('#unm-recovery-modal-content').html('<div class="unm-callout unm-callout-danger"><strong>Recovery status identity mismatch.</strong> The selected '+esc(activeRecoveryPerspective)+' inventory returned a '+esc(role)+' record. No action is available.</div>');return;
     }
     html+='<div class="unm-recovery-summary"><div><span class="unm-muted">State</span><br>'+recoveryStateHtml(recovery)+'</div><div><span class="unm-muted">Authority term</span><br>'+esc(recovery.term||0)+'</div><div><span class="unm-muted">Authority</span><br>'+esc(recovery.authority||'UNKNOWN')+'</div><div><span class="unm-muted">Role</span><br>'+esc(role)+'</div></div>';
-    html+='<div class="unm-callout unm-callout-warning"><strong>Coordinated manual recovery only in beta2.</strong> No timer starts replicas automatically, and an unreachable source cannot grant recovery authority.</div>';
+    html+='<div class="unm-callout unm-callout-warning"><strong>Coordinated manual recovery only.</strong> No timer starts replicas automatically, and an unreachable source cannot grant recovery authority.</div>';
     if(recovery.lastError)html+='<div class="unm-callout unm-callout-danger">'+esc(recovery.lastError)+'</div>';
     html+=recoveryOperationHtml(recovery.operation||payload.operation);
     if(recoveryOperationActive(payload))html+='<div class="unm-callout unm-callout-info">Recovery mutation controls are locked until the current durable operation completes or fails.</div>';
@@ -865,35 +873,31 @@ function recoveryMutation(action,data,button,label) {
 
 function startWarmOperation(vmId,action,button) {
     var peer=$('#unm-peer-select').val();if(!peer){flash('Select a paired destination.',true);return;}
-    var vm=latestVms.find(function(v){return v.uuid===vmId;})||{};
+    var requestedSeedId=$(button).attr('data-seed-id')||'';
+    var seed=seeds.find(function(s){return requestedSeedId?s.id===requestedSeedId:s.vmUuid===vmId&&s.peerId===peer;})||{};
+    if(action!=='prepare'&&seed.peerId)peer=seed.peerId;
     var stopChecking=setButtonBusy($(button),'Checking');
-    function launch(warnings){
-      warnings=warnings||[];
-      function begin(){
-        stopChecking();
-        var stopBusy=setButtonBusy($(button),action==='prepare'?'Preparing':'Updating');
-        post(action==='prepare'?'prepareWarm':'updateWarm',{vm_id:vmId,peer_id:peer}).done(function(){flash((action==='prepare'?'Warm Move preparation':'Prepared copy update')+' started.');loadInventory();}).fail(err).always(stopBusy);
-      }
-      function confirmTpm(){
-        if(action!=='prepare'||!vm.tpm){begin();return;}
-        requestConfirmation({title:'Confirm TPM-aware preparation',message:'This VM uses a virtual TPM. The prepared copy contains storage only and cannot be booted until a final powered-off cutover transfers current TPM and UEFI state.',acceptLabel:'Prepare storage',tone:'warning'}).done(function(accepted){if(accepted)begin();else stopChecking();});
-      }
-      if(!warnings.length){confirmTpm();return;}
-      requestConfirmation({title:'Destination warnings',message:warnings.map(function(w,i){return (i+1)+'. '+w;}).join('\n'),acceptLabel:'Continue',tone:'warning'}).done(function(accepted){if(accepted)confirmTpm();else stopChecking();});
-    }
-    if(action==='prepare'){
-      post('preflight',{vm_id:vmId,peer_id:peer,options:JSON.stringify({migration_mode:'warm-prepare',iso_action:'remove',source_cleanup_action:'unregister'})}).done(function(r){
-        var pre=r.preflight||{};
-        if(!pre.ready){flash((pre.errors||['Warm Move preparation is blocked.']).join('; '),true);stopChecking();return;}
-        launch(pre.warnings||[]);
-      }).fail(function(xhr){err(xhr);stopChecking();});
-    }else{
-      post('peerHealth',{peer_id:peer}).done(function(r){
-        var h=r.health||{},messages=(h.issues||[]).map(function(i){return i.message||i.code;});
-        if(h.migrationBlocked){flash('Destination health blocks this update: '+messages.join('; '),true);stopChecking();return;}
-        launch(messages);
-      }).fail(function(xhr){err(xhr);stopChecking();});
-    }
+    var options={migration_mode:action==='prepare'?'warm-prepare':'warm-update',iso_action:'remove',source_cleanup_action:'unregister'};
+    if(action!=='prepare')options.warm_seed_id=seed.id||'';
+    post('preflight',{vm_id:vmId,peer_id:peer,options:JSON.stringify(options)}).done(function(r){
+      var pre=r.preflight||{};
+      if(!pre.ready){flash((pre.errors||['Storage preparation is blocked.']).join('; '),true);stopChecking();return;}
+      renderPreparationMessages(pre);
+      stopChecking();
+      var stopBusy=setButtonBusy($(button),action==='prepare'?'Preparing':'Updating');
+      post(action==='prepare'?'prepareWarm':'updateWarm',{vm_id:vmId,peer_id:peer}).done(function(){
+        flash((action==='prepare'?'Warm Move preparation':'Prepared copy update')+' started.');loadInventory();
+      }).fail(err).always(stopBusy);
+    }).fail(function(xhr){err(xhr);stopChecking();});
+  }
+
+function renderPreparationMessages(pre) {
+    var box=$('#unm-preparation-messages');
+    if(!box.length)box=$('<div id="unm-preparation-messages" aria-live="polite"></div>').insertBefore($('#unm-seed-body').closest('.TableContainer--no-min-width'));
+    var html='';
+    if((pre.warnings||[]).length)html+='<div class="unm-warn"><strong>Preparation warnings</strong><ul>'+pre.warnings.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+    if((pre.notes||[]).length)html+='<details class="unm-card"><summary>Preparation details</summary><ul>'+pre.notes.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></details>';
+    box.html(html);
   }
 
 function selectedResourceOptions() {
@@ -987,6 +991,7 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
         
       }
       ).join('')+'</ul></div>';
+      if((p.notes||[]).length)html+='<div class="unm-card"><strong>Transfer details</strong><ul>'+p.notes.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
       if(activeWarmSeedId)html+='<div class="unm-card unm-ok"><strong>Prepared copy selected</strong><p>The VM may remain running until cutover begins. unMotion will shut it down gracefully, send the final delta, transfer TPM/UEFI state, and start it on the destination.</p></div>';
       html+='<div class="unm-grid unm-resource-grid"><div class="unm-card"><strong>Destination resources</strong><p>Online CPUs: '+esc(dest.cpuOnlineCount||'unknown')+' ('+esc(dest.cpuOnlineSet||'unknown')+')</p><p>RAM available: '+esc(fmtBytes(dest.memoryAvailableBytes))+' of '+esc(fmtBytes(dest.memoryTotalBytes))+'</p></div>';
       html+='<div class="unm-card"><strong>Destination capacity</strong><p>Zvol: '+esc(fmtBytes((cap.available|| {
@@ -1036,7 +1041,7 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
       if(conflictItems.length){
         html+='<div class="unm-card unm-warn"><strong>Existing destination copy detected</strong><ul>'+conflictItems.map(function(c){return '<li>'+esc(String(c.kind||'item').toUpperCase()+': '+(c.path||'unknown')+(c.state?' ('+c.state+')':''))+'</li>';}).join('')+'</ul><div class="unm-form-row"><label>Destination conflict</label><select id="unm-conflict-action"><option value="cancel" '+(preservedConflict==='cancel'?'selected':'')+'>Cancel and leave destination untouched</option><option value="overwrite" '+(preservedConflict==='overwrite'?'selected':'')+'>Overwrite retained destination VM and disk data</option></select></div><p class="unm-muted">Overwrite is only allowed for a stopped VM with the same UUID or storage carrying a matching unMotion ownership marker.</p></div>';
       }else html+='<input type="hidden" id="unm-conflict-action" value="cancel">';
-      html+='<div class="unm-form-row"><label>Optical media</label><select id="unm-iso-action"><option value="copy" '+(iso==='copy'?'selected':'')+'>Copy attached ISOs</option><option value="remove" '+(iso==='remove'?'selected':'')+'>Leave drives empty</option><option value="retain" '+(iso==='retain'?'selected':'')+'>Retain original paths</option></select></div>';
+      if((v.isos||[]).length)html+='<div class="unm-form-row"><label>Optical media</label><select id="unm-iso-action"><option value="copy" '+(iso==='copy'?'selected':'')+'>Copy attached ISOs</option><option value="remove" '+(iso==='remove'?'selected':'')+'>Leave drives empty</option><option value="retain" '+(iso==='retain'?'selected':'')+'>Retain original paths</option></select></div>';
       html+='<div class="unm-card"><strong>Source handling after migration</strong><div class="unm-choice-list"><label><input type="radio" name="unm-source-cleanup" value="unregister" '+(preservedSourceCleanup==='unregister'?'checked':'')+'> <strong>Unregister source VM, retain storage</strong><br><span class="unm-muted">Remove the source libvirt definition while retaining disks, UEFI NVRAM and TPM state.</span></label><label><input type="radio" name="unm-source-cleanup" value="retain" '+(preservedSourceCleanup==='retain'?'checked':'')+'> <strong>Keep source VM registered and rename it</strong><br><span class="unm-muted">Disable autostart and append “ - Migrated to '+esc((p.peer||{}).name||'destination')+'”.</span></label><label><input type="radio" name="unm-source-cleanup" value="delete" '+(preservedSourceCleanup==='delete'?'checked':'')+'> <strong>Delete source VM and storage after validation</strong><br><span class="unm-muted">Delete only after five minutes of continuous destination runtime.</span></label></div></div>';
       $('#unm-modal-content').html(html);
       $('#unm-modal').addClass('open');
@@ -1060,9 +1065,11 @@ function showClonePreflight(vmId,vmName,cloneName,triggerButton) {
       html+='<div class="unm-form-row"><label>Guest handling</label><select id="unm-clone-customization"><option value="ubuntu-dhcp" '+(clone.customization==='ubuntu-dhcp'?'selected':'')+'>Ubuntu via guest agent: reset identity and use DHCP</option><option value="none-disconnected" '+(clone.customization==='none-disconnected'?'selected':'')+'>Do not alter guest; keep every NIC link down</option></select></div></div>';
       if((p.errors||[]).length)html+='<div class="unm-bad"><strong>Blocked</strong><ul>'+p.errors.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
       if((p.warnings||[]).length)html+='<div class="unm-warn"><strong>Safety notes</strong><ul>'+p.warnings.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+      if((p.notes||[]).length)html+='<div class="unm-card"><strong>Clone details</strong><ul>'+p.notes.map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul></div>';
+      html+='<p>Create a full independent copy. The source must remain powered off; the clone finishes stopped with autostart disabled.</p>';
       html+='<div class="unm-card"><strong>New KVM identity</strong><p>UUID: '+esc(clone.uuid||'pending')+'</p><p>MACs: '+esc((clone.macs||[]).join(', ')||'none')+'</p><p>Autostart: disabled; final power state: stopped</p></div>';
       html+='<div class="unm-pre">'+esc(lines.join('\n'))+'</div>';
-      $('#unm-modal-content').html(html);$('#unm-modal').addClass('open');$('#unm-confirm-migrate').val('Clone');$('#unm-recheck').show();
+      $('#unm-modal-content').html(html);$('#unm-modal').addClass('open');$('#unm-confirm-migrate').val('Create clone');$('#unm-recheck').show();
       updateMigrationEligibility();
     }).fail(err).always(stopBusy);
   }
@@ -1071,7 +1078,7 @@ function recheckPreflight() {
     if(activeOperation==='clone'){activeCloneName=$('#unm-clone-name').val()||'';showClonePreflight(activeVmId,activeVmName,activeCloneName,null);return;}
     var opts=selectedResourceOptions();
     opts._usb_action=$('#unm-usb-action').val()||'cancel';
-    showPreflight(activeVmId,activeVmName,$('#unm-iso-action').val(),opts,null);
+    showPreflight(activeVmId,activeVmName,$('#unm-iso-action').val()||'remove',opts,null);
     
   }
   
@@ -1087,15 +1094,10 @@ function updateMigrationEligibility() {
 
   function confirmRiskyMigration(opts) {
     var warnings=[];
-    if(activePreflight&&((activePreflight.vm||{}).usb||[]).length) warnings.push('USB passthrough is attached. Confirm that the selected retain/remove action is intentional.');
     if(opts.source_cleanup_action==='delete') warnings.push('The source VM and its disks will be permanently deleted after the destination has run continuously for five minutes.');
     if(opts.destination_conflict_action==='overwrite') warnings.push('The existing destination VM and/or disk data will be permanently deleted before transfer.');
-    if(activeWarmSeedId&&activePreflight&&activePreflight.vm&&activePreflight.vm.tpm)warnings.push('This TPM-enabled VM will only become bootable after the final powered-off TPM and UEFI state transfer. The prepared storage alone is not a recovery copy.');
-    var health=(activePreflight&&activePreflight.peerHealth)||{};
-    var healthIssues=(health.issues||[]).filter(function(i){return !i.blocksMigration;});
-    if(healthIssues.length)warnings.push('The destination reports health warnings: '+healthIssues.map(function(i){return i.message||i.code;}).join('; '));
     if(!warnings.length)return $.Deferred().resolve(true).promise();
-    return requestConfirmation({title:'Confirm risky migration',message:warnings.map(function(w,i){return (i+1)+'. '+w;}).join('\n'),acceptLabel:'Start migration',tone:'danger'});
+    return requestConfirmation({title:'Confirm data deletion',message:warnings.map(function(w,i){return (i+1)+'. '+w;}).join('\n'),acceptLabel:'Start migration',tone:'danger'});
   }
 
   function startMigration() {
@@ -1107,7 +1109,7 @@ function updateMigrationEligibility() {
       
     }
     var opts=$.extend(selectedResourceOptions(), {
-      usb_action:usb,iso_action:$('#unm-iso-action').val(),warm_seed_id:activeWarmSeedId
+      usb_action:usb,iso_action:$('#unm-iso-action').val()||'remove',warm_seed_id:activeWarmSeedId
     }
     );
     if(!opts.vcpu_count||opts.vcpu_count<1) {
@@ -1123,6 +1125,8 @@ function updateMigrationEligibility() {
     confirmRiskyMigration(opts).done(function(accepted){
       if(!accepted)return;
       var stopBusy=setButtonBusy($('#unm-confirm-migrate'),'Starting');
+      var submittingVmId=activeVmId;
+      seeds.forEach(function(seed){if(seed.vmUuid===submittingVmId)seed.activeJob={state:'SUBMITTING',message:'Cutover is being submitted.'};});renderSeeds();renderInventory();
       post('startMigration', {
         vm_id:activeVmId,peer_id:$('#unm-peer-select').val(),options:JSON.stringify(opts)
       }
@@ -1134,7 +1138,7 @@ function updateMigrationEligibility() {
         pollPeerHealth();
 
       }
-      ).fail(err).always(stopBusy);
+      ).fail(err).always(function(){stopBusy();loadSeedsOnly();});
     });
 
   }
@@ -1142,17 +1146,14 @@ function updateMigrationEligibility() {
   function startClone() {
     var cloneName=$('#unm-clone-name').val()||'',customization=$('#unm-clone-customization').val()||'none-disconnected';
     if(!cloneName){flash('Enter a clone name.',true);return;}
-    requestConfirmation({title:'Confirm local clone',message:'Create a full independent local clone named “'+cloneName+'”?\n\nThe source must remain powered off. USB passthrough will be removed and the clone will finish stopped.',acceptLabel:'Create clone',tone:'warning'}).done(function(accepted){
-      if(!accepted)return;
-      var stopBusy=setButtonBusy($('#unm-confirm-migrate'),'Cloning');
-      post('startClone',{vm_id:activeVmId,clone_name:cloneName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
-        $('#unm-modal').removeClass('open');flash('Local clone job '+r.job.id+' started.');loadInventory();loadJobs();
-      }).fail(err).always(stopBusy);
-    });
+    var stopBusy=setButtonBusy($('#unm-confirm-migrate'),'Cloning');
+    post('startClone',{vm_id:activeVmId,clone_name:cloneName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
+      $('#unm-modal').removeClass('open');flash('Local clone job '+r.job.id+' started.');loadInventory();loadJobs();
+    }).fail(err).always(stopBusy);
   }
   
 function isCancellable(state) {
-    return ['STARTING','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'].indexOf(state)>=0;
+    return ['STARTING','WAITING_FOR_MIGRATION','PREFLIGHT','PREPARING_DESTINATION','SHUTTING_DOWN','SNAPSHOTTING','CONVERTING','TRANSFERRING','COPYING_STORAGE','HOST_STATE','DEFINING_DESTINATION','DEFINING_CLONE','GUEST_CUSTOMIZING','CANCELLING'].indexOf(state)>=0;
     
   }
   
@@ -1432,7 +1433,7 @@ $(function() {
       var recovery=recoveryRecord(activeRecoveryPayload||{}),hold=recovery.hold||{},reason=String(hold.reason||''),holdUntil=String(hold.holdUntil||'');
       if(!/^hold-[a-f0-9]{24}$/.test(String(hold.holdId||''))||['vm-poweroff','vm-restart','host-shutdown','host-reboot'].indexOf(reason)<0||!holdUntil){flash('The pending hold transaction is incomplete; retry was blocked.',true);return;}
       var button=this;
-      requestConfirmation({title:'Retry hold acknowledgement?',message:'Retry this exact durable hold. No new hold or authority term will be created.',acceptLabel:'Retry hold',tone:'warning'}).done(function(accepted){if(accepted)recoveryMutation('recoveryHold',{reason:reason,hold_until:holdUntil},button,'Retrying hold');});
+      recoveryMutation('recoveryHold',{reason:reason,hold_until:holdUntil},button,'Retrying hold');
     });
     $(document).on('click','.unm-recovery-hold-release',function(){
       var recovery=recoveryRecord(activeRecoveryPayload||{}),hold=recovery.hold||{},holdId=String(hold.holdId||'');
@@ -1458,7 +1459,7 @@ $(function() {
       var payload=activeRecoveryPayload||{},claim=recoveryClaim(payload);
       if(!/^claim-[a-f0-9]{24}$/.test(claim.claimId)||!claim.selectionHash){flash('The exact retained claim is incomplete; renewal was blocked.',true);return;}
       var button=this;
-      requestConfirmation({title:'Renew coordinated claim?',message:'The source fence, Guest Agent addresses, point, checkpoint and authority term will be revalidated without changing the selection.',acceptLabel:'Renew claim',tone:'warning'}).done(function(accepted){if(accepted)recoveryMutation('recoveryRenewClaim',{},button,'Renewing claim');});
+      recoveryMutation('recoveryRenewClaim',{},button,'Renewing claim');
     });
     $(document).on('click','.unm-recovery-start-activation',function(){var button=this;requestConfirmation({title:'Start recovered VM?',message:'The exact activation storage, source fence, Guest Agent addresses, authority term, and QEMU Guest Agent health will be revalidated.',acceptLabel:'Start recovered VM',tone:'danger'}).done(function(accepted){if(accepted)recoveryMutation('recoveryStartActivation',{},button,'Starting');});});
     $(document).on('click','.unm-recovery-retry-checkpoint',function(){if(!activeRecoveryCheckpointId){flash('The authorized checkpoint is unavailable.',true);return;}var button=this,checkpointId=activeRecoveryCheckpointId;requestConfirmation({title:'Retry authorized checkpoint?',message:'Crash-safely reinstall the exact authorized TPM/NVRAM checkpoint, verify that the recovered VM is stopped, and retry boot.',acceptLabel:'Reinstall and retry',tone:'danger'}).done(function(accepted){if(accepted)recoveryMutation('recoveryRetryCheckpoint',{checkpoint_id:checkpointId,start_vm:1},button,'Retrying');});});
@@ -1469,14 +1470,24 @@ $(function() {
       var button=this;
       requestConfirmation({title:'Remove stopped activation?',message:'Remove only the stopped recovered VM definition and activation-owned storage. Retained recovery points stay inert and source authority is not restored automatically.',acceptLabel:'Remove activation',tone:'danger'}).done(function(accepted){if(accepted)recoveryMutation('recoveryRemoveActivation',{confirmation:confirmation},button,'Removing');});
     });
-    $(document).on('click','.unm-recovery-failback',function(){var button=this;requestConfirmation({title:'Check cold failback prerequisites?',message:'Beta2 will only run preflight. It will not transfer data, start the source VM, or change recovery authority.',acceptLabel:'Run preflight'}).done(function(accepted){if(accepted)recoveryMutation('recoveryFailback',{action:'preflight'},button,'Checking failback');});});
+    $(document).on('click','.unm-recovery-failback',function(){recoveryMutation('recoveryFailback',{action:'preflight'},this,'Checking failback');});
     $(document).on('click','.unm-warm-prepare',function(){startWarmOperation($(this).attr('data-vm-id'),'prepare',this);});
     $(document).on('click','.unm-warm-update',function(){startWarmOperation($(this).attr('data-vm-id'),'update',this);});
     $(document).on('click','.unm-warm-cutover',function(){
       showPreflight($(this).attr('data-vm-id'),$(this).attr('data-vm-name'),null,{warm_seed_id:$(this).attr('data-seed-id'),migration_mode:'warm-cutover'},this);
     });
     $(document).on('click','.unm-resume-seed',function(){var b=this,stop=setButtonBusy(b,'Resuming');post('resumeWarm',{seed_id:$(this).attr('data-id')}).done(function(){flash('Prepared-copy resume started.');loadSeedsOnly();}).fail(err).always(stop);});
-    $(document).on('click','.unm-remove-seed',function(){var button=this,seedId=$(this).attr('data-id');requestConfirmation({title:'Remove prepared copy?',message:'Remove this prepared copy from the destination and release its exact ZFS snapshots. If preparation never reached storage operations, only its failed record is archived; the logs are retained.',acceptLabel:'Remove prepared copy',tone:'danger'}).done(function(accepted){if(!accepted)return;var stop=setButtonBusy(button,'Removing');post('removeWarm',{seed_id:seedId}).done(function(r){flash(r.seed&&r.seed.recordOnly?'Never-started seed record archived; logs retained. No VM storage was changed.':'Prepared-copy removal started.');loadSeedsOnly();}).fail(err).always(stop);});});
+    $(document).on('click','.unm-remove-seed',function(){
+      var button=this,seedId=$(this).attr('data-id'),recordOnly=$(this).attr('data-record-only')==='1';
+      function remove(){
+        var stop=setButtonBusy(button,recordOnly?'Archiving':'Removing');
+        post('removeWarm',{seed_id:seedId,record_only:recordOnly?1:0}).done(function(r){
+          flash(r.seed&&r.seed.recordOnly?'Failed record archived; logs retained. No VM storage was changed.':'Prepared-copy removal started.');loadSeedsOnly();
+        }).fail(err).always(stop);
+      }
+      if(recordOnly){remove();return;}
+      requestConfirmation({title:'Delete prepared storage?',message:'Remove this prepared copy from the destination and release its exact ZFS snapshots. The source VM and its disks are retained.',acceptLabel:'Delete prepared storage',tone:'danger'}).done(function(accepted){if(accepted)remove();});
+    });
     $(document).on('click','.unm-seed-log',function(){showLog($(this).data('id'),'seed');});
     $('#unm-confirm-migrate').on('click',startMigration);
     $('#unm-confirm-cancel').on('click',function(){resolveConfirmation(false);});

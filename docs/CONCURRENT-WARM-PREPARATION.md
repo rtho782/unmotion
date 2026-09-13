@@ -2,9 +2,9 @@
 
 Author: Richard Skinner
 
-0.4.1-beta1 permits independent preparations from one source host to transfer concurrently. There is no longer a single exclusive lock covering every seed transfer. The compatibility lock is shared by new workers, but still excludes an older worker holding the former exclusive lock.
+The 0.4.1 beta permits independent preparations from one source host to transfer concurrently. The compatibility lock is shared by these workers, but still excludes an older worker holding an exclusive lock.
 
-The change covers prepare, update and resume workers; it does not remove final migration/cutover serialization or allow simultaneous operations on one VM. Bandwidth limits apply **per worker**, not to the combined traffic. Concurrent preparations compete for disk/network throughput and capacity; free-space preflight is not a reservation of pool bytes against other writers.
+This covers prepare, update and resume workers. With beta2 support on both peers, independent Warm Move cutovers can also run concurrently; cold moves, destination overwrite, copying attached ISOs and older-peer cutovers wait cancellably for exclusive access. See [cutover reservations and resource checks](WARNINGS-AND-PREFLIGHT.md#concurrent-cutovers). Simultaneous operations on one VM or overlapping storage remain blocked. Preparation bandwidth limits apply **per worker**, not to the combined traffic or final cutover. Concurrent transfers compete for disk/network throughput and capacity; free-space preflight is not a reservation of pool bytes against other writers.
 
 ## Guardrails
 
@@ -23,7 +23,7 @@ These reservations coordinate seeds admitted by the **same source host**, not in
 
 ## Removing a preparation that never started
 
-The Remove action now handles verified never-started FAILED records without requiring storage to exist. It archives the exact record directory under `/boot/config/plugins/unmotion/archived-seeds/`, retaining its original logs and metadata. It does not contact a peer or remove any VM, disk, snapshot or receive state in this record-only path. The UI reports that the record was archived rather than saying storage cleanup was started.
+**Archive failed record** handles verified never-started FAILED records without requiring storage to exist. It archives the exact record directory under `/boot/config/plugins/unmotion/archived-seeds/`, retaining its original logs and metadata. It does not contact a peer or remove any VM, disk, snapshot or receive state in this record-only path. The archive-only request is revalidated under locks and cannot fall through to prepared-storage removal if the page is stale. Other preparations retain the separately confirmed Remove action.
 
 New preparations record a pre-storage flag and boot identity. Before taking a snapshot or beginning a copy, the worker must persist the storage-started flag. A pre-storage flag from another boot is not accepted as proof. Legacy lock-rejected records are recognised only by a restricted set of pre-transfer files, with no generation, pending snapshot, storage manifest contents or capability/inventory artifacts. Unexpected files, links, evidence of partial transfers, non-FAILED states and active worker/VM locks exclude record-only archival. Empty manifests alone do not authorise it; other cases retain normal cleanup safeguards.
 

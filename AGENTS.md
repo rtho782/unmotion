@@ -47,3 +47,13 @@
 - Production hosts and personal data are out of scope for destructive testing.
 - Do not assume access to `UNRAID-DEV01`/`02`; verify connectivity and get explicit authorization before changing them.
 - Preserve user changes and persistent settings under `/boot/config/plugins/unmotion/` during upgrades unless reset/removal is explicitly requested.
+
+## User documentation maintenance
+
+- Documentation is part of completing a feature or release, not a separate optional follow-up. Review and update it whenever a feature, user workflow, requirement, limitation, support/reporting process or release-channel availability changes. User-visible bug fixes need a documentation update only when they change the guidance.
+- Maintain the Unraid-facing guide in `README.md` on `main` of https://github.com/rtho782/unmotion-community-apps, alongside relevant documentation in this source repository. Fetch and inspect the current companion repository before editing; preserve other contributors' changes.
+- Write for new users: explain current capabilities, practical instructions and limitations concisely. Do not turn the guide into release notes or assume readers remember older versions. Keep historical changes in the changelog.
+- Distinguish stable, published beta and unpublished development features. On every release, update the guide's availability table, feature labels and installation/update instructions against the actual published release and feed; a tested local build is not a published beta.
+- Review `unmotion.xml` Overview/ReadMe and `ca_profile.xml` when their descriptions or links become inaccurate. The Apps template remains stable-facing: never switch its PluginURL to beta or advance its stable manifest pin merely to document a beta feature. Change the pin only as part of an authorized, published and verified stable release.
+- Keep author fields exactly `Richard Skinner`. Validate changed XML, links and the diff. After authorized publication, verify that GitHub serves the intended guide/template and that advertised installer links are reachable.
+- Follow the task's publication scope: local feature work must prepare any companion documentation changes and identify anything still awaiting publication; an authorized release must include publishing and verifying the corresponding guide update. Do not silently leave documentation stale or publish unfinished plugin code as a shortcut. If a documentation update is blocked, report it explicitly in the handoff.

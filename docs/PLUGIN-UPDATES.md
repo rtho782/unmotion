@@ -36,7 +36,7 @@ The beta feed is opt-in through installation of the beta descriptor. It does not
 
 ## Existing installations
 
-Beta2 and earlier descriptors have no pluginURL. They cannot discover beta3 automatically until bootstrapped. Install beta3 once manually, or back up the installed beta2 descriptor and add only the pluginURL attribute shown above to its PLUGIN element. The latter preserves its version and payload and lets the normal GUI discover beta3.
+Historical 0.4.0-beta2 and earlier descriptors have no pluginURL. They cannot discover an update until bootstrapped. Install the current chosen channel once manually, preserving the installed name `unmotion.plg`. Current 0.4.1 beta descriptors already contain the beta feed URL.
 
 Never edit the installed version string to simulate an upgrade. Tests should use the real older package. Unraid's package manager may skip a same-version test build even when the plugin descriptor is forcibly reinstalled; in the disposable lab, explicitly reinstall the exact candidate TXZ and verify installed source hashes when testing successive candidates.
 

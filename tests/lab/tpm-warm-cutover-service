@@ -1,0 +1,10 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Richard Skinner
+name="unMotion disposable live-test writer"
+command="/usr/local/sbin/unmotion-tpm-proof"
+command_args="writer"
+command_background="yes"
+pidfile="/run/unmotion-tpm-proof.pid"
+retry="TERM/10/KILL/5"
+depend() { need localmount; }

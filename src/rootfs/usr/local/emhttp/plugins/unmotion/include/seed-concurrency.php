@@ -4,7 +4,7 @@ declare(strict_types=1);
 // Copyright (C) 2026 Richard Skinner
 
 /** Short admission transaction, not a transfer-wide lock. */
-function unmSeedAdmission(callable $operation): array {
+function unmSeedAdmissionLock() {
     $lock=fopen('/var/lock/unmotion-seed-admission.lock','c');
     if(!$lock)throw new RuntimeException('Unable to lock Warm Move admission.');
     try {
@@ -13,8 +13,35 @@ function unmSeedAdmission(callable $operation): array {
             if(microtime(true)>=$deadline)throw new RuntimeException('Warm Move admission is busy; retry shortly. Existing transfers are unaffected.');
             usleep(100000);
         }
-        return $operation();
-    } finally { flock($lock,LOCK_UN); fclose($lock); }
+        return $lock;
+    } catch(Throwable $e) { fclose($lock);throw $e; }
+}
+
+function unmSeedAdmission(callable $operation): array {
+    $lock=unmSeedAdmissionLock();
+    try{return $operation();}finally{flock($lock,LOCK_UN);fclose($lock);}
+}
+
+/** Persisted job admission closes the interval before a worker acquires its VM lock. */
+function unmActiveVmJob(string $uuid,?array $jobs=null): ?array {
+    if($jobs===null){
+        $jobs=[];
+        if(defined('UNM_JOBS_DIR'))foreach(glob(UNM_JOBS_DIR.'/*/job.json')?:[] as $path){$job=unmLoadJson($path);if($job)$jobs[]=$job;}
+    }
+    foreach($jobs as $job){
+        $jobUuid=(string)($job['request']['VM_UUID']??$job['preflight']['vm']['uuid']??'');
+        if($jobUuid===''||strcasecmp($uuid,$jobUuid)!==0)continue;
+        $state=(string)($job['state']??'');
+        $deletionPending=in_array($state,['COMPLETE','COMPLETE_WITH_WARNINGS'],true)&&($job['request']['SOURCE_CLEANUP_ACTION']??'')==='delete';
+        if(!$deletionPending&&in_array($state,['FAILED','CANCELLED','COMPLETE','COMPLETE_WITH_WARNINGS','COMPLETE_CLEANED'],true))continue;
+        return ['id'=>(string)($job['id']??''),'state'=>$state,'message'=>'Migration/clone job '.$job['id'].' is '.($deletionPending?'awaiting source cleanup':$state).'. Use the job controls; prepared-copy actions are locked.'];
+    }
+    return null;
+}
+
+function unmAssertVmJobIdle(string $uuid): void {
+    $job=unmActiveVmJob($uuid);
+    if($job!==null)throw new RuntimeException($job['message']);
 }
 
 function unmSeedOperationActive(array $seed): bool {
@@ -23,6 +50,7 @@ function unmSeedOperationActive(array $seed): bool {
 
 function unmSeedAssertIdle(string $id, string $uuid): void {
     if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/D',$uuid))throw new RuntimeException('Invalid prepared-copy VM identity.');
+    unmAssertVmJobIdle($uuid);
     $existing=unmLoadJson(unmSeedPath($id).'/seed.json');
     if($existing && unmSeedOperationActive($existing))throw new RuntimeException('A Warm Move operation is already queued or active for this prepared copy.');
     foreach(['/var/lock/unmotion-seed-'.$id.'.lock','/var/lock/unmotion-'.$uuid.'.lock'] as $path) {
@@ -98,10 +126,11 @@ function unmStartSeed(string $vmIdentifier,string $peerId,string $action='prepar
 function unmResumeSeed(string $id): array {
     return unmSeedAdmission(function()use($id){$seed=unmSeed($id);unmSeedAssertIdle($id,(string)$seed['vmUuid']);unmSeedAssertClaims($id,(string)$seed['vmUuid'],(string)$seed['peerId'],(string)($seed['peerHostId']??''),$seed['storageClaims']??unmSeedStorageClaims((array)($seed['storage']??[])),unmSeedRecords());return unmResumeSeedAdmitted($id);});
 }
-function unmRemoveSeed(string $id): array {
-    return unmSeedAdmission(function()use($id){
+function unmRemoveSeed(string $id,bool $recordOnly=false): array {
+    return unmSeedAdmission(function()use($id,$recordOnly){
         $seed=unmSeed($id);unmSeedAssertIdle($id,(string)$seed['vmUuid']);
         $archived=unmArchiveUnstartedSeed($id);if($archived!==null)return $archived;
+        if($recordOnly)throw new RuntimeException('This record is no longer eligible for archive-only cleanup. Refresh and review prepared-storage removal; no storage was changed.');
         unmSeedAssertClaims($id,(string)$seed['vmUuid'],(string)$seed['peerId'],(string)($seed['peerHostId']??''),$seed['storageClaims']??unmSeedStorageClaims((array)($seed['storage']??[])),unmSeedRecords());
         return unmRemoveSeedAdmitted($id);
     });

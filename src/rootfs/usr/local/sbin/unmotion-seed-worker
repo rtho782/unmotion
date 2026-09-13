@@ -197,7 +197,7 @@ mapfile -t ZFS_SOURCES < <(php -r '$d=json_decode(file_get_contents($argv[1]),tr
 mapfile -t RSYNC_FILES < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["disks"]??[] as $x){if(in_array($x["transferClass"]??"",["shared-zfs-image","encrypted-zfs-image","non-zfs-image"],true))echo $x["source"],"\n";}' "$VM_JSON")
 (( ${#ZFS_SOURCES[@]} + ${#RSYNC_FILES[@]} > 0 )) || fail 'No Warm Move-compatible VM disks were found.' 14
 for src in "${ZFS_SOURCES[@]}"; do
-  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || fail "Native ZFS encryption is not supported in 0.3 beta1: $src" 17
+  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || fail "Native ZFS encryption is not supported for this transfer: $src" 17
 done
 
 ACTION="${ACTION:-prepare}"

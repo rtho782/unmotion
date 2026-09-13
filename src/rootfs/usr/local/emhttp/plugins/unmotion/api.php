@@ -75,7 +75,7 @@ try {
         case 'recoveryRemoveActivation':
             requirePostMutation();requireRecoveryDirection('destination');$operation=unmRecoveryLaunchOperation((string)($_POST['replication_id']??''),'remove-activation',['confirmation'=>(string)($_POST['confirmation']??'')]);reply(['success'=>true,'message'=>'Exact stopped activation removal started.','operation'=>$operation]);
         case 'recoveryFailback':
-            requirePostMutation();requireRecoveryDirection('destination');if((string)($_POST['action']??'')!=='preflight')throw new RuntimeException('Beta2 supports cold-failback preflight only.');reply(['success'=>true,'message'=>'Cold-failback preflight completed; no transfer or authority change was started.','preflight'=>unmRecoveryColdFailbackPreflight((string)($_POST['replication_id']??''))]);
+            requirePostMutation();requireRecoveryDirection('destination');if((string)($_POST['action']??'')!=='preflight')throw new RuntimeException('Only cold-failback preflight is supported.');reply(['success'=>true,'message'=>'Cold-failback preflight completed; no transfer or authority change was started.','preflight'=>unmRecoveryColdFailbackPreflight((string)($_POST['replication_id']??''))]);
         case 'replicationPreflight':
             $opts=['rpo_seconds'=>$_POST['rpo_seconds']??3600,'retention_count'=>$_POST['retention_count']??1,'tpm_initial_mode'=>$_POST['tpm_initial_mode']??'none'];
             reply(['success'=>true,'preflight'=>unmReplicationPreflight((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),$opts)]);
@@ -98,7 +98,7 @@ try {
         case 'prepareWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'prepare')]);
         case 'updateWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'update')]);
         case 'resumeWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmResumeSeed((string)($_POST['seed_id']??''))]);
-        case 'removeWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmRemoveSeed((string)($_POST['seed_id']??''))]);
+        case 'removeWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmRemoveSeed((string)($_POST['seed_id']??''),(string)($_POST['record_only']??'')==='1')]);
         case 'seedLog':
             $sid=(string)($_REQUEST['seed_id']??'');$sd=unmSeedPath($sid);reply(['success'=>true,'log'=>is_file($sd.'/seed.log')?file_get_contents($sd.'/seed.log'):'']);
         case 'preflight':
@@ -132,6 +132,8 @@ try {
             $pid=launchWorker($jobId,$dir,'/usr/local/sbin/unmotion-clone-worker');$job=unmLoadJson($dir.'/job.json',$job);$job['pid']=$pid;$job['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/job.json',$job);
             reply(['success'=>true,'job'=>$job]);
         case 'startMigration':
+            $migrationAdmission=unmSeedAdmissionLock();
+            try {
             $vmId=(string)($_POST['vm_id']??$_POST['vm']??''); $peerId=(string)($_POST['peer_id']??'');
             $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];
             $warmSeedId=(string)($opts['warm_seed_id']??'');
@@ -156,12 +158,15 @@ try {
             if($warmSeedId!==''){ $seed=unmSeed($warmSeedId); if(($seed['vmUuid']??'')!==($pre['vm']['uuid']??'')||($seed['peerId']??'')!==$peerId||($seed['state']??'')!=='READY')throw new RuntimeException('The selected prepared copy is missing, stale or belongs to a different VM/peer.'); }
             $vm=$pre['vm']['name']; $vmUuid=$pre['vm']['uuid'];
             if ($vmUuid==='' || !preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid)) throw new RuntimeException('The selected VM has no valid UUID.');
+            unmAssertVmJobIdle((string)$vmUuid);
+            if($warmSeedId!=='')unmSeedAssertIdle($warmSeedId,(string)$vmUuid);
             if (!empty($pre['vm']['usb']) && $usbAction==='cancel') throw new RuntimeException('Choose retain or remove for USB passthrough before starting.');
             if ($usbAction==='retain') {
                 foreach(($pre['vm']['usb']??[]) as $device) {
                     if (empty($device['portable'])) throw new RuntimeException('A USB device could not be represented by an unambiguous VID:PID selector. Choose remove or cancel.');
                 }
             }
+            $migrationClaims=$warmSeedId!==''?unmCheckMigrationReservations($pre,$opts,unmJobs(),unmSeedRecords()):[];
             $jobId=date('Ymd-His').'-'.substr(bin2hex(random_bytes(5)),0,10); $dir=UNM_JOBS_DIR.'/'.$jobId; mkdir($dir,0700,true);
             $peer=unmPeer($peerId);
             $usbManifest=$dir.'/usb-manifest.json';
@@ -182,12 +187,16 @@ try {
                 'SOAK_SECONDS'=>300,
                 'SNAPSHOT_NAME'=>'unmotion-'.$jobId,
                 'WARM_SEED_ID'=>$warmSeedId,
+                'MIGRATION_MODE'=>$opts['migration_mode'],
+                'PARALLEL_WARM_CUTOVER'=>unmParallelWarmCutover($pre,$opts),
             ];
             unmWriteCfg($dir.'/request.cfg',$request);
             $job=['id'=>$jobId,'vm'=>$vm,'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>'Starting worker','createdAt'=>date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM),'request'=>$request,'preflight'=>$pre];
+            $job['migrationClaims']=$migrationClaims;
             unmAtomicJson($dir.'/job.json',$job); file_put_contents($dir.'/migration.log',''); chmod($dir.'/migration.log',0600);
             $pid=launchWorker($jobId,$dir);
             $latest=unmLoadJson($dir.'/job.json',$job); $latest['pid']=$pid; $latest['updatedAt']=date(DATE_ATOM); unmAtomicJson($dir.'/job.json',$latest);
+            } finally {flock($migrationAdmission,LOCK_UN);fclose($migrationAdmission);}
             reply(['success'=>true,'job'=>$latest]);
         case 'resumeJob':
             $id=(string)($_POST['job_id']??''); if(!preg_match('/^[A-Za-z0-9_.-]+$/',$id)) throw new InvalidArgumentException('Invalid job id.');

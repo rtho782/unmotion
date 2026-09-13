@@ -1,5 +1,50 @@
 # Verification
 
+## 0.4.1-beta2 candidate — 2026-09-13
+
+Author: Richard Skinner
+
+The complete `scripts/verify.sh` suite passed on both DEV01 and DEV02 with PHP, Bash and Node.js. New coverage includes warning/confirmation policy, preparation-only resource guidance, dependency-scoped health, OOM expiry, explicit archive-only requests, queued-job UI/backend guards, parallel-cutover eligibility, storage collisions, aggregate pending RAM, mixed-version exclusive fallback, and real shared/exclusive flock contention, cancellation and wake-up. A waiting job writes its waiting status once, not repeatedly to the boot device.
+
+Before upgrading DEV02, beta2-to-beta1 preparation/update allowed an intentionally oversized startup RAM request as guidance while cutover rejected it; normal cutover preflight passed. Beta1-to-beta2 normal cutover preflight also passed and oversized startup RAM remained blocked. These were preflight checks, not mixed-version cutover transfers. Protocol versions are unchanged; parallel cutover requires the additive destination-start capability.
+
+Both lab hosts received the candidate. Four stopped, disposable fixtures completed actual warm cutovers: `Beta41 Squid Proxy ZFS` and `Beta41 Squid Proxy Raw` toward DEV02, then the corresponding `Beta41 Reverse Squid Proxy` fixtures toward DEV01. Each pair had overlapping workers; both reverse workers entered preflight together after an exclusive test gate released. All four jobs completed, all destination domains reached running, and all four independently calculated destination disk SHA-256 hashes matched their modified source disks. Retain policy left each source stopped, renamed with the destination suffix and autostart disabled. Short disk transfers did not provide a sustained simultaneous-transfer throughput measurement.
+
+An exclusive lab lock made a fifth, zvol-backed cutover enter `WAITING_FOR_MIGRATION` instead of failing. Cancellation passed first through the API function and then through the authenticated browser POST on the final build. Its source stayed stopped, its seed remained READY, and destination storage was not activated. Browser inspection confirmed Update, Cut over and Remove were disabled, Log remained available, Cancel was visible, and prepared-copy controls became available after cancellation. The no-ISO cutover dialog omitted optical-media choices. A never-started failure fixture archived through the UI without a destructive confirmation; archive-only safety and byte-preserving logs also have automated coverage. A content fingerprint on the main script URL prevents stale same-version candidate assets after page reload.
+
+Pre-existing outer snapshots were verified read-only for both storage disks of each lab host before cutover testing. These are August baseline snapshots, not fresh snapshots from this campaign. The temporary DEV01 bandwidth setting was restored from 1 to its original 0; the cutover path itself is not rate-limited by that preparation setting. The four blank-disk destination fixtures were powered off after validation, with source and destination disks retained. The cancelled zvol prepared copy remains available. No production host, published release or public feed was changed.
+
+Limits of the initial four-fixture campaign: these were initially stopped test VMs with blank disposable disks, not booted guest workloads. The follow-up below adds running-guest shutdown and TPM/UEFI cutover coverage. No fresh ISO-copy transfer, receive-abort, power-loss or delayed source-deletion campaign is claimed for this candidate; those retained paths have automated regression coverage and prior live verification below. Reservations are source-local, not distributed cross-source storage reservations. Cold moves, overwrite, attached-ISO copying and older-peer cutovers still use exclusive access with cancellable waiting.
+
+### Running TPM/UEFI guest follow-up — 2026-09-13
+
+A new disposable `Beta42 Squid Proxy TPM Live` guest (UUID `54200000-1111-4111-8111-000000000001`) completed a running Warm Move from DEV02 to DEV01 through the authenticated, CSRF-protected HTTP endpoints. It used Alpine 3.24.1, 2 vCPUs, 1 GiB RAM, a 2 GiB raw disk in its own ZFS dataset, custom dataset-contained UEFI NVRAM, a fresh software TPM 2.0 and QEMU Guest Agent. No ISO was attached. The copied base fixture remained stopped and unchanged; no production guest or identity was used.
+
+Preparation `seed-9d407af529af88969736c025` froze/thawed one guest filesystem and completed READY while a guest service continuously wrote and synchronized a counter. Independent base-snapshot GUID checks matched (`10022592517848063667`), with destination storage read-only and no destination VM definition. A 32 MiB random file was then written after READY to exercise the final delta.
+
+Cutover job `20260913-172837-9696ffa1a2` completed with parallel-cutover eligibility enabled. Its log records graceful source shutdown, the final incremental ZFS transfer (estimated 35,133,968 bytes), host-state transfer, mapped NVRAM checksum verification, destination start and retained-source renaming. Independent state samples observed source shut off before destination running and did not observe both running. This was one running guest, not an additional simultaneous-running-guest throughput test.
+
+Guest Agent checks after destination boot passed all of the following:
+
+- A sealed 32-byte secret unsealed to the original SHA-256, `5695bbefad272355592f4fc46c840b6151d0f906798a9de3e84414bb7fa8d433`. The primary context was recreated after boot, rather than trusting a saved transient context.
+- TPM NV index `0x01500042` contained the same secret, and the custom nonvolatile UEFI marker retained its checksum.
+- The post-seed file passed its independently recorded checksum.
+- The boot ID changed from `30ac1cfc-c5ba-4cc2-87b8-b8429ad411e0` to `6f3b9e29-9537-4925-ab3a-69de2fe118a7`.
+- The pre-cutover counter was 181, the service's clean-shutdown marker was 278, and the restarted destination service had advanced the counter to 417 at verification.
+
+The original source was retained, renamed with the destination suffix and left shut off with autostart disabled. After verification the destination was gracefully shut down too; both copies and their storage remain available for inspection. The existing outer baseline snapshots were rechecked read-only before this campaign; no outer-host configuration or other VM was changed.
+
+The complete `scripts/verify.sh` suite passed again on both hosts with PHP, Bash and Node.js, along with syntax checks for the new manual guest fixtures. No plugin runtime change was needed and the package hashes below are unchanged. The repeatable guest proof and its prerequisites are in [tests/lab/TPM-WARM-CUTOVER.md](tests/lab/TPM-WARM-CUTOVER.md).
+
+This proves unbound TPM-secret/state continuity for this Alpine guest, not Windows BitLocker, Secure Boot/PCR-bound policies or every guest OS. The Plugins GUI upgrade-path test is explicitly deferred until beta publication, as requested. No release, update feed or production installation was changed; public documentation availability will be updated with publication.
+
+Final local package SHA-256:
+
+```text
+99522791d3e5609bcb0504a48e0e381ca75b89483b81a3bc617ef4c1f93fec19  unmotion-0.4.1_beta2-noarch-1.txz
+a14430cf3f4de8cc3e2a627e2271768f6debe1f4fcc0c609fa4da64f0c63bd30  unmotion-0.4.1-beta2.plg
+```
+
 ## 0.4.1-beta1 never-started seed cleanup follow-up — 2026-09-13
 
 Author: Richard Skinner

@@ -29,8 +29,21 @@ VM_NAME="$RESOLVED_VM_NAME"
 
 mkdir -p "$JOBDIR"
 touch "$LOG"; chmod 600 "$LOG"
+export UNM_WORKER_PID=$$
 exec 9>/var/run/unmotion.lock
-if ! flock -n 9; then /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Another migration job is active"; exit 5; fi
+source /usr/local/emhttp/plugins/unmotion/include/migration-lock.sh
+unm_migration_wait_cancelled(){ [[ -f "$CANCEL_FILE" ]]; }
+unm_migration_wait_status(){ /usr/local/sbin/unmotion-state "$JOB_ID" WAITING_FOR_MIGRATION 0 'Waiting for an exclusive/legacy migration; no VM changes have been made'; }
+trap '/usr/local/sbin/unmotion-state "$JOB_ID" CANCELLED 0 "Cancelled while waiting; VM storage was not changed"; exit 130' TERM INT
+lock_mode=exclusive
+if [[ "${PARALLEL_WARM_CUTOVER:-0}" == 1 && -n "${WARM_SEED_ID:-}" ]]; then lock_mode=shared; fi
+if unm_wait_migration_lock 9 "$lock_mode"; then :; else
+  lock_status=$?
+  if ((lock_status==130)); then /usr/local/sbin/unmotion-state "$JOB_ID" CANCELLED 0 'Cancelled while waiting; VM storage was not changed'
+  else /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 'Unable to acquire migration lock'; fi
+  exit "$lock_status"
+fi
+trap - TERM INT
 exec 8>"/var/lock/unmotion-$VM_UUID.lock"
 if ! flock -n 8; then /usr/local/sbin/unmotion-state "$JOB_ID" FAILED 0 "Another unMotion operation is already using this VM"; exit 5; fi
 LEGACY_OPERATION='Move'
@@ -166,6 +179,10 @@ cancel_requested && finish_cancel
 debug_remote "/usr/local/sbin/unmotion-agent capabilities"
 remote "/usr/local/sbin/unmotion-agent capabilities" > "$REMOTE_CAPS"
 debug "Remote capabilities received successfully."
+if [[ "${PARALLEL_WARM_CUTOVER:-0}" == 1 && "$(json_get "$REMOTE_CAPS" features.parallelWarmCutover || echo 0)" != 1 ]]; then
+  log 'Destination no longer supports coordinated parallel cutover starts; retry after updating the peer.'
+  exit 19
+fi
 DEST_IMAGE_DIR="$(json_get "$REMOTE_CAPS" storage.imageDirectory)"
 DEST_ZVOL_DATASET="$(json_get "$REMOTE_CAPS" storage.zvolDataset || true)"
 DEST_ISO_DIR="$(json_get "$REMOTE_CAPS" storage.isoDirectory)"
@@ -213,7 +230,7 @@ elif [[ "$CPU_PINNING_ACTION" != "remove" ]]; then log "Invalid CPU pinning acti
 REMOVE_CPU_PINNING=$([[ "$CPU_PINNING_ACTION" == "remove" ]] && echo 1 || echo 0)
 log "Resource plan: ${SOURCE_VCPUS} -> ${TARGET_VCPUS} vCPUs; $((SOURCE_MEMORY_KIB/1024)) -> $((TARGET_MEMORY_KIB/1024)) MiB RAM; CPU pinning: ${CPU_PINNING_ACTION}"
 log "Destination resources: CPUs ${DEST_CPU_SET:-unknown} (${DEST_CPU_COUNT} online); RAM available $((DEST_MEMORY_AVAILABLE/1024/1024)) MiB of $((DEST_MEMORY_TOTAL/1024/1024)) MiB"
-if grep -qE "<hostdev[^>]+type=['\"]pci['\"]" "$SOURCE_XML" "$LIVE_XML"; then log "PCIe passthrough detected; 0.3 refuses this migration."; exit 20; fi
+if grep -qE "<hostdev[^>]+type=['\"]pci['\"]" "$SOURCE_XML" "$LIVE_XML"; then log "PCIe passthrough detected; this migration is unsupported."; exit 20; fi
 USB_COUNT="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo count($d["devices"]??[]);' "$USB_MANIFEST" 2>/dev/null || echo 0)"
 if (( USB_COUNT > 0 )); then case "$USB_ACTION" in retain|remove) : ;; *) log "USB passthrough requires an explicit retain/remove decision."; exit 21;; esac; fi
 REMOTE_EXISTING_VM=0
@@ -264,7 +281,7 @@ OVERWRITE_KINDS=(); OVERWRITE_PATHS=()
 DEST_PREPARED_MARKER="$JOBDIR/destination-prepared"
 for src in "${ZVOLS[@]}"; do
   zfs list -t volume "$src" >/dev/null
-  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || { log "Native ZFS encryption is not supported in 0.3 beta1: $src"; exit 25; }
+  [[ "$(zfs get -H -o value encryption "$src" 2>/dev/null || echo off)" == off ]] || { log "Native ZFS encryption is not supported for this transfer: $src"; exit 25; }
   if [[ "$DEST_ZVOL_READY" == 1 && -n "$DEST_ZVOL_DATASET" ]]; then
     if ((WARM_MODE));then dst="$(seed_destination "$src")";else dst="$DEST_ZVOL_DATASET/$(basename "$src")";fi
     [[ -n "$dst" && -z "${DEST_SEEN[$dst]:-}" ]] || { log "Invalid or duplicate destination for $src"; exit 26; }
@@ -346,6 +363,16 @@ check_capacity(){
 if ((WARM_MODE==0&&REMOTE_EXISTING_VM==0&&${#OVERWRITE_PATHS[@]}==0));then check_capacity;fi
 
 /usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
+if [[ "${PARALLEL_WARM_CUTOVER:-0}" == 1 ]]; then
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
+    $job=unmLoadJson($argv[1]);$pre=(array)$job["preflight"];
+    $pre["vm"]=unmParseVm($argv[2]);$pre["destination"]=json_decode(file_get_contents($argv[3]),true,512,JSON_THROW_ON_ERROR);
+    $opts=["warm_seed_id"=>$job["request"]["WARM_SEED_ID"],"iso_action"=>$job["request"]["ISO_ACTION"],"destination_conflict_action"=>$job["request"]["DESTINATION_CONFLICT_ACTION"]];
+    if(!unmParallelWarmCutover($pre,$opts))throw new RuntimeException("Parallel cutover eligibility changed.");
+    $claims=unmCheckMigrationReservations($pre,$opts,unmJobs(),unmSeedRecords(),$job["id"]);
+    if($claims!==($job["migrationClaims"]??null))throw new RuntimeException("Cutover storage changed after admission.");
+  ' "$JOBDIR/job.json" "$VM_UUID" "$REMOTE_CAPS" >>"$LOG" 2>&1 || { log 'Parallel cutover reservation validation failed before shutdown.'; exit 24; }
+fi
 STATE_PATHS=();if [[ "$NVRAM_KIND" == legacy ]];then STATE_PATHS+=("$NVRAM_PATH");fi
 HAS_TPM=0;TPM_DIR=''
 if grep -qE '<tpm([[:space:]>])' "$SOURCE_XML"; then
@@ -569,7 +596,11 @@ create_source_cleanup_manifest
 if [[ "$START_DESTINATION" == "1" ]]; then
   state STARTING_DESTINATION 88 "Starting VM on destination"
   DEST_START_ATTEMPTED=1
-  remote "virsh start $(sq "$VM_UUID")" >>"$LOG" 2>&1 || log "Destination start command returned an error; checking actual state."
+  if [[ "$(json_get "$REMOTE_CAPS" features.parallelWarmCutover || echo 0)" == 1 ]]; then
+    remote "/usr/local/sbin/unmotion-start-destination $(sq "$VM_UUID") $(sq "$TARGET_MEMORY_KIB")" >>"$LOG" 2>&1 || log "Destination start gate returned an error; checking actual state."
+  else
+    remote "virsh start $(sq "$VM_UUID")" >>"$LOG" 2>&1 || log "Destination start command returned an error; checking actual state."
+  fi
   sleep 3
   RSTATE="$(remote "virsh domstate $(sq "$VM_UUID")" | tr -d '\r')"
   [[ "$RSTATE" == "running" || "$RSTATE" == "idle" ]] || { log "Destination VM did not reach running state: $RSTATE"; exit 43; }
