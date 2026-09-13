@@ -21,7 +21,7 @@ REPLICATION_SCHEDULER="$ROOT/src/rootfs/usr/local/sbin/unmotion-replication-sche
 [[ "$(head -n 1 "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/README.md" | tr -d '\r')" == '#### unMotion' ]]
 
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL[[:space:]]*=[[:space:]]*5;' "$LIB"
-grep -q "const UNM_VERSION = '0.4.1-beta2';" "$LIB"
+grep -q "const UNM_VERSION = '0.4.1';" "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MIN[[:space:]]*=[[:space:]]*5;' "$LIB"
 grep -Eq 'const[[:space:]]+UNM_PROTOCOL_MAX[[:space:]]*=[[:space:]]*6;' "$LIB"
 grep -Fq "'protocolMinVersion'=>UNM_PROTOCOL_MIN" "$LIB"

@@ -1,10 +1,10 @@
 # unMotion
 
-Beta release: **[0.4.1-beta2](https://github.com/rtho782/unmotion/releases/tag/0.4.1-beta2)**. Available through `plugin-beta`; the stable feed remains on 0.4.0.
+Stable release: **[0.4.1](https://github.com/rtho782/unmotion/releases/tag/0.4.1)**. Both update feeds now offer this stable release; installing it selects future stable updates.
 
-The beta includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Install beta2 on both peers for parallel cutover support. Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
+Includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Install 0.4.1 on both peers for parallel cutover support. Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
 
-unMotion is an Unraid plugin for cloning virtual machines, moving them between paired hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery. Current stable release: **0.4.0**.
+unMotion is an Unraid plugin for cloning virtual machines, moving them between paired hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery.
 
 > Keep verified backups. Migration and recovery change VM definitions and storage. Test your workloads before relying on these operations; a successful preflight is not a substitute for a recovery plan.
 
@@ -22,6 +22,8 @@ Licensed under **GPL-3.0-only**, not GPLv3-or-later. See [LICENSE](LICENSE). Sof
 - Optional Ubuntu Guest Agent customization to reset guest identity and replace inherited static networking before enabling cloned NICs.
 - Scheduled replication with RPO choices from five minutes to 24 hours, configurable retention, Guest Agent consistency evidence and opportunistic powered-off TPM checkpoints.
 - Guarded coordinated manual recovery, authenticated peer controls and managed-autostart fencing.
+- Concurrent independent Warm Move preparation/cutover with cancellable waiting for exclusive operations.
+- Reviewable diagnostic reports with logs, VM/storage details and both hosts' specifications; download/copy or open a user-submitted GitHub issue draft.
 
 ### Storage and recovery requirements
 
@@ -50,7 +52,7 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The application reports **0.4.0**. The Plugins tab reports **0.4.0-stable** for Unraid's version ordering. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+The application reports **0.4.1**. The Plugins tab reports **0.4.1-stable** for Unraid's version ordering. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
 
 Pair hosts from **Settings → unMotion**, then test connectivity before migrating a VM.
 
@@ -91,4 +93,4 @@ Build on Linux/Unraid with PHP CLI, Bash, Node.js, tar, xz, base64 and checksum 
 
 Packages are written to dist. Verify downloaded release checksums; archive metadata can make independent builds differ byte-for-byte.
 
-Report issues at [GitHub issues](https://github.com/rtho782/unmotion/issues). Include the plugin/Unraid versions, storage layout, selected operation and relevant redacted job log.
+Use **Report a problem** on a migration or clone job to review and download/copy diagnostics, or open a [GitHub issue](https://github.com/rtho782/unmotion/issues) draft and attach the reviewed report yourself. Nothing is uploaded automatically; check the report before sharing publicly.

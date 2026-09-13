@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.1 — 2026-09-13
+
+- Promote the tested 0.4.1 beta functionality to stable, including the compact Plugins-tab heading. No migration or recovery algorithm changes from the refreshed beta2 build.
+- Add reviewable diagnostic reports containing selected logs, VM/storage metadata and available technical specifications for both hosts, with download/copy and user-controlled GitHub issue submission.
+- Support concurrent independent Warm Move preparations and cutovers, with same-VM/storage guards, destination startup resource checks and cancellable waiting for exclusive or older-peer operations.
+- Archive verified never-started failed preparation records without deleting storage. Disable prepared-copy actions while a job owns the VM, and omit ISO choices when no ISO is attached.
+- Use phase-aware resource and dependency-scoped health checks, with concise notices and unchanged destructive/ownership safeguards.
+- Publish 0.4.1-stable through both feeds and update the Community Apps stable installer. Application version is 0.4.1; existing beta installations graduate to stable updates on installation.
+- Protocol versions and the five-minute source-deletion validation period remain unchanged.
+
 ## 0.4.1-beta2 — 2026-09-13
 
 - Use a compact heading for the Plugins-tab description, matching other Unraid plugins.

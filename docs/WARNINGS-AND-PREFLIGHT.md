@@ -1,4 +1,4 @@
-# Notices and preflight in 0.4.1-beta2
+# Notices and preflight in 0.4.1
 
 Author: Richard Skinner
 

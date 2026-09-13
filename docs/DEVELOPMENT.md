@@ -15,7 +15,7 @@ The script verifies regression fixtures, checks current version/protocol invaria
 ## Build
 
 ```bash
-./scripts/build.sh 0.4.0
+./scripts/build.sh 0.4.1
 ```
 
 The script stages `src/rootfs`, applies package permissions, creates a Slackware-style TXZ and embeds it into a PLG under `dist/`. For a new release, update the `VERSION` file and release notes first, then pass the matching version.

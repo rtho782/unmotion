@@ -19,7 +19,14 @@ test "$RELEASE_CHANNEL" = beta
 [[ "$PLUGIN_VERSION" > 0.4.0-stable ]]
 VERSION=0.4.1
 source "$ROOT/scripts/release-version.sh"
+test "$PLUGIN_VERSION" = 0.4.1-stable
+test "$SAFE_VERSION" = 0.4.1_stable
+test "$RELEASE_CHANNEL" = stable
+test "$PLUGIN_URL" = https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg
 [[ "$PLUGIN_VERSION" > 0.4.0-stable ]]
+[[ "$PLUGIN_VERSION" > 0.4.1-beta1 ]]
+[[ "$PLUGIN_VERSION" > 0.4.1-beta2 ]]
+printf '%s\n' unmotion-0.4.0_stable-noarch-1 unmotion-0.4.1_beta1-noarch-1 unmotion-0.4.1_beta2-noarch-1 unmotion-0.4.1_stable-noarch-1 | sort -V -C
 VERSION=0.4.0-RC1
 source "$ROOT/scripts/release-version.sh"
 test "$SAFE_VERSION" = 0.4.0_rc1

@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.1-beta2';
+const UNM_VERSION = '0.4.1';
 require_once __DIR__.'/preflight-policy.php';
 require_once __DIR__.'/migration-concurrency.php';
 require_once __DIR__.'/diagnostics.php';

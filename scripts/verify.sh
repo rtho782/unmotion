@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.1-beta2}"
+EXPECTED_VERSION="${1:-0.4.1}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

@@ -1,5 +1,24 @@
 # Verification
 
+## 0.4.1 stable promotion — 2026-09-13
+
+Author: Richard Skinner
+
+The owner reported successful beta2 update testing and authorized stable promotion. The stable package was compared with the refreshed beta2 package: only the application-version values in `VERSION` and `include/lib.php` differ. All other packaged file contents and permissions match. Descriptor metadata uses `0.4.1-stable`, package token `0.4.1_stable`, and the stable update feed; the embedded payload matches the standalone TXZ.
+
+The full `scripts/verify.sh` suite passed on DEV01 and DEV02 with PHP, Bash and Node.js. Release-ordering regressions explicitly cover 0.4.0-stable and 0.4.1-beta1/beta2 advancing to 0.4.1-stable. Both disposable hosts then passed normal `plugin install` upgrades from beta2 using the exact stable descriptor named `unmotion.plg`. Configuration/host-identity/pairing hashes and all VM power-state snapshots remained unchanged. Application and installed descriptor versions/feed were verified, and each host had one supervised lifecycle daemon tree and one scheduler tree. The agent reported protocol 5 and parallel-cutover support after installation.
+
+This promotion adds no migration/recovery algorithm changes. The beta2 live migration, running-guest TPM/UEFI and browser evidence below remains applicable; the stable promotion did not repeat that destructive/live-guest campaign, and its fresh lab upgrade checks used the CLI rather than a new Plugins-GUI test. Production installations and VMs were not changed by this promotion task.
+
+Both public feeds offer the same stable descriptor, and the Community Apps guide/template are advanced to 0.4.1 as part of publication. Installing this stable descriptor graduates beta-feed installations to future stable updates.
+
+Stable package SHA-256:
+
+```text
+b204544872403925e1c2ab64daf15851f44a2ddcd0817fe0dddc67e209322a0b  unmotion-0.4.1_stable-noarch-1.txz
+b65fa3af17fe6f8d6e8b95451a6909cfb8425efcd047c05c277283a163ec45ce  unmotion-0.4.1.plg
+```
+
 ## 0.4.1-beta2 cosmetic refresh — 2026-09-13
 
 Author: Richard Skinner

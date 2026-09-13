@@ -46,7 +46,7 @@ cat <<EOF
 <CHANGES>
 ### unMotion $VERSION
 - Compact Plugins-tab description heading, matching other Unraid plugins.
-- Beta2: clearer notices; TPM Warm Move and ordinary cloning no longer require redundant confirmations.
+- Clearer notices; TPM Warm Move and ordinary cloning no longer require redundant confirmations.
 - Preparation/update resource guidance is separate from mandatory cutover checks; health warnings follow actual storage dependencies.
 - Archive-only failed records remain recoverable; destructive storage removal still requires confirmation.
 - Read-only diagnostic reports for migration and clone jobs.

@@ -2,9 +2,9 @@
 
 Author: Richard Skinner
 
-The 0.4.1 beta permits independent preparations from one source host to transfer concurrently. The compatibility lock is shared by these workers, but still excludes an older worker holding an exclusive lock.
+unMotion 0.4.1 permits independent preparations from one source host to transfer concurrently. The compatibility lock is shared by these workers, but still excludes an older worker holding an exclusive lock.
 
-This covers prepare, update and resume workers. With beta2 support on both peers, independent Warm Move cutovers can also run concurrently; cold moves, destination overwrite, copying attached ISOs and older-peer cutovers wait cancellably for exclusive access. See [cutover reservations and resource checks](WARNINGS-AND-PREFLIGHT.md#concurrent-cutovers). Simultaneous operations on one VM or overlapping storage remain blocked. Preparation bandwidth limits apply **per worker**, not to the combined traffic or final cutover. Concurrent transfers compete for disk/network throughput and capacity; free-space preflight is not a reservation of pool bytes against other writers.
+This covers prepare, update and resume workers. With 0.4.1 support on both peers, independent Warm Move cutovers can also run concurrently; cold moves, destination overwrite, copying attached ISOs and older-peer cutovers wait cancellably for exclusive access. See [cutover reservations and resource checks](WARNINGS-AND-PREFLIGHT.md#concurrent-cutovers). Simultaneous operations on one VM or overlapping storage remain blocked. Preparation bandwidth limits apply **per worker**, not to the combined traffic or final cutover. Concurrent transfers compete for disk/network throughput and capacity; free-space preflight is not a reservation of pool bytes against other writers.
 
 ## Guardrails
 

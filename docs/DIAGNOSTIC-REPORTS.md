@@ -2,7 +2,7 @@
 
 Author: Richard Skinner
 
-## 0.4.1-beta1
+## Creating a report
 
 Choose **Report a problem** on any migration or clone job, including running, failed and attention-required jobs. Reporting does not cancel, resume, resolve or otherwise change the job.
 
@@ -25,4 +25,4 @@ Redaction is best-effort, not guaranteed anonymity. Free-form logs can contain u
 
 ## Release boundary
 
-0.4.1-beta1 is published only through the beta feed; stable remains 0.4.0. Existing protocol 5 operations and the negotiated recovery plane are unchanged; diagnostic-host is a read-only optional command, with graceful fallback on older peers.
+Diagnostic reports are available in stable 0.4.1. Existing protocol 5 operations and the negotiated recovery plane are unchanged; diagnostic-host is a read-only optional command, with graceful fallback on older peers.
