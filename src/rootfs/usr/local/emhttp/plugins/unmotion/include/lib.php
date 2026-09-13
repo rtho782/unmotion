@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 const UNM_VERSION = '0.4.1-beta1';
 require_once __DIR__.'/diagnostics.php';
+require_once __DIR__.'/seed-concurrency.php';
 require_once __DIR__.'/migration-nvram.php';
 require_once __DIR__.'/host-state.php';
 require_once __DIR__.'/firmware.php';
@@ -3580,12 +3581,13 @@ function unmLaunchSeedWorker(string $id): int {
     $r=unmRun($cmd,null,10);$pid=(int)trim($r['stdout']);if($r['code']!==0||$pid<=0)throw new RuntimeException('Unable to launch Warm Move worker: '.trim($r['stderr']));return $pid;
 }
 
-function unmStartSeed(string $vmIdentifier,string $peerId,string $action='prepare'): array {
+function unmStartSeedAdmitted(string $vmIdentifier,string $peerId,string $action='prepare'): array {
     if(!in_array($action,['prepare','update'],true))throw new InvalidArgumentException('Invalid Warm Move operation.');
     $vm=unmParseVm($vmIdentifier);if(empty($vm['uuid']))throw new RuntimeException('VM UUID is unavailable.');
     if(!empty($vm['pci']))throw new RuntimeException('PCIe passthrough is unsupported for Warm Move.');
     if(empty($vm['warmMoveEligible']))throw new RuntimeException('The VM storage layout is not eligible for Warm Move.');
     $id=unmSeedId((string)$vm['uuid'],$peerId);
+    unmSeedAssertIdle($id,(string)$vm['uuid']);
     if($action==='prepare') {
         $pre=unmPreflight($vmIdentifier,$peerId,['migration_mode'=>'warm-prepare','iso_action'=>'remove','source_cleanup_action'=>'unregister']);
         if(empty($pre['ready'])) throw new RuntimeException(implode('; ',$pre['errors']??['Warm Move preparation preflight failed.']));
@@ -3594,25 +3596,29 @@ function unmStartSeed(string $vmIdentifier,string $peerId,string $action='prepar
         if(empty($pre['ready'])) throw new RuntimeException(implode('; ',$pre['errors']??['Prepared-copy update preflight failed.']));
     }
     $peer=unmTestPeer($peerId);$dir=unmSeedPath($id);
+    $claims=unmSeedStorageClaims(unmSeedWorkerPlan((array)$pre['vm'],(array)$pre['destination']));
+    if(empty($claims['source'])||empty($claims['destination']))throw new RuntimeException('Warm Move storage could not be reserved safely.');
+    unmSeedAssertClaims($id,(string)$vm['uuid'],$peerId,(string)($pre['destination']['hostId']??''),$claims,unmSeedRecords());
     if(!is_dir($dir)&&!mkdir($dir,0700,true)&&!is_dir($dir))throw new RuntimeException('Unable to create prepared-copy directory.');
     if($action==='prepare'&&is_file($dir.'/seed.json'))throw new RuntimeException('A prepared-copy record already exists for this VM and peer. Update or remove it first.');
     if($action==='update'&&!is_file($dir.'/seed.json'))throw new RuntimeException('Prepare this VM before requesting an update.');
     unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$vm['uuid'],'VM_NAME'=>$vm['name'],'PEER_ID'=>$peerId,'ACTION'=>$action]);
     $existing=unmLoadJson($dir.'/seed.json');$seed=array_replace($existing,['id'=>$id,'vmUuid'=>$vm['uuid'],'vmName'=>$vm['name'],'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>$action==='prepare'?'Preparing copy':'Updating prepared copy','createdAt'=>$existing['createdAt']??date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM)]);
-    unmAtomicJson($dir.'/seed.json',$seed);file_put_contents($dir.'/seed.log','',FILE_APPEND);chmod($dir.'/seed.log',0600);$seed['pid']=unmLaunchSeedWorker($id);unmAtomicJson($dir.'/seed.json',$seed);return $seed;
+    $seed['storageClaims']=$claims;$seed['peerHostId']=(string)($pre['destination']['hostId']??'');
+    unmAtomicJson($dir.'/seed.json',$seed);file_put_contents($dir.'/seed.log','',FILE_APPEND);chmod($dir.'/seed.log',0600);unmLaunchSeedWorker($id);return unmSeed($id);
 }
 
-function unmResumeSeed(string $id): array {
+function unmResumeSeedAdmitted(string $id): array {
     $seed=unmSeed($id);
     if(($seed['state']??'')!=='INTERRUPTED') throw new RuntimeException('Only an interrupted prepared-copy transfer can be resumed.');
     if(empty($seed['pendingSnapshot']) || empty($seed['pendingGeneration'])) throw new RuntimeException('The interrupted seed has no recorded ZFS resume generation.');
     $dir=unmSeedPath($id);
     unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$seed['vmUuid']??'','VM_NAME'=>$seed['vmName']??'','PEER_ID'=>$seed['peerId']??'','ACTION'=>'resume']);
     $seed['state']='STARTING';$seed['message']='Resume requested';$seed['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/seed.json',$seed);
-    $seed['pid']=unmLaunchSeedWorker($id);unmAtomicJson($dir.'/seed.json',$seed);return $seed;
+    unmLaunchSeedWorker($id);return unmSeed($id);
 }
 
-function unmRemoveSeed(string $id): array {
+function unmRemoveSeedAdmitted(string $id): array {
     $seed=unmSeed($id);$state=(string)($seed['state']??'');
     if(!in_array($state,['READY','FAILED','INTERRUPTED'],true)) throw new RuntimeException('This prepared copy cannot be removed while another seed operation is active.');
     $dir=unmSeedPath($id);unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$seed['vmUuid']??'','VM_NAME'=>$seed['vmName']??'','PEER_ID'=>$seed['peerId']??'','ACTION'=>'remove']);

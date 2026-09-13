@@ -6,7 +6,8 @@
 - Include selected logs, VM/storage metadata and source/destination host specifications with explicit freshness and availability labels.
 - Add report-local aliases, mandatory secret filtering, optional original paths, editable preview and explicit public-sharing review.
 - Download/copy reports without a GitHub account, or open a generic GitHub issue draft for user-controlled submission.
-- Keep published feeds unchanged during Community Applications review; no migration or protocol-version changes.
+- Allow independent Warm Move preparations to transfer concurrently, with per-VM/per-seed exclusion and source-side storage reservations. Reject conflicting requests before rewriting active records and prevent launcher status races.
+- Keep published feeds unchanged during Community Applications review; no protocol-version changes. Final migration/cutover serialization is unchanged.
 
 ## 0.4.0 — 2026-09-12
 

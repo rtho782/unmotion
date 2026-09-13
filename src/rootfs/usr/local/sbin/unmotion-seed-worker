@@ -2,6 +2,9 @@
 set -Eeuo pipefail
 SEED_ID="${1:-}"
 [[ "$SEED_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid seed id' >&2; exit 2; }
+# A duplicate worker must never mark the active worker's shared seed record failed.
+exec 7>"/var/lock/unmotion-seed-$SEED_ID.lock"
+flock -n 7 || { echo 'This prepared copy already has a worker' >&2; exit 5; }
 BASE=/boot/config/plugins/unmotion
 DIR="$BASE/seeds/$SEED_ID"
 REQUEST="$DIR/request.cfg"
@@ -20,9 +23,11 @@ source "$PEERCFG"
 [[ "${VM_UUID:-}" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || { echo 'Invalid or missing VM UUID' >&2; exit 4; }
 mkdir -p "$DIR"; touch "$LOG"; chmod 600 "$LOG"
 exec 9>/var/run/unmotion-seed.lock
-flock -n 9 || { /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'Another seed operation is active'; exit 5; }
+# Shared admission permits independent seeds; an older exclusive worker still blocks us.
+flock -sn 9 || { /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'An older seed worker is active; let it finish first'; exit 5; }
 exec 8>"/var/lock/unmotion-$VM_UUID.lock"
 flock -n 8 || { /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'Another unMotion operation is already using this VM'; exit 5; }
+php -r '$p=$argv[1];$d=json_decode(file_get_contents($p),true);$d["pid"]=(int)$argv[2];$t=$p.".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$p);' "$SEED_JSON" "$$"
 if ! /usr/local/sbin/unmotion-agent recovery-legacy-interlock "$VM_UUID" 'Warm Move' >>"$LOG" 2>&1; then
   /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'Recovery authority blocks preparing this VM'
   exit 6
@@ -187,6 +192,7 @@ VM_NAME="$(virsh domname "$VM_UUID" 2>/dev/null || true)"
 php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";echo json_encode(unmParseVm($argv[1]),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";' "$VM_UUID" > "$VM_JSON"
 PCI_COUNT="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo count($d["pci"]??[]);' "$VM_JSON")"
 ((PCI_COUNT==0)) || fail 'PCIe passthrough is unsupported for Warm Move.' 13
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmSeedAssertWorkerPlan(unmSeed($argv[1]),unmLoadJson($argv[2]),unmLoadJson($argv[3]));' "$SEED_ID" "$VM_JSON" "$CAPS" >>"$LOG" 2>&1 || fail 'Storage mappings changed after admission; inspect the prepared copy before retrying.' 14
 mapfile -t ZFS_SOURCES < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);$seen=[];foreach($d["disks"]??[] as $x){$c=$x["transferClass"]??"";if($c==="zvol")$v=substr($x["source"],strlen("/dev/zvol/"));elseif($c==="zfs-dataset-image")$v=$x["zfsDataset"]??"";else continue;if($v!==""&&!isset($seen[$v])){$seen[$v]=1;echo $v,"\n";}}' "$VM_JSON")
 mapfile -t RSYNC_FILES < <(php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["disks"]??[] as $x){if(in_array($x["transferClass"]??"",["shared-zfs-image","encrypted-zfs-image","non-zfs-image"],true))echo $x["source"],"\n";}' "$VM_JSON")
 (( ${#ZFS_SOURCES[@]} + ${#RSYNC_FILES[@]} > 0 )) || fail 'No Warm Move-compatible VM disks were found.' 14

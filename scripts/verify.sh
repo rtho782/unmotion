@@ -27,6 +27,7 @@ if command -v php >/dev/null; then
     while IFS= read -r -d '' file; do php -l "$file" >/dev/null; done
   php "$ROOT/tests/php-regressions.php"
   php "$ROOT/tests/diagnostic-regressions.php"
+  php "$ROOT/tests/seed-concurrency-regressions.php"
   if [[ -w /mnt ]]; then
     php "$ROOT/tests/nvram-regressions.php"
     php "$ROOT/tests/nvram-destination-regressions.php"
@@ -54,5 +55,6 @@ done
 
 bash "$ROOT/tests/static-regressions.sh"
 bash "$ROOT/tests/shell-regressions.sh"
+bash "$ROOT/tests/seed-lock-regressions.sh"
 
 echo 'All available verification checks passed.'

@@ -1,5 +1,19 @@
 # Verification
 
+## 0.4.1-beta1 concurrent warm-preparation follow-up — 2026-09-13
+
+Author: Richard Skinner
+
+The full `scripts/verify.sh` suite passed with PHP, Bash and Node.js, including new source/destination reservation, same-VM, retained/partial-state, peer-alias, path-descendant, hardlink, FUSE-alias, changed-mapping and explicit POST-gate tests. Real flock checks cover shared new-worker compatibility, exclusion of the older exclusive worker, and per-VM/per-seed ownership.
+
+Three new stopped DEV01 fixtures (`Beta41 Squid Proxy ZFS`, `Beta41 Squid Proxy Raw`, and `Beta41 Squid Proxy ZVol`) prepared toward DEV02. All three were observed TRANSFERRING simultaneously with separate PIDs. A direct duplicate worker exited 5 without updating the active record. API-function update/resume/remove requests against that active seed were refused and its request-file hash stayed unchanged. All three preparations completed READY.
+
+Two fresh DEV02 fixtures (`Beta41 Reverse Squid Proxy ZFS` and `Beta41 Reverse Squid Proxy Raw`) tested the final candidate in reverse. Their admission calls were submitted at the same time; both were accepted and transfers overlapped. Both completed READY. Initial DEV01 tests used the prior diagnostic-only candidate as receiver, requiring no new protocol command; the reverse tests exercised the final worker mapping guard.
+
+Both raw-image copies passed independent source/destination SHA-256 checks. All three native-ZFS copies passed independent snapshot-GUID comparison and destination readonly checks. Every fixture's source remained stopped, and no destination libvirt domain was defined. The temporary 1 MiB/s per-worker test limit was restored to the original value (0) on both hosts. Five stopped source fixtures and their prepared copies were deliberately retained for further testing, without deleting any existing storage.
+
+Limits: these tests used newly created stopped test VMs, not running guest workloads; no new freeze/thaw, cutover, update-pruning, deletion, power-loss or receive-abort campaign was performed. Collision/race edge cases beyond the duplicate active request were covered by automated guards rather than destructive live scenarios. Reservations are source-local, not distributed locks against unrelated source hosts. Production, public releases and both public update feeds remain unchanged.
+
 ## 0.4.1-beta1 unpublished diagnostic candidate — 2026-09-12
 
 Author: Richard Skinner

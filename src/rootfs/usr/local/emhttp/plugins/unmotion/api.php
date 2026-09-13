@@ -95,10 +95,10 @@ try {
         case 'replicationLog':
             reply(['success'=>true,'log'=>unmReplicationLog((string)($_REQUEST['replication_id']??''))]);
         case 'seeds': reply(['success'=>true,'seeds'=>unmSeeds()]);
-        case 'prepareWarm': reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'prepare')]);
-        case 'updateWarm': reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'update')]);
-        case 'resumeWarm': reply(['success'=>true,'seed'=>unmResumeSeed((string)($_POST['seed_id']??''))]);
-        case 'removeWarm': reply(['success'=>true,'seed'=>unmRemoveSeed((string)($_POST['seed_id']??''))]);
+        case 'prepareWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'prepare')]);
+        case 'updateWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmStartSeed((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''),'update')]);
+        case 'resumeWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmResumeSeed((string)($_POST['seed_id']??''))]);
+        case 'removeWarm': requirePostMutation(); reply(['success'=>true,'seed'=>unmRemoveSeed((string)($_POST['seed_id']??''))]);
         case 'seedLog':
             $sid=(string)($_REQUEST['seed_id']??'');$sd=unmSeedPath($sid);reply(['success'=>true,'log'=>is_file($sd.'/seed.log')?file_get_contents($sd.'/seed.log'):'']);
         case 'preflight':
