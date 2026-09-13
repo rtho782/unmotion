@@ -24,6 +24,8 @@ Unraid reads the installed descriptor's pluginURL when checking for updates, dow
 
 The dedicated plugin-beta branch contains the released installer, not unfinished package source. Apart from the explicit initial URL-only migration above, publish the tagged GitHub prerelease and its PLG/TXZ assets first, then advance that branch to the byte-identical PLG. Do not replace published release assets to deliver later code changes; increment the release version.
 
+One owner-authorized exception was made for 0.4.1-beta2 before reported external adoption: its Plugins-tab heading was reduced from H1 to H4 without changing application behavior. The source tag, PLG/TXZ assets, checksum file and beta feed were refreshed together; the original source commit and local artifact backups were retained. This does not establish a general same-version update mechanism: an existing beta2 installation will not discover the cosmetic refresh as a newer version, and caches can briefly serve the original descriptor.
+
 ## Release procedure
 
 1. Run verification and the disposable Unraid lab tests.

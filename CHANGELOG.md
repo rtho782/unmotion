@@ -2,6 +2,7 @@
 
 ## 0.4.1-beta2 — 2026-09-13
 
+- Use a compact heading for the Plugins-tab description, matching other Unraid plugins.
 - Remove redundant TPM preparation/cutover and ordinary clone confirmations; retain data-deletion, recovery-ownership and genuine consistency warnings.
 - Present supported transfer fallbacks as neutral details, and show preparation warnings inline without a second confirmation.
 - Make failback preflight, exact-claim renewal and hold-acknowledgement retry single-click actions with unchanged backend validation.

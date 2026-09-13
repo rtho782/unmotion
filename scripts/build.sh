@@ -45,6 +45,7 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
+- Compact Plugins-tab description heading, matching other Unraid plugins.
 - Beta2: clearer notices; TPM Warm Move and ordinary cloning no longer require redundant confirmations.
 - Preparation/update resource guidance is separate from mandatory cutover checks; health warnings follow actual storage dependencies.
 - Archive-only failed records remain recoverable; destructive storage removal still requires confirmation.

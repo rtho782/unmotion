@@ -1,5 +1,20 @@
 # Verification
 
+## 0.4.1-beta2 cosmetic refresh — 2026-09-13
+
+Author: Richard Skinner
+
+At the owner's explicit request, beta2 was refreshed under the same version before reported external adoption. Its installed Plugins-tab description now uses an H4 heading instead of H1. Comparison of the rebuilt and original packages found exactly one changed file (`usr/local/emhttp/plugins/unmotion/README.md`); all other file contents and permissions match, including application code and the licence. Unraid's own Markdown renderer produced `<h4>unMotion</h4>`, the new heading regression passed, and the complete PHP/Bash/Node `scripts/verify.sh` suite passed on DEV01. No additional VM migration or package installation was needed for this description-only refresh.
+
+The original source commit `edaf75f` and downloaded original assets are retained for audit. The beta2 source tag, release assets, checksum file and beta feed are refreshed together. This is an owner-authorized exception to immutable release policy, not a general same-version upgrade path. Existing beta2 installs will not detect the cosmetic change as an upgrade; older-version installation testing is still deferred to the owner. Stable 0.4.0 and the Community Apps stable installer selection are unchanged. The current Community Apps guide was reviewed and needs no guidance or availability change for this cosmetic correction.
+
+Refreshed package SHA-256:
+
+```text
+68cbdcacbd8248540b58f4f3ca17207797b7ceab3dae21aafa07dbb4404ecaae  unmotion-0.4.1_beta2-noarch-1.txz
+3922c1ab0166a77d2940a8addca2d67f730ec89feaf587eebf280b73602d65c5  unmotion-0.4.1-beta2.plg
+```
+
 ## 0.4.1-beta2 candidate — 2026-09-13
 
 Author: Richard Skinner
