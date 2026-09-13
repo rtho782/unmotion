@@ -99,5 +99,10 @@ function unmResumeSeed(string $id): array {
     return unmSeedAdmission(function()use($id){$seed=unmSeed($id);unmSeedAssertIdle($id,(string)$seed['vmUuid']);unmSeedAssertClaims($id,(string)$seed['vmUuid'],(string)$seed['peerId'],(string)($seed['peerHostId']??''),$seed['storageClaims']??unmSeedStorageClaims((array)($seed['storage']??[])),unmSeedRecords());return unmResumeSeedAdmitted($id);});
 }
 function unmRemoveSeed(string $id): array {
-    return unmSeedAdmission(function()use($id){$seed=unmSeed($id);unmSeedAssertIdle($id,(string)$seed['vmUuid']);unmSeedAssertClaims($id,(string)$seed['vmUuid'],(string)$seed['peerId'],(string)($seed['peerHostId']??''),$seed['storageClaims']??unmSeedStorageClaims((array)($seed['storage']??[])),unmSeedRecords());return unmRemoveSeedAdmitted($id);});
+    return unmSeedAdmission(function()use($id){
+        $seed=unmSeed($id);unmSeedAssertIdle($id,(string)$seed['vmUuid']);
+        $archived=unmArchiveUnstartedSeed($id);if($archived!==null)return $archived;
+        unmSeedAssertClaims($id,(string)$seed['vmUuid'],(string)$seed['peerId'],(string)($seed['peerHostId']??''),$seed['storageClaims']??unmSeedStorageClaims((array)($seed['storage']??[])),unmSeedRecords());
+        return unmRemoveSeedAdmitted($id);
+    });
 }

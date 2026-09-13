@@ -220,6 +220,8 @@ fi
 VM_STATE="$(virsh domstate "$VM_UUID" | tr -d '\r')"
 QGA_CONNECTED="$(php -r '$d=json_decode(file_get_contents($argv[1]),true);echo !empty($d["guestAgent"]["connected"])?1:0;' "$VM_JSON")"
 QUIESCED="$(json_get "$SEED_JSON" pendingQuiesced 2>/dev/null || echo 0)"
+# Fail closed if the durable pre-storage boundary cannot be recorded.
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmSeedMarkStorageStarted($argv[1]);' "$SEED_ID"
 if (( ${#ZFS_SOURCES[@]} > 0 )); then
   if [[ "$ACTION" == resume ]]; then
     state SNAPSHOTTING 8 'Reusing the retained ZFS snapshot for resume'

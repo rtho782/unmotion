@@ -28,6 +28,7 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/php-regressions.php"
   php "$ROOT/tests/diagnostic-regressions.php"
   php "$ROOT/tests/seed-concurrency-regressions.php"
+  php "$ROOT/tests/seed-archive-regressions.php"
   if [[ -w /mnt ]]; then
     php "$ROOT/tests/nvram-regressions.php"
     php "$ROOT/tests/nvram-destination-regressions.php"

@@ -20,3 +20,11 @@ These reservations coordinate seeds admitted by the **same source host**, not in
 ## Tests
 
 `tests/seed-concurrency-regressions.php` covers independent admissions, same-VM conflicts, source/destination path overlaps, peer aliases, retained/partial reservations, legacy records, hardlinks, FUSE aliases, worker mapping changes, duplicate-worker guards and explicit POST gates. See `VERIFICATION.md` for the live lab results and their limits.
+
+## Removing a preparation that never started
+
+The Remove action now handles verified never-started FAILED records without requiring storage to exist. It archives the exact record directory under `/boot/config/plugins/unmotion/archived-seeds/`, retaining its original logs and metadata. It does not contact a peer or remove any VM, disk, snapshot or receive state in this record-only path. The UI reports that the record was archived rather than saying storage cleanup was started.
+
+New preparations record a pre-storage flag and boot identity. Before taking a snapshot or beginning a copy, the worker must persist the storage-started flag. A pre-storage flag from another boot is not accepted as proof. Legacy lock-rejected records are recognised only by a restricted set of pre-transfer files, with no generation, pending snapshot, storage manifest contents or capability/inventory artifacts. Unexpected files, links, evidence of partial transfers, non-FAILED states and active worker/VM locks exclude record-only archival. Empty manifests alone do not authorise it; other cases retain normal cleanup safeguards.
+
+Archives are local recovery/audit evidence, not anonymised reports. They are kept outside the active seed listing and are not automatically pruned. Retrieve their logs manually if needed; do not restore a seed into the active directory without checking current VM/storage ownership first.

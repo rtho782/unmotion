@@ -4,6 +4,7 @@ declare(strict_types=1);
 const UNM_VERSION = '0.4.1-beta1';
 require_once __DIR__.'/diagnostics.php';
 require_once __DIR__.'/seed-concurrency.php';
+require_once __DIR__.'/seed-archive.php';
 require_once __DIR__.'/migration-nvram.php';
 require_once __DIR__.'/host-state.php';
 require_once __DIR__.'/firmware.php';
@@ -3605,6 +3606,7 @@ function unmStartSeedAdmitted(string $vmIdentifier,string $peerId,string $action
     unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$vm['uuid'],'VM_NAME'=>$vm['name'],'PEER_ID'=>$peerId,'ACTION'=>$action]);
     $existing=unmLoadJson($dir.'/seed.json');$seed=array_replace($existing,['id'=>$id,'vmUuid'=>$vm['uuid'],'vmName'=>$vm['name'],'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>$action==='prepare'?'Preparing copy':'Updating prepared copy','createdAt'=>$existing['createdAt']??date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM)]);
     $seed['storageClaims']=$claims;$seed['peerHostId']=(string)($pre['destination']['hostId']??'');
+    if(!$existing){$seed['executionSchema']=1;$seed['storageStarted']=false;$seed['executionBootId']=unmSeedExecutionBootId();}
     unmAtomicJson($dir.'/seed.json',$seed);file_put_contents($dir.'/seed.log','',FILE_APPEND);chmod($dir.'/seed.log',0600);unmLaunchSeedWorker($id);return unmSeed($id);
 }
 

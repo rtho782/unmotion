@@ -1,5 +1,15 @@
 # Verification
 
+## 0.4.1-beta1 never-started seed cleanup follow-up — 2026-09-13
+
+Author: Richard Skinner
+
+The complete `scripts/verify.sh` suite passed with PHP, Bash and Node.js. New archive regressions cover legacy never-started evidence, the explicit pre-storage flag and boot boundary, generation/pending/partial-state refusal, nonempty manifests, unexpected files, symlinks, active worker locks, unchanged archived file hashes and placement of the storage-started marker before snapshot/copy operations.
+
+Installed on DEV01 and DEV02. On each host, both a legacy failed-removal fixture and a new explicit pre-storage failure passed through the actual `unmRemoveSeed` function with a deliberately unavailable pairing. Their records disappeared from active seeds, the logs remained byte-identical in archived-seeds, and all pre-existing prepared-copy record hashes were unchanged. No VM/disk/snapshot cleanup was performed in these integration tests. The new confirmation/result text passed JavaScript syntax checks; it was not separately exercised in the browser this follow-up.
+
+Two owner-approved production records were separately archived with the tested standalone helper, after read-only confirmation of no matching source seed snapshots, destination objects or incoming seed records. Every archived file hash matched its original. The installed production plugin remained 0.4.0; there was no production upgrade, VM operation or storage deletion. Public release/update feeds were not changed.
+
 ## 0.4.1-beta1 concurrent warm-preparation follow-up — 2026-09-13
 
 Author: Richard Skinner
