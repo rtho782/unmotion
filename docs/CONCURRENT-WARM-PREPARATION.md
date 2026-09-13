@@ -2,7 +2,7 @@
 
 Author: Richard Skinner
 
-The unpublished 0.4.1 candidate permits independent preparations from one source host to transfer concurrently. There is no longer a single exclusive lock covering every seed transfer. The compatibility lock is shared by new workers, but still excludes an older worker holding the former exclusive lock.
+0.4.1-beta1 permits independent preparations from one source host to transfer concurrently. There is no longer a single exclusive lock covering every seed transfer. The compatibility lock is shared by new workers, but still excludes an older worker holding the former exclusive lock.
 
 The change covers prepare, update and resume workers; it does not remove final migration/cutover serialization or allow simultaneous operations on one VM. Bandwidth limits apply **per worker**, not to the combined traffic. Concurrent preparations compete for disk/network throughput and capacity; free-space preflight is not a reservation of pool bytes against other writers.
 

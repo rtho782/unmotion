@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.1-beta1 — unreleased
+## 0.4.1-beta1 — 2026-09-13
 
 - Add read-only diagnostic reports to migration and clone jobs, including running/stuck jobs.
 - Include selected logs, VM/storage metadata and source/destination host specifications with explicit freshness and availability labels.
@@ -8,7 +8,7 @@
 - Download/copy reports without a GitHub account, or open a generic GitHub issue draft for user-controlled submission.
 - Allow independent Warm Move preparations to transfer concurrently, with per-VM/per-seed exclusion and source-side storage reservations. Reject conflicting requests before rewriting active records and prevent launcher status races.
 - Allow removal of verified never-started failed seeds by archiving their records and logs locally, without requiring or deleting VM storage. Partial/uncertain transfers retain normal cleanup safeguards.
-- Keep published feeds unchanged during Community Applications review; no protocol-version changes. Final migration/cutover serialization is unchanged.
+- Publish on the beta track only; stable remains 0.4.0. No protocol-version changes. Final migration/cutover serialization is unchanged.
 
 ## 0.4.0 — 2026-09-12
 

@@ -50,6 +50,7 @@ cat <<EOF
 - Download/copy reports without a GitHub account; open an issue draft without storing GitHub credentials or uploading automatically.
 - Optional original paths and bounded current-peer specs; recorded metadata remains available when a peer cannot be contacted.
 - Concurrent independent Warm Move preparations with VM/seed locks, storage collision checks and duplicate-request protection.
+- Archive verified never-started failed seed records with logs retained, without requiring or deleting VM storage.
 - Final migration/cutover serialization and protocol versions are unchanged. GPL-3.0-only.
 </CHANGES>
 <FILE Name="&payload;"><INLINE>
