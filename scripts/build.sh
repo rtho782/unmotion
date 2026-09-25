@@ -25,10 +25,9 @@ if tar -tvf "$DIST/$PKG" | awk '$1 ~ /^d/ && $1 != "drwxr-xr-x" {print "Unsafe p
   rm -f "$DIST/$PKG"
   exit 1
 fi
-MD5="$(md5sum "$DIST/$PKG" | awk '{print $1}')"
 SHA="$(sha256sum "$DIST/$PKG" | awk '{print $1}')"
-B64="$ROOT/work/payload.b64"
-base64 "$DIST/$PKG" > "$B64"
+# The package is published as an asset of the GitHub release tagged $VERSION; Unraid downloads it and checks the SHA-256.
+PKG_URL="https://github.com/rtho782/unmotion/releases/download/$VERSION/$PKG"
 
 {
 cat <<EOF
@@ -40,7 +39,6 @@ cat <<EOF
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
 <!ENTITY package "&plgdir;/packages/$PKG">
-<!ENTITY payload "/tmp/unmotion-&version;.txz.b64">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.0.0" icon="exchange">
 <CHANGES>
@@ -58,22 +56,12 @@ cat <<EOF
 - Independent Warm Move cutovers can run in parallel between capable peers; exclusive/legacy operations wait cancellably rather than failing on lock contention.
 - Per-VM/storage reservations and destination-start RAM checks remain enforced. Protocol versions unchanged. GPL-3.0-only.
 </CHANGES>
-<FILE Name="&payload;"><INLINE>
-EOF
-cat "$B64"
-cat <<EOF
-</INLINE></FILE>
+<FILE Name="&package;" Run="/sbin/upgradepkg --install-new">
+<URL>$PKG_URL</URL>
+<SHA256>$SHA</SHA256>
+</FILE>
 <FILE Run="/bin/bash"><INLINE>
-set -e
-mkdir -p "&plgdir;/packages"
-TMP="&package;.tmp.\$\$"
-base64 -d "&payload;" > "\$TMP"
-echo "$MD5  \$TMP" | md5sum -c -
-mv -f "\$TMP" "&package;"
-chmod 600 "&package;"
-/sbin/upgradepkg --install-new "&package;"
 /etc/rc.d/rc.unmotion restart || true
-rm -f "&payload;"
 </INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE>
 /etc/rc.d/rc.unmotion stop || true
@@ -81,9 +69,7 @@ rm -f "&payload;"
 /sbin/removepkg unmotion 2>/dev/null || true
 rm -rf /usr/local/emhttp/plugins/unmotion /usr/local/sbin/unmotion-* /etc/rc.d/rc.unmotion
 rm -rf "&plgdir;"
-rm -f "&payload;"
 </INLINE></FILE>
-<!-- Embedded package SHA-256: $SHA -->
 </PLUGIN>
 EOF
 } > "$DIST/$PLG"

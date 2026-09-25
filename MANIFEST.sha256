@@ -15,7 +15,7 @@ e6271ef936bf110ebb7022adcfc0fdca679c11f4cbbd2ee474d695faa348fb05  release/0.3.0-
 cbcacc6c8b3c1a9df4e4ce4b7020a9806ddaf00aff91fd8527b97d05e30c34f6  release/0.3.0-beta7/unmotion-0.3.0_beta7-noarch-1.txz
 20ace170707eaed65e55a7b2418e6e86fe5e98fbb48c1b5f2d5f509889e55656  release/0.3.0-beta7/unmotion-0.3.0-beta7.plg
 a23e9685502c2b7d6d81d1cd2e672ed7614ceebca55631908213f12ec259fc0a  release/0.3.0-beta7/unmotion-0.3.0-beta7-source.tar.gz
-e82dd0fbfa798e43d12f02ea20de267dc51f86e8952c563a15ca8fd36257521a  scripts/build.sh
+6ad6e514d70bfe2ce417205ff0327eccdc6bc6c4089663cf3a7f64f7af72b66a  scripts/build.sh
 7deab161c688a236a75e7691f398cf34ad2bda8648c42de6ef9523e601f3f156  scripts/verify.sh
 c4690f749d532f2625d1bdf744e596734f35073a74859bd47bd36cede9f8ef06  src/rootfs/etc/rc.d/rc.unmotion
 9e1d9b0a61849d7e8a503f2a1cda11269653929d92ebb8812367453bf2b81c8a  src/rootfs/install/doinst.sh
