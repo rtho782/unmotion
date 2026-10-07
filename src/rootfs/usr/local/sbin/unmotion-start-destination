@@ -1,0 +1,22 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+// Paired SSH/root only. Serializes the brief libvirt start, never disk transfer.
+$lock=null;
+try {
+    $uuid=(string)($argv[1]??'');$expectedMemory=(string)($argv[2]??'');
+    if(!preg_match('/^[a-f0-9-]{36}$/iD',$uuid)||!ctype_digit($expectedMemory)||(int)$expectedMemory<131072)throw new RuntimeException('Invalid destination start request.');
+    $lock=fopen('/var/lock/unmotion-destination-start.lock','c');if(!$lock||!flock($lock,LOCK_EX))throw new RuntimeException('Unable to acquire destination start lock.');
+    unmRecoveryAssertLegacyVmAvailable($uuid,'Move');
+    if(unmRecoveryVmState($uuid)!=='shut off')throw new RuntimeException('Destination VM is not verifiably stopped; no start was attempted.');
+    $xml=unmDomainXml($uuid,true);$memory=unmXmlMemoryKiB($xml);
+    if($memory!==(int)$expectedMemory)throw new RuntimeException('Destination VM memory configuration changed before start.');
+    $resources=unmHostResources();
+    if($memory*1024>(int)($resources['availableBytes']??0))throw new RuntimeException('Destination RAM is no longer sufficient; the VM remains stopped.');
+    $result=unmRun(['virsh','start',$uuid],null,120);
+    echo $result['stdout'];fwrite(STDERR,$result['stderr']);exit($result['code']);
+} catch(Throwable $e) {fwrite(STDERR,$e->getMessage()."\n");exit(1);}
+finally {if(is_resource($lock)){flock($lock,LOCK_UN);fclose($lock);}}

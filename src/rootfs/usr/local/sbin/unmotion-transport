@@ -1,0 +1,13 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/transport.php';
+try {
+    if($argc!==3)throw new RuntimeException('Usage: unmotion-transport encode|rsync-command argument');
+    if($argv[1]==='encode')echo unmTransportEncodeCommand($argv[2]);
+    elseif($argv[1]==='rsync-command'){unmTransportPath($argv[2]);echo unmTransportEnvelope('rsync-receive',['path'=>$argv[2]]);}
+    else throw new RuntimeException('Unknown local transport operation.');
+    echo "\n";
+}catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(2);}

@@ -1,0 +1,85 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require_once '/usr/local/emhttp/plugins/unmotion/include/native-fence.php';
+function nativeCommand(array $argv,int $seconds=45): array {
+    $p=proc_open($argv,[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,null,['PATH'=>'/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin','LANG'=>'C']);if(!is_resource($p))throw new RuntimeException('Unable to run native fence controller command.');
+    fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$out='';$err='';$code=null;$deadline=microtime(true)+max(1,min(60,$seconds));$failed='';
+    while(true){
+        $out.=stream_get_contents($pipes[1]);$err.=stream_get_contents($pipes[2]);$status=proc_get_status($p);
+        if(strlen($out)+strlen($err)>1048576){$failed='Native fence command output exceeded its bound.';break;}
+        if(!$status['running']){$code=$status['exitcode'];break;}
+        if(microtime(true)>=$deadline){$failed='Native fence command timed out.';break;}usleep(20000);
+    }
+    if($failed!==''){
+        // This is our still-owned proc_open child, not a persisted numeric PID.
+        if($status['running']){proc_terminate($p);$until=microtime(true)+1;do{usleep(20000);$status=proc_get_status($p);if(!$status['running'])break;}while(microtime(true)<$until);if($status['running'])proc_terminate($p,9);}
+        $code=str_contains($failed,'timed out')?124:74;
+    }
+    $out.=stream_get_contents($pipes[1]);$err.=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);$closed=proc_close($p);
+    return ['code'=>$code===null||$code<0?$closed:$code,'stdout'=>substr($out,0,1048576),'stderr'=>substr($err,0,1048576).($failed!==''?"\n".$failed:'' )];
+}
+function nativeProbeIdentity(array $probe): array {
+    $nonce=(string)($probe['nonce']??'');if(!preg_match('/^[a-f0-9]{32}$/',$nonce))throw new RuntimeException('Prior native probe journal has an invalid nonce; preserve it for inspection.');
+    $uuid='f0420000-'.substr($nonce,0,4).'-4'.substr($nonce,4,3).'-8'.substr($nonce,7,3).'-'.substr($nonce,10,12);$name='unmotion-fence-probe-'.$nonce;
+    if(($probe['uuid']??'')!==$uuid||($probe['name']??'')!==$name)throw new RuntimeException('Prior native probe journal identity is inconsistent; no VM was changed.');return ['uuid'=>$uuid,'name'=>$name];
+}
+function nativeProbeInventory(callable $command): array {
+    $r=$command(['timeout','-k','2','10','virsh','list','--all','--uuid'],15);if($r['code']!==0)throw new RuntimeException('Libvirt inventory is unavailable; native probe cleanup remains unresolved.');
+    $ids=[];foreach(preg_split('/\R/',trim($r['stdout']))?:[] as $id){if($id==='')continue;if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i',$id))throw new RuntimeException('Ambiguous libvirt inventory; native probe journal was retained.');$ids[]=strtolower($id);}return $ids;
+}
+function nativeProbeReconcile(array $probe,?callable $command=null): void {
+    $command??='nativeCommand';$identity=nativeProbeIdentity($probe);$uuid=$identity['uuid'];
+    if(!in_array($uuid,nativeProbeInventory($command),true))return;
+    $dump=$command(['timeout','-k','2','10','virsh','dumpxml',$uuid],15);if($dump['code']!==0)throw new RuntimeException('Cannot verify exact native probe XML; journal retained for '.$uuid);
+    $domain=unmNativeDomain($dump['stdout']);if($domain['uuid']!==$uuid||$domain['name']!==$identity['name'])throw new RuntimeException('Native probe UUID belongs to a different VM; no VM was changed.');
+    $state=$command(['timeout','-k','2','10','virsh','domstate',$uuid],15);$actual=strtolower(trim($state['stdout']));
+    if($state['code']!==0||!in_array($actual,['running','idle','paused','in shutdown','pmsuspended','blocked','shut off','crashed'],true))throw new RuntimeException('Exact native probe state is unknown; journal retained for '.$uuid);
+    if(!in_array($actual,['shut off','crashed'],true)){
+        $stop=$command(['timeout','-k','2','15','virsh','destroy',$uuid],20);if($stop['code']!==0)throw new RuntimeException('Could not stop the exact native probe; journal retained for '.$uuid);
+    }
+    // A probe is transient. An unexpected persistent definition is not removed.
+    if(in_array($uuid,nativeProbeInventory($command),true))throw new RuntimeException('Native probe is still defined or active; journal retained for '.$uuid);
+}
+function nativeProbeClear(string $run): void {
+    foreach(['native-hook-probe.xml','native-hook-probe.json','native-hook-probe-result.json'] as $file){$path=$run.'/'.$file;if(file_exists($path)&&!unlink($path))throw new RuntimeException('Cannot clear completed native probe journal.');}
+}
+try {
+    $mode=(string)($argv[1]??'status');$run='/run/unmotion/lifecycle';
+    if($mode==='check-remove'){unmNativeAssertRemovable();exit(0);}
+    if($mode==='ensure'){
+        $source='/usr/local/emhttp/plugins/unmotion/include/native-qemu-hook';$target='/etc/libvirt/hooks/qemu.d/50-unmotion-recovery';
+        if(!is_file($source))throw new RuntimeException('Native hook package template is missing.');
+        if(!is_dir(dirname($target))&&!mkdir(dirname($target),0755,true))throw new RuntimeException('Cannot create libvirt hook directory.');
+        if(is_link($target))throw new RuntimeException('Native hook target is an unexpected symlink.');
+        if(!is_file($target)){if(!copy($source,$target)||!chmod($target,0755))throw new RuntimeException('Cannot install native recovery hook.');}
+        elseif(!hash_equals((string)hash_file('sha256',$source),(string)hash_file('sha256',$target)))throw new RuntimeException('Native hook differs from installed package; reinstall unMotion after reviewing the file.');
+        exit(0);
+    }
+    if($mode==='status'){$r=unmNativeProofStatus($run);echo json_encode($r,JSON_UNESCAPED_SLASHES)."\n";exit($r['ready']?0:1);}
+    if($mode==='running'){
+        $uuid=strtolower((string)($argv[2]??''));$name=(string)($argv[3]??'');$id=(string)($argv[4]??'');$term=(int)($argv[5]??0);if(!preg_match('/^[a-f0-9-]{36}$/',$uuid)||!preg_match('/^repl-[a-f0-9]{24}$/',$id))throw new RuntimeException('Invalid managed running identity.');$a=unmNativeJson($run.'/native-admissions/'.$uuid.'.json');if(($a['stage']??'')!=='RUNNING'||($a['side']??'')!=='source'||($a['replicationId']??'')!==$id||(int)($a['term']??0)!==$term||($a['qemu']??null)!==unmNativeQemu($uuid,$name))throw new RuntimeException('No exact admitted QEMU process exists.');exit(0);
+    }
+    if($mode!=='probe')throw new RuntimeException('Usage: unmotion-native-fence [status|ensure|probe|check-remove|running UUID NAME POLICY TERM]');
+    // Only this explicit controller creates the disposable, no-disk/no-NIC probe.
+    // The hook always rejects it at prepare. Missing-hook fallback is stopped.
+    $guard=fopen('/run/unmotion-native-fence-probe.lock','c');if(!$guard||!flock($guard,LOCK_EX|LOCK_NB))throw new RuntimeException('Native hook verification is already running.');
+    if(is_file($run.'/native-hook-probe.json')){nativeProbeReconcile(unmNativeJson($run.'/native-hook-probe.json'));nativeProbeClear($run);}
+    $base='/boot/config/plugins/unmotion';foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=unmNativeJson($path);if(!in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)||!empty($r['armed']))unmNativeMarkManaged(strtolower((string)($r['vmUuid']??'')),(string)($r['replicationId']??''),(string)($r['side']??''));}
+    $nonce=bin2hex(random_bytes(16));$uuid='f0420000-'.substr($nonce,0,4).'-4'.substr($nonce,4,3).'-8'.substr($nonce,7,3).'-'.substr($nonce,10,12);$name='unmotion-fence-probe-'.$nonce;$path=$run.'/native-hook-probe.xml';
+    unmNativeWrite($run.'/native-hook-probe.json',['uuid'=>$uuid,'name'=>$name,'nonce'=>$nonce,'expiresAt'=>time()+40]);@unlink($run.'/native-hook-probe-result.json');
+    $xml='<domain type="kvm"><name>'.$name.'</name><uuid>'.$uuid.'</uuid><memory unit="MiB">16</memory><vcpu>1</vcpu><os><type arch="x86_64">hvm</type><boot dev="hd"/></os><devices><emulator>/usr/local/sbin/qemu</emulator></devices></domain>';
+    if(!is_executable('/usr/local/sbin/qemu'))$xml=str_replace('/usr/local/sbin/qemu','/usr/bin/qemu-system-x86_64',$xml);
+    if(file_put_contents($path,$xml,LOCK_EX)!==strlen($xml))throw new RuntimeException('Unable to write native hook probe.');chmod($path,0600);
+    $probe=unmNativeJson($run.'/native-hook-probe.json');$clean=false;
+    try{$result=nativeCommand(['timeout','-k','2','30','virsh','create',$path],35);$proof=is_file($run.'/native-hook-probe-result.json')?unmNativeJson($run.'/native-hook-probe-result.json'):[];
+        nativeProbeReconcile($probe);$clean=true;
+        // A timed-out create can still be pending inside libvirt. Retain its
+        // identity unless the callback itself proves rejection at prepare.
+        if(in_array($result['code'],[124,137],true)&&(($proof['uuid']??'')!==$uuid||($proof['nonce']??'')!==$nonce||($proof['operation']??'')!=='prepare')){$clean=false;throw new RuntimeException('Native probe creation timed out; its journal was retained for exact reconciliation: '.$uuid);}
+        if($result['code']===0||($proof['uuid']??'')!==$uuid||($proof['nonce']??'')!==$nonce||($proof['operation']??'')!=='prepare'||!str_contains($result['stderr'],'Native recovery fence probe rejected before QEMU start.'))throw new RuntimeException('Native hook did not reject the exact probe before QEMU. Restart VM Manager when guests are stopped, then repeat verification.');
+        $ready=unmNativeProofStatus($run);if(!$ready['ready'])throw new RuntimeException($ready['reason']);echo "Native recovery hook verified: exact probe denied before QEMU start.\n";
+    }finally{if(!$clean){try{nativeProbeReconcile($probe);}catch(Throwable $cleanup){fwrite(STDERR,$cleanup->getMessage()."\n");}}if($clean)nativeProbeClear($run);}
+}catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(1);}

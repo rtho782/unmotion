@@ -1,0 +1,22 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/process-identity.php';
+try{
+    [$mode,$path,$pid,$script]=array_pad(array_slice($argv,1,4),4,'');
+    if(!ctype_digit($pid)||(int)$pid<2)throw new InvalidArgumentException('Invalid process PID.');
+    $arguments=array_slice($argv,5);
+    if($mode==='register'){unmProcessRegister($path,(int)$pid,$script,$arguments);exit(0);}
+    $identity=unmProcessReadIdentity($path,(int)$pid,$script,$arguments);
+    if($mode==='matches')exit($identity===null?1:0);
+    if(!in_array($mode,['stop','stop-service'],true))throw new InvalidArgumentException('Expected register, matches, stop or stop-service.');
+    if($identity===null&&$mode==='stop-service')$identity=unmProcessAdoptLegacyService($path,(int)$pid,$script,$arguments);
+    if($identity===null){
+        // Legacy workers without a lifetime record cannot safely be stopped by
+        // a saved PID. Preserve their service state and ask for a clean stop.
+        $current=unmProcessSnapshot((int)$pid);
+        if($current!==null&&unmProcessCommandMatches($current,$script,$arguments))throw new RuntimeException('Worker is active but its saved lifetime identity cannot be verified; not signalling it.');
+        exit(0);
+    }
+    exit(unmProcessStop($identity)?0:75);
+}catch(Throwable $error){fwrite(STDERR,$error->getMessage()."\n");exit(75);}
