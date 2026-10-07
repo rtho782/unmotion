@@ -1,0 +1,69 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+
+if($argc!==4){fwrite(STDERR,"Usage: unmotion-guest-customize UUID CLONE_NAME PLAN_JSON\n");exit(2);}
+[$script,$uuid,$cloneName,$planPath]=$argv;
+$plan=json_decode((string)file_get_contents($planPath),true,512,JSON_THROW_ON_ERROR);$macs=array_map('strtolower',(array)($plan['clone']['macs']??[]));
+
+function qga(string $uuid,array $payload,int $timeout=20): mixed {
+    $json=json_encode($payload,JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR);
+    $r=unmRun(['virsh','qemu-agent-command',$uuid,$json],null,$timeout);
+    if($r['code']!==0)throw new RuntimeException(trim($r['stderr'].' '.$r['stdout'])?:'QEMU Guest Agent command failed.');
+    $decoded=json_decode($r['stdout'],true,512,JSON_THROW_ON_ERROR);
+    if(isset($decoded['error']))throw new RuntimeException((string)($decoded['error']['desc']??'QEMU Guest Agent returned an error.'));
+    return $decoded['return']??null;
+}
+
+$deadline=time()+180;$last='';
+do{try{qga($uuid,['execute'=>'guest-ping'],5);$last='';break;}catch(Throwable $e){$last=$e->getMessage();sleep(3);}}while(time()<$deadline);
+if($last!=='')throw new RuntimeException('QEMU Guest Agent did not become ready: '.$last);
+$os=(array)qga($uuid,['execute'=>'guest-get-osinfo']);
+if(strtolower((string)($os['id']??''))!=='ubuntu')throw new RuntimeException('Automatic guest customization is limited to Ubuntu in RC2; detected '.((string)($os['id']??'unknown')).'.');
+$interfaces=(array)qga($uuid,['execute'=>'guest-network-get-interfaces']);$names=[];
+foreach($interfaces as $interface){
+    if(!is_array($interface))continue;$name=(string)($interface['name']??'');$mac=strtolower((string)($interface['hardware-address']??''));
+    if(in_array($mac,$macs,true)&&preg_match('/^[A-Za-z0-9_.:-]+$/',$name))$names[$name]=true;
+}
+if(!$names)throw new RuntimeException('Guest Agent could not map the cloned MAC addresses to Ubuntu interface names.');
+$host=strtolower((string)preg_replace('/[^A-Za-z0-9-]+/','-',trim($cloneName)));$host=trim(substr($host,0,63),'-');if($host==='')$host='unmotion-clone';
+$jobTag=preg_replace('/[^A-Za-z0-9_.-]+/','-',basename(dirname($planPath)));
+$yaml="network:\n  version: 2\n  ethernets:\n";
+foreach(array_keys($names) as $name)$yaml.="    ".$name.":\n      dhcp4: true\n      dhcp6: true\n      optional: true\n";
+$guestScript=<<<SH
+set -eu
+backup=/etc/netplan/unmotion-backup-$jobTag
+mkdir -p "\$backup"
+for f in /etc/netplan/*.yaml; do
+  [ -e "\$f" ] || continue
+  mv "\$f" "\$backup/"
+done
+cat > /etc/netplan/99-unmotion-clone.yaml <<'UNM_NETPLAN'
+$yaml
+UNM_NETPLAN
+printf '%s\n' '$host' > /etc/hostname
+hostname '$host' || true
+rm -f /etc/machine-id /var/lib/dbus/machine-id
+systemd-machine-id-setup
+if [ -d /etc/ssh ]; then
+  rm -f /etc/ssh/ssh_host_*
+  ssh-keygen -A
+fi
+netplan generate
+sync
+SH;
+$encoded=base64_encode($guestScript);
+$args=['-c','printf %s '.escapeshellarg($encoded).' | base64 -d | /bin/sh'];
+$pidResult=(array)qga($uuid,['execute'=>'guest-exec','arguments'=>['path'=>'/bin/sh','arg'=>$args,'capture-output'=>true]]);
+$pid=(int)($pidResult['pid']??0);if($pid<=0)throw new RuntimeException('Guest Agent did not return a customization process ID.');
+$deadline=time()+120;
+do{
+    sleep(2);$status=(array)qga($uuid,['execute'=>'guest-exec-status','arguments'=>['pid'=>$pid]]);
+    if(!empty($status['exited'])){
+        $stdout=isset($status['out-data'])?base64_decode((string)$status['out-data'],true):'';$stderr=isset($status['err-data'])?base64_decode((string)$status['err-data'],true):'';
+        if((int)($status['exitcode']??1)!==0)throw new RuntimeException('Ubuntu customization failed: '.trim((string)$stderr.' '.(string)$stdout));
+        echo json_encode(['os'=>$os,'interfaces'=>array_keys($names),'hostname'=>$host],JSON_UNESCAPED_SLASHES|JSON_PRETTY_PRINT)."\n";exit(0);
+    }
+}while(time()<$deadline);
+throw new RuntimeException('Ubuntu guest customization timed out.');

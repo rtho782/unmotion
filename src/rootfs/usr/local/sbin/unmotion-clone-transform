@@ -1,0 +1,75 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+
+if ($argc !== 5) {
+    fwrite(STDERR, "Usage: unmotion-clone-transform SOURCE_XML OUTPUT_XML PLAN_JSON connected|disconnected\n");
+    exit(2);
+}
+[$script,$sourcePath,$outputPath,$planPath,$linkMode]=$argv;
+if(!in_array($linkMode,['connected','disconnected'],true))throw new InvalidArgumentException('Invalid NIC link mode.');
+$plan=json_decode((string)file_get_contents($planPath),true,512,JSON_THROW_ON_ERROR);
+$identity=(array)($plan['clone']??[]);$name=(string)($identity['name']??'');$uuid=(string)($identity['uuid']??'');$genid=(string)($identity['genid']??'');$macs=(array)($identity['macs']??[]);$map=(array)($plan['pathMap']??[]);
+if($name===''||!preg_match('/^[a-f0-9-]{36}$/i',$uuid)||!preg_match('/^[a-f0-9-]{36}$/i',$genid))throw new RuntimeException('Clone identity is incomplete.');
+
+$dom=new DOMDocument('1.0','UTF-8');$dom->preserveWhiteSpace=true;$dom->formatOutput=true;
+libxml_use_internal_errors(true);
+if(!$dom->load($sourcePath,LIBXML_NONET))throw new RuntimeException('Unable to parse source domain XML.');
+$xp=new DOMXPath($dom);$domain=$dom->documentElement;if(!$domain||$domain->nodeName!=='domain')throw new RuntimeException('Invalid libvirt domain XML.');
+
+$setFirst=function(string $query,string $value)use($xp):DOMElement{
+    $node=$xp->query($query)->item(0);if(!$node instanceof DOMElement)throw new RuntimeException('Required XML element is missing: '.$query);$node->nodeValue=$value;return $node;
+};
+$setFirst('/domain/name',$name);$uuidNode=$setFirst('/domain/uuid',$uuid);
+$genidNode=$xp->query('/domain/genid')->item(0);
+if($genidNode instanceof DOMElement)$genidNode->nodeValue=$genid;
+else{$genidNode=$dom->createElement('genid',$genid);$uuidNode->parentNode?->insertBefore($genidNode,$uuidNode->nextSibling);}
+foreach($xp->query('//hwuuid')?:[] as $node)$node->nodeValue=$uuid;
+foreach($xp->query("//*[local-name()='sysinfo']/*[local-name()='system']/*[local-name()='entry'][@name='uuid']")?:[] as $node)$node->nodeValue=$uuid;
+foreach($xp->query("//*[local-name()='vmtemplate']")?:[] as $node)if($node instanceof DOMElement&&$node->hasAttribute('name'))$node->setAttribute('name',$name);
+
+$interfaces=$xp->query('/domain/devices/interface');
+if($interfaces===false||$interfaces->length!==count($macs))throw new RuntimeException('NIC inventory changed while the clone was being prepared.');
+for($i=0;$i<$interfaces->length;$i++){
+    $interface=$interfaces->item($i);if(!$interface instanceof DOMElement)continue;
+    $mac=(string)$macs[$i];if(!preg_match('/^52:54:00(?::[0-9a-f]{2}){3}$/i',$mac))throw new RuntimeException('Invalid generated MAC address.');
+    $macNode=null;$linkNode=null;$remove=[];
+    foreach(iterator_to_array($interface->childNodes) as $child){
+        if(!$child instanceof DOMElement)continue;
+        if($child->nodeName==='mac')$macNode=$child;
+        elseif($child->nodeName==='link')$linkNode=$child;
+        elseif($child->nodeName==='target')$remove[]=$child;
+    }
+    foreach($remove as $node)$interface->removeChild($node);
+    if(!$macNode instanceof DOMElement){$macNode=$dom->createElement('mac');$interface->insertBefore($macNode,$interface->firstChild);}
+    $macNode->setAttribute('address',strtolower($mac));
+    if($linkMode==='disconnected'){
+        if(!$linkNode instanceof DOMElement){$linkNode=$dom->createElement('link');$interface->appendChild($linkNode);}
+        $linkNode->setAttribute('state','down');
+    }elseif($linkNode instanceof DOMElement)$interface->removeChild($linkNode);
+}
+
+foreach(iterator_to_array($xp->query('/domain/devices/hostdev')?:[]) as $hostdev){
+    if(!$hostdev instanceof DOMElement)continue;
+    if(strtolower($hostdev->getAttribute('type'))==='pci')throw new RuntimeException('Refusing to clone PCI passthrough XML.');
+    $hostdev->parentNode?->removeChild($hostdev);
+}
+if(($xp->query('/domain/devices/tpm')?->length??0)>0)throw new RuntimeException('Refusing to clone virtual TPM XML.');
+
+foreach($xp->query('/domain/devices/disk/source')?:[] as $source){
+    if(!$source instanceof DOMElement)continue;
+    foreach(['file','dev'] as $attribute){
+        if(!$source->hasAttribute($attribute))continue;
+        $old=html_entity_decode($source->getAttribute($attribute),ENT_QUOTES|ENT_XML1);
+        if(array_key_exists($old,$map))$source->setAttribute($attribute,(string)$map[$old]);
+    }
+}
+foreach($xp->query('/domain/os/nvram')?:[] as $nvram){$old=trim($nvram->textContent);if(array_key_exists($old,$map))$nvram->nodeValue=(string)$map[$old];}
+foreach($xp->query('/domain/devices/graphics')?:[] as $graphics){
+    if(!$graphics instanceof DOMElement)continue;
+    foreach(['port','tlsPort','websocket'] as $attribute)if($graphics->hasAttribute($attribute))$graphics->setAttribute($attribute,'-1');
+    $graphics->setAttribute('autoport','yes');
+}
+foreach($xp->query('/domain/devices/vsock/cid')?:[] as $cid){if($cid instanceof DOMElement){$cid->setAttribute('auto','yes');$cid->removeAttribute('address');}}
+
+if($dom->save($outputPath)===false)throw new RuntimeException('Unable to write transformed clone XML.');

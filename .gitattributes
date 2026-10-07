@@ -1,0 +1,12 @@
+* text=auto
+*.sh text eol=lf
+*.php text eol=lf
+*.page text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+src/rootfs/etc/rc.d/rc.unmotion text eol=lf
+src/rootfs/usr/local/sbin/* text eol=lf
+*.plg text eol=lf
+*.txz binary
+*.zip binary
+

@@ -1,0 +1,55 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+
+if ($argc < 5) {
+    fwrite(STDERR, "Usage: unmotion-replication-state POLICY_ID STATE PROGRESS MESSAGE [EXTRA_JSON]\n");
+    exit(2);
+}
+
+$id = (string)$argv[1];
+$state = trim((string)$argv[2]);
+$progress = max(0, min(100, (int)$argv[3]));
+$message = (string)$argv[4];
+if (!preg_match('/^[A-Za-z0-9_.-]{8,80}$/', $id) || !preg_match('/^[A-Z][A-Z0-9_]{1,39}$/', $state)) {
+    fwrite(STDERR, "Invalid replication state identity.\n");
+    exit(2);
+}
+
+$extra = [];
+if (isset($argv[5]) && trim((string)$argv[5]) !== '') {
+    $decoded = json_decode((string)$argv[5], true);
+    if (!is_array($decoded)) {
+        fwrite(STDERR, "Invalid replication state metadata.\n");
+        exit(2);
+    }
+    $extra = $decoded;
+}
+
+$directory = '/var/run/unmotion/replications';
+if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+    fwrite(STDERR, "Unable to create replication runtime directory.\n");
+    exit(3);
+}
+$path = $directory . '/' . $id . '.json';
+$current = [];
+if (is_file($path)) {
+    $decoded = json_decode((string)file_get_contents($path), true);
+    if (is_array($decoded)) $current = $decoded;
+}
+
+$current = array_replace($current, $extra, [
+    'id' => $id,
+    'state' => $state,
+    'progress' => $progress,
+    'message' => $message,
+    'updatedAt' => date(DATE_ATOM),
+]);
+$pid = (int)(getenv('UNM_REPLICATION_PID') ?: 0);
+if ($pid > 0) $current['pid'] = $pid;
+
+$temporary = $path . '.tmp.' . getmypid();
+$json = json_encode($current, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . "\n";
+if (file_put_contents($temporary, $json, LOCK_EX) === false) exit(3);
+chmod($temporary, 0600);
+if (!rename($temporary, $path)) exit(3);
