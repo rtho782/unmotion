@@ -1,0 +1,19 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+// No libvirt calls here: libvirt is synchronously waiting for this hook.
+require_once '/usr/local/emhttp/plugins/unmotion/include/native-fence.php';
+try {
+    $operation=(string)($argv[2]??'');$phase=(string)($argv[3]??'');
+    $xml=(string)file_get_contents('php://stdin');$domain=unmNativeDomain($xml);
+    $daemon=unmNativeDaemon(posix_getppid());$run='/run/unmotion/lifecycle';
+    unmNativeWrite($run.'/native-hook-proof.json',['schemaVersion'=>1,'daemon'=>$daemon,'hookSha256'=>hash_file('sha256',__FILE__),'helperSha256'=>hash_file('sha256','/usr/local/emhttp/plugins/unmotion/include/native-fence.php'),'observedAt'=>gmdate('c')]);
+    $probePath=$run.'/native-hook-probe.json';
+    if(is_file($probePath)){$probe=unmNativeJson($probePath);if(($probe['uuid']??'')===$domain['uuid']&&($probe['name']??'')===$domain['name']&&(int)($probe['expiresAt']??0)>=time()){
+        if($operation!=='prepare'||$phase!=='begin')exit(0);
+        unmNativeWrite($run.'/native-hook-probe-result.json',['uuid'=>$domain['uuid'],'nonce'=>$probe['nonce'],'operation'=>$operation,'daemon'=>$daemon]);throw new RuntimeException('Native recovery fence probe rejected before QEMU start.');
+    }}
+    unmNativeFence($operation,$phase,$xml);
+} catch(Throwable $e) {fwrite(STDERR,'unMotion native recovery fence: '.$e->getMessage()."\n");exit(1);}

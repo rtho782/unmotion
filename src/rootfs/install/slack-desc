@@ -1,0 +1,11 @@
+unmotion: unMotion (VM mobility and replication for Unraid)
+unmotion:
+unmotion: unMotion provides cloning, cold and prepared Warm Move migration,
+unmotion: and scheduled replication for Unraid KVM/libvirt VMs. Migration
+unmotion: supports ZFS and sparse file copies. Replication intentionally
+unmotion: requires dedicated ZFS zvols or datasets and keeps standby storage
+unmotion: inert until separately guarded coordinated manual recovery.
+unmotion:
+unmotion: Keep verified backups. Licensed under GPL-3.0-only.
+unmotion:
+unmotion:

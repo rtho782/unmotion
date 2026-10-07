@@ -1,0 +1,15 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+require_once '/usr/local/emhttp/plugins/unmotion/include/transport.php';
+try {
+    if($argc!==2)throw new RuntimeException('Missing authenticated pairing identity.');
+    $keyId=$argv[1];if(!preg_match('/\A[a-f0-9]{64}\z/D',$keyId))throw new RuntimeException('Invalid authenticated pairing identity.');
+    putenv('UNM_SSH_KEY_ID='.$keyId);
+    $request=unmTransportDecode((string)getenv('SSH_ORIGINAL_COMMAND'));
+    $result=unmTransportDispatch($request,$keyId);
+    fwrite(STDOUT,$result['stdout']);fwrite(STDERR,$result['stderr']);exit($result['code']);
+}catch(Throwable $e){fwrite(STDERR,'unMotion restricted SSH: '.$e->getMessage()."\n");exit(126);}

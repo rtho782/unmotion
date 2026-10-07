@@ -1,0 +1,141 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$cmd=$argv[1]??'capabilities';
+try {
+    switch($cmd){
+        case 'pairing-bootstrap':
+            if (getenv('UNM_SSH_KEY_ID')) throw new RuntimeException('Bootstrap requires local/password-authorized administration.');
+            $key = trim((string)stream_get_contents(STDIN, 4097));
+            if ($key === '' || strlen($key) > 4096) throw new InvalidArgumentException('Invalid bootstrap key.');
+            unmAppendAuthorizedKey($key);
+            echo json_encode(['success'=>true,'protocolVersion'=>UNM_PROTOCOL])."\n";
+            break;
+        case 'diagnostic-host':
+            echo json_encode(unmDiagnosticHost(),JSON_UNESCAPED_SLASHES|JSON_INVALID_UTF8_SUBSTITUTE)."\n";
+            break;
+        case 'migration-resolve':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            $request=$raw!==false&&strlen($raw)<=16384?json_decode($raw,true):null;
+            if(!is_array($request))throw new InvalidArgumentException('Invalid migration resolution request.');
+            echo json_encode(unmResolutionDestination($request),JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'firmware-plan':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            if($raw===false||strlen($raw)>16384)throw new InvalidArgumentException('Invalid firmware request.');
+            $request=json_decode($raw,true,32,JSON_THROW_ON_ERROR);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid firmware request.');
+            echo json_encode(['success'=>true,'plan'=>unmFirmwareResolve($request)],JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'capabilities':
+            echo json_encode(unmCapabilities(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'migration-nvram-check':
+        case 'migration-nvram-verify':
+            $raw=base64_decode((string)($argv[2]??''),true);
+            if($raw===false||strlen($raw)>16384)throw new InvalidArgumentException('Invalid NVRAM request.');
+            $plan=json_decode($raw,true,32,JSON_THROW_ON_ERROR);
+            if(!is_array($plan))throw new InvalidArgumentException('Invalid NVRAM plan.');
+            unmMigrationNvramDestination($plan,$cmd==='migration-nvram-verify');
+            echo json_encode(['success'=>true])."\n";
+            break;
+        case 'health':
+            echo json_encode(unmHealth(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'inventory':
+            echo json_encode(['vms'=>unmInventory()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'usb-list':
+            $index=unmUsbSystemIndex(); $items=[];
+            foreach(($index['byAddress']??[]) as $device) $items[]=$device;
+            echo json_encode(['usb'=>$items],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'zfs-dataset-for-path':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            if($decoded===false||!str_starts_with($decoded,'/mnt/')) throw new InvalidArgumentException('Invalid path.');
+            $exact=(string)($argv[3]??'0')==='1';
+            echo json_encode(['dataset'=>unmZfsDatasetForPath($decoded,$exact)],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-preflight':
+        case 'replication-prepare':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication preflight request.');
+            if($cmd==='replication-prepare')$request['reserve']=true;
+            echo json_encode(unmReplicaPreflight($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-publish':
+        case 'replication-commit':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication publish request.');
+            echo json_encode(unmReplicaPublish($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-prune':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid replication prune request.');
+            echo json_encode(unmReplicaPrune($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'replication-inventory':
+            if(isset($argv[2])&&$argv[2]!==''){
+                $decoded=base64_decode((string)$argv[2],true);$request=$decoded===false?null:json_decode($decoded,true);
+                if(!is_array($request))throw new InvalidArgumentException('Invalid replication inventory request.');
+                echo json_encode(unmReplicaInventory($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            }else echo json_encode(['replicas'=>unmIncomingReplicas()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'recovery-key-install':
+            $encoded=(string)($argv[2]??'');if($encoded===''||strlen($encoded)>131072)throw new InvalidArgumentException('Invalid recovery signing-key request.');$decoded=base64_decode($encoded,true);$request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid recovery signing-key request.');echo json_encode(unmRecoveryInstallPeerSecret($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'recovery-legacy-interlock':
+            $uuid=strtolower(trim((string)($argv[2]??'')));$operation=(string)($argv[3]??'unMotion operation');if(!in_array($operation,['Move','Warm Move','Clone','Replication policy mutation'],true))throw new InvalidArgumentException('Invalid recovery legacy-interlock operation.');unmRecoveryAssertLegacyVmAvailable($uuid,$operation);echo json_encode(['success'=>true,'allowed'=>true,'vmUuid'=>$uuid],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'recovery-arm':
+        case 'recovery-disarm':
+        case 'recovery-hold':
+        case 'recovery-hold-release':
+        case 'recovery-status':
+        case 'recovery-fence-status':
+        case 'recovery-grant':
+        case 'recovery-claim-renew':
+        case 'recovery-activation-commit':
+        case 'recovery-failback-preflight':
+            $encoded=(string)($argv[2]??'');if($encoded===''||strlen($encoded)>131072)throw new InvalidArgumentException('Invalid recovery RPC request.');$decoded=base64_decode($encoded,true);$request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request))throw new InvalidArgumentException('Invalid recovery RPC request.');echo json_encode(unmRecoveryDispatchRpc($cmd,$request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-prepare':
+            $encoded=(string)($argv[2]??'');
+            $decoded=base64_decode($encoded,true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid reciprocal pairing request.');
+            echo json_encode(unmPrepareReciprocalPeer($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-finalize':
+            echo json_encode(unmFinalizeReciprocalPeer((string)($argv[2]??'')),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'reciprocal-forget':
+            unmForgetPeerLocal((string)($argv[2]??''));
+            echo json_encode(['success'=>true],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'prepare-overwrite':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid overwrite request.');
+            echo json_encode(unmPrepareDestinationOverwrite($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'schedule-source-cleanup':
+            $decoded=base64_decode((string)($argv[2]??''),true);
+            $request=$decoded===false?null:json_decode($decoded,true);
+            if(!is_array($request)) throw new InvalidArgumentException('Invalid source-cleanup request.');
+            echo json_encode(unmScheduleSourceCleanup($request),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        case 'finalize-source-cleanup':
+            echo json_encode(unmFinalizeSourceCleanup((string)($argv[2]??''),(string)($argv[3]??'')),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
+            break;
+        default:
+            fwrite(STDERR,"Unknown command\n");
+            exit(2);
+    }
+} catch(Throwable $e){ fwrite(STDERR,$e->getMessage()."\n"); exit(1); }

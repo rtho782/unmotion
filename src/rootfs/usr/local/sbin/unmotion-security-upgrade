@@ -1,0 +1,13 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try {
+    if (!is_executable('/usr/local/sbin/unmotion-ssh-gate')) throw new RuntimeException('Restricted SSH gate is missing.');
+    unmRestrictExistingPeerKeys();
+} catch (Throwable $error) {
+    fwrite(STDERR, 'unMotion protocol-7 key migration failed: '.$error->getMessage()."\n");
+    exit(1);
+}

@@ -1,0 +1,30 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try {
+    if($argc!==6)throw new InvalidArgumentException('Usage: migration-nvram source.xml disks.json mapping.tsv capabilities.json plan.json');
+    $xml=(string)file_get_contents($argv[1]);
+    $disks=json_decode((string)file_get_contents($argv[2]),true,512,JSON_THROW_ON_ERROR);
+    $caps=json_decode((string)file_get_contents($argv[4]),true,512,JSON_THROW_ON_ERROR);
+    $vm=['uuid'=>unmXmlValue($xml,'uuid'),'name'=>unmXmlValue($xml,'name'),'nvram'=>unmMigrationNvramXml($xml)];
+    $maps=[];
+    foreach(file($argv[3],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){
+        $parts=explode("\t",$line,3);
+        if(count($parts)!==3||$parts[0]!=='disk')continue;
+        $bundled=false;
+        foreach($disks['fileDetails']??[] as $disk)if(($disk['source']??'')===$parts[1])$bundled=($disk['transferClass']??'')==='zfs-dataset-image'&&!empty($caps['storage']['imageZfsDataset']);
+        $maps[]=['source'=>$parts[1],'destination'=>$parts[2],'bundled'=>$bundled];
+    }
+    $plan=unmMigrationNvramPlan($vm,$maps,$caps);
+    if($plan['kind']!=='none')$plan['sha256']=hash_file('sha256',$plan['source']);
+    if(is_file($argv[5])){
+        $previous=json_decode((string)file_get_contents($argv[5]),true,512,JSON_THROW_ON_ERROR);
+        foreach(['kind','source','destination','bundled'] as $key)if(($previous[$key]??null)!==($plan[$key]??null))throw new RuntimeException('UEFI NVRAM mapping changed after preflight; start a new migration.');
+    }
+    unmAtomicJson($argv[5],$plan);
+    if($plan['kind']==='custom'){
+        $line="nvram\t".$plan['source']."\t".$plan['destination']."\n";
+        if(!str_contains((string)file_get_contents($argv[3]),$line)&&file_put_contents($argv[3],$line,FILE_APPEND)===false)throw new RuntimeException('Unable to save NVRAM mapping.');
+    }
+}catch(Throwable $e){fwrite(STDERR,'UEFI NVRAM: '.$e->getMessage()."\n");exit(30);}
