@@ -1,0 +1,4 @@
+.unm-report-box{width:min(1050px,94vw)}
+#unm-report-text{display:block;box-sizing:border-box;width:100%;min-height:280px;max-height:52vh;margin:8px 0 12px;font-family:monospace;font-size:13px;resize:vertical;white-space:pre;overflow:auto}
+#unm-report-modal .unm-modal-actions{flex-wrap:wrap;gap:8px}
+#unm-report-status{min-height:1.4em}

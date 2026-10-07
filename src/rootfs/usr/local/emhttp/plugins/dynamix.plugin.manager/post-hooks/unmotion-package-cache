@@ -1,0 +1,15 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+// Unraid runs every hook for every plugin; unrelated events must not even load us.
+// The native manager omits its unquoted empty error argument on success.
+if (!in_array($argc, [4, 5], true) || $argv[1] !== 'plugin' || !in_array($argv[2], ['install', 'update'], true) || $argv[3] !== 'unmotion.plg' || ($argv[4] ?? '') !== '') exit(0);
+require_once '/usr/local/emhttp/plugins/unmotion/include/package-cache.php';
+unmPackageCachePostHook(
+    $argv,
+    '/boot/config/plugins',
+    trim((string)file_get_contents('/usr/local/emhttp/plugins/unmotion/VERSION')),
+    static function (string $message): void { echo $message."\n"; }
+);
