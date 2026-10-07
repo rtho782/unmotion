@@ -1,0 +1,440 @@
+#!/bin/bash
+# shellcheck disable=SC2016 # Embedded PHP snippets intentionally use single-quoted shell strings.
+set -Eeuo pipefail
+umask 077
+
+BASE=/boot/config/plugins/unmotion
+POLICIES="$BASE/replications"
+REPLICAS="$BASE/replicas"
+RUN_ROOT=/var/run/unmotion/lifecycle
+QUEUE="$RUN_ROOT/checkpoint-queue"
+STATE="$RUN_ROOT/state"
+PERMITS="$RUN_ROOT/start-permits"
+QGA_ROOT=/var/lib/unmotion/replications
+LOG_DIR=/var/log/unmotion
+PID_FILE=/var/run/unmotion/replication-lifecycle.pid
+LOCK_FILE=/var/run/unmotion/replication-lifecycle.lock
+SHUTDOWN_FENCE=/var/run/unmotion/shutdown-fence
+WORKER=/usr/local/sbin/unmotion-replication-worker
+START_GATE=/usr/local/sbin/unmotion-replication-start-gate
+NOTIFY=/usr/local/sbin/unmotion-notify-critical
+MODE="${1:---daemon}"
+[[ "$MODE" == --daemon || "$MODE" == --startup-check || "$MODE" == --once || "$MODE" == --prepare-shutdown ]] || { echo 'Usage: unmotion-replication-lifecycle [--daemon|--startup-check|--once|--prepare-shutdown]' >&2; exit 2; }
+
+for command in php virsh flock base64 timeout awk grep mktemp mkfifo mv nohup setsid; do command -v "$command" >/dev/null 2>&1 || { echo "Required lifecycle command is unavailable: $command" >&2; exit 3; }; done
+mkdir -p "$POLICIES" "$QUEUE" "$STATE" "$PERMITS" "$QGA_ROOT" "$LOG_DIR" /var/run/unmotion
+if [[ "$MODE" == --prepare-shutdown ]]; then
+  temporary="$(mktemp /var/run/unmotion/.shutdown-fence.XXXXXX)"
+  shutdown_reason="${2:-host-shutdown}"
+  [[ "$shutdown_reason" == host-shutdown || "$shutdown_reason" == host-reboot ]] || { echo 'Invalid recovery shutdown reason.' >&2; exit 2; }
+  printf '%s\t%s\n' "$(date +%s)" "$shutdown_reason" > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f -- "$temporary" "$SHUTDOWN_FENCE"
+  if ! timeout 45 php -r '
+    require "/usr/local/emhttp/plugins/unmotion/include/lib.php";
+    $failed=false;
+    foreach(unmRecoveryPrepareHostShutdownHolds($argv[1]) as $result){
+      fwrite(STDERR,json_encode($result,JSON_UNESCAPED_SLASHES)."\n");
+      if(($result["status"]??"")==="failed")$failed=true;
+    }
+    exit($failed?1:0);
+  ' "$shutdown_reason"; then
+    echo 'One or more authenticated recovery shutdown holds were not acknowledged; the local shutdown fence remains active.' >&2
+    exit 4
+  fi
+  exit 0
+fi
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+if [[ "$MODE" == --daemon ]]; then
+  printf '%s\n' "$$" > "$PID_FILE"
+  trap '[[ -z "${EVENT_PID:-}" ]] || kill "$EVENT_PID" 2>/dev/null || true; rm -f -- "$PID_FILE" "$EVENT_FIFO"' EXIT
+  trap 'exit 0' INT TERM
+fi
+
+BOOT_ID="$(tr -d '\r\n' </proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+[[ "$BOOT_ID" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || BOOT_ID=unknown
+declare -A RETRY_AT=()
+declare -A QGA_RETRY_AT=()
+declare -A AUTH_RETRY_AT=()
+declare -A AUTH_RETRY_DELAY=()
+declare -A DESTINATION_RETRY_AT=()
+declare -A DESTINATION_RETRY_DELAY=()
+EVENT_PID=''
+EVENT_FIFO="$RUN_ROOT/libvirt-events.fifo"
+
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*"; }
+decode(){ printf '%s' "$1" | base64 -d; }
+write_runtime(){
+  local target="$1" value="$2" temporary
+  temporary="$(mktemp "$RUN_ROOT/.write.XXXXXX")"
+  printf '%s\n' "$value" > "$temporary"
+  mv -f -- "$temporary" "$target"
+}
+notify_once(){
+  local marker="$1" token="$2" subject="$3" detail="$4" previous=''
+  [[ -f "$marker" ]] && read -r previous < "$marker"
+  [[ "$previous" == "$token" ]] && return 0
+  if [[ -x "$NOTIFY" ]] && "$NOTIFY" "$subject" "$detail"; then
+    write_runtime "$marker" "$token"
+  else
+    log "CRITICAL notification delivery failed and will be retried: $subject: $detail"
+    return 1
+  fi
+}
+report_unavailable_vm_state(){
+  local id="$1" uuid="$2" name="$3" armed="$4" now first='' since_marker notified_marker
+  since_marker="$STATE/$id.libvirt-unavailable-since"
+  notified_marker="$STATE/$id.libvirt-unavailable"
+  if [[ "$armed" != 1 ]]; then
+    rm -f -- "$since_marker" "$notified_marker"
+    return 0
+  fi
+  now="$(date +%s)"
+  [[ -f "$since_marker" ]] && read -r first < "$since_marker" || true
+  if [[ ! "$first" =~ ^[0-9]+$ ]] || ((first>now)); then
+    write_runtime "$since_marker" "$now"
+    return 0
+  fi
+  ((now-first>=60)) || return 0
+  notify_once "$notified_marker" "boot:$BOOT_ID:$first" 'Managed VM state remains unavailable' "$name ($uuid) is recovery-managed, but libvirt has not returned a provable VM state for at least 60 seconds. unMotion continues to fence starts and will not treat the VM as powered off."
+}
+clear_unavailable_vm_state(){ rm -f -- "$STATE/$1.libvirt-unavailable-since" "$STATE/$1.libvirt-unavailable"; }
+policy_rows(){
+  php -r '
+  $bad=false;$unarmed=["REPLICATION_ONLY","DISARMED","REMOVED"];$activeByUuid=[];
+  foreach(glob($argv[1]."/*/recovery.json")?:[] as $recoveryPath){
+    $r=json_decode((string)@file_get_contents($recoveryPath),true);if(!is_array($r)){$bad=true;continue;}
+    $state=strtoupper(trim((string)($r["state"]??"")));if(in_array($state,$unarmed,true))continue;
+    $uuid=strtolower(trim((string)($r["vmUuid"]??"")));if(!preg_match("/^[a-f0-9-]{32,36}$/",$uuid)){$bad=true;continue;}
+    $activeByUuid[$uuid]=($activeByUuid[$uuid]??0)+1;
+  }
+  foreach(glob($argv[1]."/*/policy.json")?:[] as $path){
+    $p=json_decode((string)@file_get_contents($path),true);if(!is_array($p)){$bad=true;continue;}
+    $id=(string)($p["id"]??basename(dirname($path)));$uuid=(string)($p["vmUuid"]??"");
+    if(!preg_match("/^[A-Za-z0-9_.-]{8,80}$/",$id)||!preg_match("/^[A-Fa-f0-9-]{32,36}$/",$uuid)){$bad=true;continue;}
+    $recoveryPath=dirname($path)."/recovery.json";$exists=is_file($recoveryPath);$r=$exists?json_decode((string)@file_get_contents($recoveryPath),true):[];
+    $valid=is_array($r);if(!$valid)$r=[];$state=strtoupper(trim((string)($r["state"]??"")));
+    $armed=$exists&&!in_array($state,$unarmed,true);
+    $recordId=(string)($r["replicationId"]??$r["policyId"]??"");
+    if($armed&&(!$valid||$recordId!==$id||strcasecmp((string)($r["vmUuid"]??""),$uuid)!==0||(int)($r["schemaVersion"]??0)!==1||(int)($r["protocolVersion"]??0)!==6||(int)($r["recoveryProtocolVersion"]??0)!==1)){ $valid=false;$state="FENCED";$bad=true; }
+    $sole=!$armed||(($activeByUuid[strtolower($uuid)]??0)===1);
+    $fields=[$id,$uuid,(string)($p["vmName"]??$uuid),!empty($p["enabled"])?"1":"0",(string)($p["tpmInitialMode"]??"none"),$armed?"1":"0",$valid?"1":"0",$state,strtoupper((string)($r["authority"]??"UNKNOWN")),(string)($r["sourceBootId"]??""),!empty($r["desiredAutostart"])?"1":"0",(string)((int)($r["term"]??0)),$sole?"1":"0"];
+    echo implode("\t",array_map("base64_encode",$fields)),"\n";
+  }
+  foreach(glob($argv[1]."/*/recovery.json")?:[] as $recoveryPath){if(!is_file(dirname($recoveryPath)."/policy.json"))$bad=true;}
+  exit($bad?1:0);' "$POLICIES"
+}
+destination_rows(){
+  php -r '
+  $bad=false;
+  foreach(glob($argv[1]."/*/*/recovery.json")?:[] as $path){
+    $record=json_decode((string)@file_get_contents($path),true);
+    if(!is_array($record)){$bad=true;continue;}
+    $id=(string)($record["replicationId"]??"");$activationId=(string)($record["activationId"]??"");
+    if($activationId==="")continue;
+    if(!preg_match("/^repl-[a-f0-9]{24}$/",$id)||!preg_match("/^act-[a-f0-9]{24}$/",$activationId)||basename(dirname($path))!==$id){$bad=true;continue;}
+    echo base64_encode($id),"\n";
+  }
+  exit($bad?1:0);' "$REPLICAS"
+}
+vm_state(){
+  local output=''
+  output="$(timeout 10 virsh domstate "$1" 2>/dev/null | head -n1 | tr -d '\r' | awk '{$1=$1;print tolower($0)}')" || { printf '%s' unknown; return 0; }
+  [[ -n "$output" ]] || output=unknown
+  printf '%s' "$output"
+}
+vm_is_off(){ [[ "$1" == 'shut off' ]]; }
+vm_has_checkpoint_state(){
+  local uuid="$1" tpm_mode="$2" xml
+  xml="$(timeout 10 virsh dumpxml "$uuid" --inactive 2>/dev/null || true)"
+  [[ -n "$xml" ]] || return 1
+  grep -qE '<nvram([[:space:]>])' <<<"$xml" && return 0
+  [[ "$tpm_mode" != none ]] && grep -qE '<tpm([[:space:]>])' <<<"$xml"
+}
+capture_qga_cache(){
+  local id="$1" uuid="$2" now raw xml cache directory temporary
+  now="$(date +%s)"; ((now>=${QGA_RETRY_AT[$id]:-0})) || return 0; QGA_RETRY_AT[$id]=$((now+30))
+  raw="$RUN_ROOT/$id.qga-network.json"; xml="$RUN_ROOT/$id.domain.xml"; directory="$QGA_ROOT/$id"; cache="$directory/qga-last.json"
+  timeout 8 virsh qemu-agent-command "$uuid" '{"execute":"guest-network-get-interfaces"}' > "$raw" 2>/dev/null || return 0
+  timeout 8 virsh dumpxml "$uuid" --inactive > "$xml" 2>/dev/null || return 0
+  mkdir -p "$directory"; temporary="$(mktemp "$directory/.qga-last.XXXXXX")"
+  if php -r '
+  $raw=json_decode((string)@file_get_contents($argv[1]),true);$xml=(string)@file_get_contents($argv[2]);if(!is_array($raw)||$xml==="")exit(2);
+  preg_match_all("~<mac\\s+address=[\"\x27]([^\"\x27]+)[\"\x27]~i",$xml,$matches);$domain=array_values(array_unique(array_map("strtolower",$matches[1]??[])));if(!$domain)exit(3);
+  $interfaces=[];$selected="";foreach(($raw["return"]??[]) as $interface){if(!is_array($interface))continue;$mac=strtolower(trim((string)($interface["hardware-address"]??"")));if($mac===""||!in_array($mac,$domain,true))continue;$addresses=[];foreach(($interface["ip-addresses"]??[]) as $address){$ip=(string)($address["ip-address"]??"");if(!filter_var($ip,FILTER_VALIDATE_IP)||$ip==="127.0.0.1"||$ip==="::1"||str_starts_with(strtolower($ip),"fe80:"))continue;$addresses[]=["address"=>$ip,"family"=>(string)($address["ip-address-type"]??""),"prefix"=>(int)($address["prefix"]??0)];if($selected===""&&filter_var($ip,FILTER_VALIDATE_IP,FILTER_FLAG_IPV4))$selected=$ip;}if($addresses)$interfaces[]=["guestName"=>(string)($interface["name"]??""),"mac"=>$mac,"addresses"=>$addresses];}
+  if(!$interfaces)exit(4);if($selected==="")$selected=(string)$interfaces[0]["addresses"][0]["address"];
+  $out=["schemaVersion"=>1,"vmUuid"=>strtolower($argv[3]),"observedAt"=>gmdate("c"),"observedAtEpoch"=>time(),"domainMacs"=>$domain,"verified"=>true,"network"=>["observedAt"=>gmdate("c"),"interfaces"=>$interfaces,"selectedProbeAddress"=>$selected]];$data=json_encode($out,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";if(file_put_contents($argv[4],$data,LOCK_EX)!==strlen($data)||!chmod($argv[4],0600))exit(5);' "$raw" "$xml" "$uuid" "$temporary"; then
+    mv -f -- "$temporary" "$cache"
+  else
+    rm -f -- "$temporary"
+  fi
+  rm -f -- "$raw" "$xml"
+}
+durable_fence(){
+  local id="$1" uuid="$2" state="$3" reason="$4"
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";if(!function_exists("unmRecoveryLifecycleFence"))exit(70);unmRecoveryLifecycleFence($argv[1],$argv[2],$argv[3],$argv[4]);' "$id" "$uuid" "$state" "$reason"
+}
+running_authorized(){
+  local id="$1" uuid="$2" term="$3" recovery_state="$4" authority="$5" sole_policy="$6" inventory_valid="$7" marker expected previous='' reason=''
+  if [[ "$inventory_valid" != 1 ]]; then printf '%s' 'the global recovery policy inventory is invalid'; return 1; fi
+  if [[ "$sole_policy" != 1 ]]; then printf '%s' 'more than one armed or non-reconciled recovery policy exists for this VM UUID'; return 1; fi
+  marker="$STATE/$id.running-authorized"; expected="$BOOT_ID:$term:${uuid,,}"
+  [[ -f "$marker" ]] && read -r previous < "$marker" || true
+  if [[ "$recovery_state" == HOLDOFF && "$authority" == SOURCE ]]; then
+    if [[ "$previous" == "$expected" ]]; then return 0; fi
+    printf '%s' 'a recovery hold does not authorize a new VM start; the exact same-boot running marker is absent or stale'
+    return 1
+  fi
+  reason="$($START_GATE "$id" "$uuid" --check 2>&1)" || { [[ -n "$reason" ]] || reason='source authority validation failed'; printf '%s' "$reason"; return 1; }
+  [[ "$previous" == "$expected" ]] && return 0
+  reason="$($START_GATE "$id" "$uuid" --consume-permit 2>&1)" || { [[ -n "$reason" ]] || reason='no one-shot managed start permit was available'; printf '%s' "$reason"; return 1; }
+  write_runtime "$marker" "$expected"
+}
+issue_start_permit(){ "$START_GATE" "$1" "$2" --issue-permit >/dev/null 2>&1; }
+reconcile_start_authorization(){
+  local id="$1" now delay next_delay
+  now="$(date +%s)"; ((now>=${AUTH_RETRY_AT[$id]:-0})) || return 1
+  delay="${AUTH_RETRY_DELAY[$id]:-30}"; [[ "$delay" =~ ^[0-9]+$ ]] || delay=30
+  AUTH_RETRY_AT[$id]=$((now+delay))
+  if timeout 40 php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";if(!function_exists("unmRecoveryReconcileSourceStartAuthorization"))exit(70);unmRecoveryReconcileSourceStartAuthorization($argv[1]);' "$id"; then
+    AUTH_RETRY_DELAY[$id]=30
+    return 0
+  fi
+  next_delay=$((delay*2)); ((next_delay<=300)) || next_delay=300
+  AUTH_RETRY_DELAY[$id]="$next_delay"
+  return 1
+}
+reconcile_after_real_boot(){
+  local id="$1" uuid="$2" name="$3" source_boot="$4" term="$5" token marker
+  [[ "$source_boot" != "$BOOT_ID" ]] || { rm -f -- "$STATE/$id.boot-reconcile-failed"; return 0; }
+  [[ ! -e "$SHUTDOWN_FENCE" ]] || return 1
+  marker="$STATE/$id.boot-reconcile-failed"; token="boot:$BOOT_ID:term:$term"
+  if reconcile_start_authorization "$id"; then
+    rm -f -- "$marker"
+    log "Reconciled old-boot recovery hold and source authority for $name ($uuid)."
+    return 0
+  fi
+  notify_once "$marker" "$token" 'Recovery source reboot remains fenced' "$name ($uuid) could not reconcile its old-boot recovery hold and destination authority. It remains off; unMotion will retry with bounded backoff." || true
+  return 1
+}
+autostart_state(){ timeout 10 virsh dominfo "$1" 2>/dev/null | awk -F: '/^Autostart/{gsub(/^[[:space:]]+|[[:space:]]+$/,"",$2);print tolower($2);exit}'; }
+enforce_autostart_off(){
+  local id="$1" uuid="$2" name="$3" current after marker
+  marker="$STATE/$id.autostart-alert"
+  current="$(autostart_state "$uuid")"
+  case "$current" in disable|disabled|no) rm -f -- "$marker"; return 0 ;; esac
+  timeout 10 virsh autostart --disable "$uuid" >/dev/null 2>&1 || true
+  after="$(autostart_state "$uuid")"
+  if [[ "$after" == disable || "$after" == disabled || "$after" == no ]]; then
+    notify_once "$marker" "changed:$current" 'Managed VM autostart was overridden' "$name ($uuid) is recovery-managed. unMotion turned built-in Unraid/libvirt autostart back off; source starts must pass the recovery fence."
+    return 0
+  fi
+  notify_once "$marker" "failed:$current:$after" 'Managed VM autostart interlock failed' "$name ($uuid) is recovery-managed, but unMotion could not prove built-in autostart is disabled. The VM remains start-fenced."
+  return 1
+}
+queue_checkpoint(){
+  local id="$1" uuid="$2" tpm_mode="$3" state="$4" target temporary
+  target="$QUEUE/$id.request"
+  vm_is_off "$state" || return 0
+  vm_has_checkpoint_state "$uuid" "$tpm_mode" || return 0
+  if [[ ! -f "$target" ]]; then
+    temporary="$(mktemp "$QUEUE/.request.XXXXXX")"
+    php -r '$o=["schemaVersion"=>1,"requestId"=>"shutdown-".bin2hex(random_bytes(16)),"slotEpoch"=>time(),"createdAt"=>gmdate("c")];$data=json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";if(file_put_contents($argv[1],$data,LOCK_EX)!==strlen($data)||!chmod($argv[1],0600))exit(1);' "$temporary"
+    mv -f -- "$temporary" "$target"
+    log "Queued powered-off TPM/NVRAM checkpoint for $id."
+  fi
+}
+worker_running(){
+  local id="$1" cmdline pid index
+  local -a arguments=()
+  for cmdline in /proc/[0-9]*/cmdline; do
+    [[ -r "$cmdline" ]] || continue; pid="${cmdline#/proc/}"; pid="${pid%/cmdline}"; arguments=()
+    mapfile -d '' -t arguments < "$cmdline" 2>/dev/null || continue
+    for ((index=0;index+1<${#arguments[@]};index++)); do
+      [[ "${arguments[index]}" == "$WORKER" && "${arguments[index+1]}" == "$id" ]] && return 0
+    done
+  done
+  return 1
+}
+launch_checkpoint(){
+  local id="$1" state="$2" request slot now logfile
+  request="$QUEUE/$id.request"
+  [[ -f "$request" ]] || return 0; vm_is_off "$state" || return 0; worker_running "$id" && return 0
+  now="$(date +%s)"; ((now>=${RETRY_AT[$id]:-0})) || return 0
+  slot="$(php -r '$d=json_decode((string)@file_get_contents($argv[1]),true);$v=is_array($d)?(int)($d["slotEpoch"]??0):0;if($v>0)echo $v;' "$request" 2>/dev/null || true)"
+  [[ "$slot" =~ ^[0-9]+$ && "$slot" -gt 0 ]] || { notify_once "$STATE/$id.checkpoint-invalid" invalid 'Invalid lifecycle checkpoint request' "The powered-off checkpoint request for $id is invalid and was retained for inspection." || true; return 0; }
+  logfile="$LOG_DIR/replication-$id-lifecycle.log"
+  log "Launching opportunistic powered-off checkpoint for $id."
+  # The startup-check mode may launch a checkpoint immediately before rc.unmotion
+  # starts the long-running daemon.  Do not let that worker inherit the lifecycle
+  # singleton lock or it can block the replacement daemon for the whole transfer.
+  nohup setsid "$WORKER" "$id" "$slot" opportunistic >>"$logfile" 2>&1 9>&- &
+  RETRY_AT[$id]=$((now+60))
+}
+fence_active_vm(){
+  local id="$1" uuid="$2" name="$3" reason="$4" request now requested=0 current vm_fd
+  request="$STATE/$id.fence-request"
+  exec {vm_fd}>"/var/lock/unmotion-$uuid.lock"
+  flock -n "$vm_fd" || { exec {vm_fd}>&-; return 0; }
+  current="$(vm_state "$uuid")"; if vm_is_off "$current"; then rm -f -- "$request"; flock -u "$vm_fd"; exec {vm_fd}>&-; return 0; fi
+  now="$(date +%s)"; [[ -f "$request" ]] && read -r requested < "$request" || true
+  if [[ ! "$requested" =~ ^[0-9]+$ || "$requested" -le 0 ]]; then
+    write_runtime "$request" "$now"
+    durable_fence "$id" "$uuid" SPLIT_BRAIN_SUSPECTED "$reason" || notify_once "$STATE/$id.durable-fence-failed" "suspected:$now" 'CRITICAL recovery state persistence failed' "$name ($uuid) was started without authorization and unMotion could not persist split-brain suspicion before fencing it." || true
+    notify_once "$STATE/$id.start-violation" "boot:$BOOT_ID:$now" 'Recovery fence blocked a VM start' "$name ($uuid) was running without source-start authorization: $reason. unMotion requested a graceful shutdown and will force a local stop if necessary." || true
+    timeout 15 virsh shutdown "$uuid" >/dev/null 2>&1 || true
+  elif ((now-requested>=30)); then
+    durable_fence "$id" "$uuid" SPLIT_BRAIN_FENCING "$reason" || notify_once "$STATE/$id.durable-fence-failed" "fencing:$requested" 'CRITICAL recovery state persistence failed' "$name ($uuid) still requires local fencing, but unMotion could not persist the fencing transition." || true
+    timeout 20 virsh destroy "$uuid" >/dev/null 2>&1 || true
+    current="$(vm_state "$uuid")"
+    if vm_is_off "$current"; then
+      notify_once "$STATE/$id.force-stop" "boot:$BOOT_ID:$requested" 'Recovery fence force-stopped a VM' "$name ($uuid) did not stop within the recovery-fence grace period and was force-stopped locally. Review the recovery policy before starting it." || true
+      rm -f -- "$request"
+    else
+      durable_fence "$id" "$uuid" SPLIT_BRAIN_UNRESOLVED 'The local VM remained active after forced fencing.' || true
+      notify_once "$STATE/$id.force-stop-failed" "boot:$BOOT_ID:$requested" 'CRITICAL recovery fence failure' "$name ($uuid) is still active after an attempted local fence. Treat this as a split-brain risk and stop the VM manually." || true
+    fi
+  fi
+  flock -u "$vm_fd"; exec {vm_fd}>&-
+}
+maybe_managed_start(){
+  local id="$1" uuid="$2" name="$3" state="$4" pending vm_fd
+  pending="$STATE/$id.restart-pending"
+  [[ -f "$pending" && ! -f "$QUEUE/$id.request" ]] || return 0
+  vm_is_off "$state" || return 0
+  if ! issue_start_permit "$id" "$uuid"; then
+    reconcile_start_authorization "$id" || return 0
+    issue_start_permit "$id" "$uuid" || return 0
+  fi
+  exec {vm_fd}>"/var/lock/unmotion-$uuid.lock"; flock -n "$vm_fd" || { exec {vm_fd}>&-; return 0; }
+  state="$(vm_state "$uuid")"
+  if vm_is_off "$state" && timeout 30 virsh start "$uuid" >/dev/null 2>&1; then
+    rm -f -- "$pending" "$STATE/$id.start-violation"; log "Started recovery-managed source VM $name after checkpoint and source authorization."
+  else
+    "$START_GATE" "$id" "$uuid" --revoke-permit >/dev/null 2>&1 || true
+  fi
+  flock -u "$vm_fd"; exec {vm_fd}>&-
+}
+reconcile_destination_activations(){
+  local rows encoded id result action activation_id uuid actual marker token now delay next_delay
+  rows="$(mktemp "$RUN_ROOT/.destinations.XXXXXX")"
+  if ! destination_rows > "$rows"; then
+    notify_once "$STATE/destination-inventory-invalid" "boot:$BOOT_ID" 'Destination recovery inventory is invalid' 'One or more incoming recovery activation records are corrupt or have mismatched identity. unMotion will not act on an ambiguous VM definition.' || true
+  else
+    rm -f -- "$STATE/destination-inventory-invalid"
+  fi
+  while IFS= read -r encoded; do
+    [[ -n "$encoded" ]] || continue
+    id="$(decode "$encoded")"
+    [[ "$id" =~ ^repl-[a-f0-9]{24}$ ]] || continue
+    now="$(date +%s)"
+    ((now>=${DESTINATION_RETRY_AT[$id]:-0})) || continue
+    if ! result="$(timeout 40 php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";echo json_encode(unmRecoveryLifecycleReconcileDestination($argv[1]),JSON_UNESCAPED_SLASHES);' "$id" 2>&1)"; then
+      delay="${DESTINATION_RETRY_DELAY[$id]:-5}"; [[ "$delay" =~ ^[0-9]+$ ]] || delay=5
+      DESTINATION_RETRY_AT[$id]=$((now+delay))
+      next_delay=$((delay*2)); ((next_delay<=60)) || next_delay=60
+      DESTINATION_RETRY_DELAY[$id]="$next_delay"
+      [[ -n "$result" ]] || result='the exact policy or VM lock is busy'
+      log "Destination activation reconciliation for $id is busy or failed and will be retried: $result"
+      continue
+    fi
+    unset 'DESTINATION_RETRY_AT[$id]' 'DESTINATION_RETRY_DELAY[$id]'
+    IFS=$'\t' read -r action activation_id uuid actual <<< "$(php -r '$d=json_decode($argv[1],true);if(!is_array($d))exit(2);foreach(["action","activationId","vmUuid","actualState"] as $key)echo base64_encode((string)($d[$key]??"")),"\t";' "$result")"
+    action="$(decode "$action")"; activation_id="$(decode "$activation_id")"; uuid="$(decode "$uuid")"; actual="$(decode "$actual")"
+    marker="$STATE/$id.destination-reconcile"; token="$action:$activation_id:$actual"
+    case "$action" in
+      foreign-domain)
+        notify_once "$marker" "$token" 'CRITICAL recovery UUID conflict' "A domain with recovery UUID $uuid is present but is not owned by activation $activation_id. unMotion did not stop or modify the foreign domain." || true
+        ;;
+      fenced-stopped)
+        notify_once "$marker" "$token" 'Recovery lifecycle fenced a replica' "The exact-owned recovered VM $uuid was running without a completed authority/QGA journal and was stopped. Review activation $activation_id before restarting it." || true
+        ;;
+      reconciled-stopped)
+        rm -f -- "$marker"
+        log "Reconciled stopped destination activation $activation_id for $uuid."
+        ;;
+      authorized-running|worker-starting|noop)
+        rm -f -- "$marker"
+        ;;
+    esac
+  done < "$rows"
+  rm -f -- "$rows"
+}
+run_cycle(){
+  local row id_b uuid_b name_b enabled_b tpm_b armed_b valid_b recovery_state_b authority_b source_boot_b desired_b term_b sole_b rows
+  local id uuid name enabled tpm_mode armed recovery_valid recovery_state authority source_boot desired term sole_policy current previous gate_reason marker boot_reconciled inventory_valid
+  rows="$(mktemp "$RUN_ROOT/.policies.XXXXXX")"
+  inventory_valid=1
+  if ! policy_rows > "$rows"; then inventory_valid=0; notify_once "$STATE/policy-inventory-invalid" "boot:$BOOT_ID" 'Recovery policy inventory is invalid' 'One or more replication/recovery records are corrupt, orphaned or have mismatched protocol identity. All recovery-managed starts remain fenced and require inspection.' || true; else rm -f -- "$STATE/policy-inventory-invalid"; fi
+  while IFS= read -r row; do
+    [[ -n "$row" ]] || continue
+    IFS=$'\t' read -r id_b uuid_b name_b enabled_b tpm_b armed_b valid_b recovery_state_b authority_b source_boot_b desired_b term_b sole_b <<< "$row"
+    id="$(decode "$id_b")"; uuid="$(decode "$uuid_b")"; name="$(decode "$name_b")"; enabled="$(decode "$enabled_b")"; tpm_mode="$(decode "$tpm_b")"; armed="$(decode "$armed_b")"; recovery_valid="$(decode "$valid_b")"; recovery_state="$(decode "$recovery_state_b")"; authority="$(decode "$authority_b")"; source_boot="$(decode "$source_boot_b")"; desired="$(decode "$desired_b")"; term="$(decode "$term_b")"; sole_policy="$(decode "$sole_b")"
+    [[ "$id" =~ ^[A-Za-z0-9_.-]{8,80}$ && "$uuid" =~ ^[A-Fa-f0-9-]{32,36}$ ]] || continue
+    [[ "$term" =~ ^[0-9]+$ ]] || term=0
+    [[ "$tpm_mode" =~ ^(power-cycle|best-effort|best-effort-stun|none)$ ]] || tpm_mode=none
+    current="$(vm_state "$uuid")"; marker="$STATE/$id.vmstate"; previous=''; [[ -f "$marker" ]] && read -r previous < "$marker" || true
+    if [[ "$current" == unknown || "$current" == 'no state' ]]; then
+      report_unavailable_vm_state "$id" "$uuid" "$name" "$armed" || true
+      continue
+    fi
+    clear_unavailable_vm_state "$id"
+    [[ "$current" =~ ^(running|idle)$ ]] && capture_qga_cache "$id" "$uuid" || true
+
+    if [[ "$armed" == 1 ]]; then
+      enforce_autostart_off "$id" "$uuid" "$name" || true
+      boot_reconciled=1
+      if [[ "$source_boot" != "$BOOT_ID" ]]; then
+        boot_reconciled=0
+        [[ "$desired" == 1 ]] && write_runtime "$STATE/$id.restart-pending" "$BOOT_ID"
+        if [[ "$recovery_valid" == 1 && "$sole_policy" == 1 && "$inventory_valid" == 1 ]] && reconcile_after_real_boot "$id" "$uuid" "$name" "$source_boot" "$term"; then
+          boot_reconciled=1
+          source_boot="$BOOT_ID"
+        fi
+      fi
+      gate_reason=''
+      if [[ ! -e "$SHUTDOWN_FENCE" ]] && ! vm_is_off "$current"; then gate_reason="$(running_authorized "$id" "$uuid" "$term" "$recovery_state" "$authority" "$sole_policy" "$inventory_valid" 2>&1)" || true; fi
+      if [[ ! -e "$SHUTDOWN_FENCE" ]] && ! vm_is_off "$current" && { [[ -n "$gate_reason" ]] || [[ -f "$STATE/$id.restart-pending" ]]; }; then
+        [[ -n "$gate_reason" ]] || gate_reason='managed startup is still waiting for an exact checkpoint and peer authorization'
+        fence_active_vm "$id" "$uuid" "$name" "$gate_reason"
+        current="$(vm_state "$uuid")"
+      fi
+      if [[ "$recovery_valid" != 1 ]]; then
+        notify_once "$STATE/$id.recovery-invalid" "boot:$BOOT_ID" 'Recovery authority is invalid' "$name ($uuid) has corrupt or mismatched recovery authority. Built-in autostart is disabled and starts remain fenced." || true
+      fi
+    fi
+
+    if vm_is_off "$current"; then
+      rm -f -- "$STATE/$id.fence-request" "$STATE/$id.force-stop-failed" "$STATE/$id.running-authorized" "$STATE/$id.start-violation"
+      if [[ ! -e "$SHUTDOWN_FENCE" ]]; then
+        if [[ "$enabled" == 1 && "$previous" != 'shut off' ]]; then queue_checkpoint "$id" "$uuid" "$tpm_mode" "$current"; fi
+        launch_checkpoint "$id" "$current"
+        [[ "$armed" == 1 && "$desired" == 1 && "$boot_reconciled" == 1 && "$sole_policy" == 1 && "$inventory_valid" == 1 ]] && maybe_managed_start "$id" "$uuid" "$name" "$current"
+      fi
+    fi
+    [[ "$current" == "$previous" ]] || write_runtime "$marker" "$current"
+  done < "$rows"
+  rm -f -- "$rows"
+  reconcile_destination_activations
+}
+
+start_event_listener(){
+  [[ "$MODE" == --daemon ]] || return 0
+  [[ -n "$EVENT_PID" ]] && kill -0 "$EVENT_PID" 2>/dev/null && return 0
+  [[ -z "$EVENT_PID" ]] || wait "$EVENT_PID" 2>/dev/null || true
+  # The event listener is supervised by this process and must not keep the
+  # singleton lock alive if its supervising shell exits unexpectedly.
+  virsh event --all --event lifecycle --loop --timestamp >&7 2>/dev/null 9>&- &
+  EVENT_PID=$!
+}
+
+if [[ "$MODE" == --daemon ]]; then
+  rm -f -- "$EVENT_FIFO"; mkfifo -m 0600 "$EVENT_FIFO"; exec 7<>"$EVENT_FIFO"; start_event_listener
+fi
+while :; do
+  if ! run_cycle; then notify_once "$STATE/lifecycle-cycle-failed" "boot:$BOOT_ID" 'Recovery lifecycle reconciliation failed' 'A lifecycle reconciliation cycle failed. unMotion retained all checkpoint requests and will retry without treating any VM as powered off.' || true; else rm -f -- "$STATE/lifecycle-cycle-failed"; fi
+  [[ "$MODE" == --daemon ]] || break
+  start_event_listener
+  IFS= read -r -t 2 _event_line <&7 || true
+done

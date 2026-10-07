@@ -1,0 +1,58 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+
+$jobId=(string)($argv[1]??'');
+if(!preg_match('/^[A-Za-z0-9_.-]+$/',$jobId)){fwrite(STDERR,"Invalid job id\n");exit(2);}
+$dir=UNM_BOOT_DIR.'/incoming/'.$jobId;
+$requestPath=$dir.'/source-cleanup-request.json';
+$logPath=$dir.'/source-cleanup.log';
+if(!is_dir($dir))mkdir($dir,0700,true);
+$lock=fopen($dir.'/source-cleanup.lock','c');
+if($lock===false||!flock($lock,LOCK_EX|LOCK_NB))exit(0);
+function sclog(string $path,string $message):void{file_put_contents($path,date('Y-m-d H:i:s').' '.$message."\n",FILE_APPEND|LOCK_EX);}
+try{
+    $request=unmLoadJson($requestPath);
+    if(!$request)throw new RuntimeException('Cleanup request is missing.');
+    $uuid=(string)($request['vmUuid']??'');
+    $peerId=(string)($request['sourcePeerId']??'');
+    $soak=max(60,min(3600,(int)($request['soakSeconds']??300)));
+    if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$uuid))throw new RuntimeException('Invalid VM UUID.');
+    $peer=unmPeer($peerId);
+    $interval=10;$continuous=0;$deadline=time()+3600;
+    $request['state']='validating';$request['startedAt']=date(DATE_ATOM);unmAtomicJson($requestPath,$request);
+    sclog($logPath,"Waiting for VM $uuid to remain running continuously for $soak seconds.");
+    while(time()<$deadline){
+        $state=trim(unmRun(['virsh','domstate',$uuid],null,15)['stdout']);
+        if(in_array($state,['running','idle'],true)){
+            $continuous+=$interval;
+            $request['state']='validating';$request['continuousRunningSeconds']=$continuous;$request['lastVmState']=$state;$request['updatedAt']=date(DATE_ATOM);unmAtomicJson($requestPath,$request);
+            if($continuous>=$soak)break;
+        }else{
+            if($continuous>0)sclog($logPath,"VM left running state ($state); validation timer reset.");
+            $continuous=0;$request['continuousRunningSeconds']=0;$request['lastVmState']=$state;$request['updatedAt']=date(DATE_ATOM);unmAtomicJson($requestPath,$request);
+        }
+        sleep($interval);
+    }
+    if($continuous<$soak)throw new RuntimeException('Destination VM did not remain running for the validation period within one hour; source copy was retained.');
+    sclog($logPath,'Validation period completed. Requesting source-side deletion.');
+    $cmd='/usr/local/sbin/unmotion-agent finalize-source-cleanup '.escapeshellarg($jobId).' '.escapeshellarg(unmHostId());
+    $response=null;$lastError='';
+    while(time()<$deadline){
+        $state=trim(unmRun(['virsh','domstate',$uuid],null,15)['stdout']);
+        if(!in_array($state,['running','idle'],true))throw new RuntimeException('Destination VM left running state after validation; source copy was retained.');
+        $request['state']='requesting_source_cleanup';$request['lastVmState']=$state;$request['updatedAt']=date(DATE_ATOM);unmAtomicJson($requestPath,$request);
+        $result=unmRemote($peer,$cmd,300);
+        if($result['code']===0){$response=json_decode($result['stdout'],true);break;}
+        $lastError=trim($result['stderr']?:$result['stdout']);
+        sclog($logPath,'Source cleanup request failed; retrying in 30 seconds: '.$lastError);
+        sleep(30);
+    }
+    if($response===null)throw new RuntimeException('Source cleanup could not be completed within one hour: '.$lastError);
+    $request['state']='complete';$request['completedAt']=date(DATE_ATOM);$request['sourceResponse']=is_array($response)?$response:$result['stdout'];unmAtomicJson($requestPath,$request);
+    sclog($logPath,'Source VM and authorised source storage were removed successfully.');
+}catch(Throwable $e){
+    $request=unmLoadJson($requestPath,[]);$request['state']='failed';$request['error']=$e->getMessage();$request['updatedAt']=date(DATE_ATOM);unmAtomicJson($requestPath,$request);
+    sclog($logPath,'ERROR: '.$e->getMessage());fwrite(STDERR,$e->getMessage()."\n");exit(1);
+}

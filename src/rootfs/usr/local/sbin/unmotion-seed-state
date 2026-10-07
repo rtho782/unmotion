@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+ID="${1:-}" STATE="${2:-}" PROGRESS="${3:-0}" MESSAGE="${4:-}"
+[[ "$ID" =~ ^[A-Za-z0-9_.-]+$ ]] || exit 2
+FILE="/boot/config/plugins/unmotion/seeds/$ID/seed.json"
+php -r '$p=$argv[1];$d=is_file($p)?json_decode(file_get_contents($p),true):[];if(!is_array($d))$d=[];$d["state"]=$argv[2];$d["progress"]=(int)$argv[3];$d["message"]=$argv[4];$d["updatedAt"]=date(DATE_ATOM);$t=$p.".tmp.".getmypid();file_put_contents($t,json_encode($d,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");chmod($t,0600);rename($t,$p);' "$FILE" "$STATE" "$PROGRESS" "$MESSAGE"

@@ -1,0 +1,11 @@
+/dist/
+/work/
+/AGENTS.md
+*.tmp
+*.log
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
