@@ -1,0 +1,25 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{
+    if($argc!==5)throw new RuntimeException('Usage: unmotion-firmware source.xml peer-id mapping.tsv capabilities.json');
+    $request=unmFirmwareRequest((string)file_get_contents($argv[1]));
+    if(!$request)exit;
+    $caps=json_decode((string)file_get_contents($argv[4]),true,512,JSON_THROW_ON_ERROR);
+    if(empty($caps['features']['firmwareMapping']))throw new RuntimeException('Firmware verification requires a beta4 destination.');
+    $remote=unmRemote(unmPeer($argv[2]),'/usr/local/sbin/unmotion-agent firmware-plan '.escapeshellarg(base64_encode(json_encode($request,JSON_THROW_ON_ERROR))),45);
+    if($remote['code'])throw new RuntimeException(trim($remote['stderr'].' '.$remote['stdout']));
+    $reply=json_decode($remote['stdout'],true,512,JSON_THROW_ON_ERROR);
+    if(empty($reply['success'])||count($reply['plan']??[])!==count($request))throw new RuntimeException('Invalid firmware reply.');
+    $lines=[];
+    foreach($reply['plan'] as $kind=>$item){
+        if(!isset($request[$kind])||($item['source']??null)!==$request[$kind]['path']||($item['sha256']??null)!==$request[$kind]['sha256']||!str_starts_with($item['destination']??'','/')||preg_match('/[\x00-\x1f\x7f]/',$item['destination']))throw new RuntimeException('Firmware mapping is not bound to the source.');
+        $lines[]="firmware-$kind\t".$item['source']."\t".$item['destination']."\n";
+    }
+    $existing=(string)file_get_contents($argv[3]);
+    foreach($lines as $line)if(!str_contains($existing,$line)){
+        $kind=strtok($line,"\t");if(str_contains($existing,$kind."\t"))throw new RuntimeException('Firmware mapping changed during migration.');
+        if(file_put_contents($argv[3],$line,FILE_APPEND)===false)throw new RuntimeException('Unable to save firmware mapping.');
+    }
+}catch(Throwable $e){fwrite(STDERR,'Firmware: '.$e->getMessage()."\n");exit(23);}
