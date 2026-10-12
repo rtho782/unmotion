@@ -339,7 +339,7 @@ function unmTransportAgent(array $a,?array $peer,string $keyId): array {
         if(($a[2]??'')!==($peer['id']??''))throw new RuntimeException('A pairing key may change only its own peer record.');return unmTransportRun(['/usr/local/sbin/unmotion-agent',$cmd,$a[2]]);
     }
     if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Reciprocal pairing is incomplete.');
-    if(in_array($cmd,['health','inventory','usb-list','diagnostic-host'],true)&&$count===2)return unmTransportRun(['/usr/local/sbin/unmotion-agent',$cmd]);
+    if(in_array($cmd,['health','inventory','inventory-view','usb-list','diagnostic-host'],true)&&$count===2)return unmTransportRun(['/usr/local/sbin/unmotion-agent',$cmd]);
     if($cmd==='transport-reserve'&&$count===3)return unmTransportResult(0,json_encode(unmTransportReserve($peer,unmTransportJsonArgument($a)),JSON_THROW_ON_ERROR)."\n");
     if($cmd==='zfs-dataset-for-path'&&in_array($count,[3,4],true)){
         $path=base64_decode($a[2],true);if($path===false)throw new RuntimeException('Invalid storage path.');unmTransportReadable($peer,$path);

@@ -5,6 +5,7 @@
 var api='/plugins/unmotion/api.php';
   
 var peers=[],seeds=[],latestVms=[],peerHealth={},discoveredPeers=[],replications=[],incomingReplicas=[];
+var inventoryMeta={available:false,refreshing:true},inventoryRetryTimer=null,inventoryForcePending=false,pendingPolls={};
 
 var replicationRpoNotches=[
     {seconds:300,label:'5 min'},{seconds:900,label:'15 min'},{seconds:1800,label:'30 min'},
@@ -107,10 +108,12 @@ function post(action,data) {
     }
     ;
     data.action=action;
-    return $.ajax( {
-      url:api,method:'POST',data:data,dataType:'json'
-    }
-    );
+    var polling=['inventory','seeds','jobs','replications','incomingReplicas','peerHealth','peers'].indexOf(action)>=0;
+    var key=action+':'+String(data.peer_id||'');
+    if(polling&&pendingPolls[key])return pendingPolls[key];
+    var request=$.ajax({url:api,method:'POST',data:data,dataType:'json',timeout:polling?30000:0});
+    if(polling){pendingPolls[key]=request;request.always(function(){delete pendingPolls[key];});}
+    return request;
     
   }
   
@@ -305,9 +308,15 @@ function recoveryPolicyForVm(vmUuid) {
 
 function renderInventory() {
     var body=$('#unm-vm-body');if(!body.length)return;body.empty();
+    renderInventoryStatus();
+    if(!inventoryMeta.available){body.html('<tr><td colspan="8">'+(inventoryMeta.error?'VM inventory is unavailable. Retrying…':'Loading VM inventory…')+'</td></tr>');return;}
     var peerId=$('#unm-peer-select').val();
     latestVms.forEach(function(vm) {
       if(vm.error){body.append('<tr><td>'+esc(vm.name)+'</td><td colspan="7" class="unm-bad">'+esc(vm.error)+'</td></tr>');return;}
+      if(vm.detailsPending){
+        body.append('<tr><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td colspan="2" class="unm-muted">Checking storage and guest agent…</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+esc(vm.autostart)+'</td><td><input type="button" value="Loading details…" disabled></td></tr>');
+        return;
+      }
       var blocked=(vm.pci||[]).length>0,poweredOff=String(vm.state||'').toLowerCase()==='shut off',seed=seedFor(vm.uuid,peerId),actions='<div class="unm-action-stack">';
       if(blocked)actions+='<input type="button" value="PCIe unsupported" disabled title="PCIe passthrough is unsupported">';
       else {
@@ -356,9 +365,32 @@ function renderSeeds() {
     if(!seeds.length)body.html('<tr><td colspan="6">No prepared moves.</td></tr>');
   }
 
-function loadInventory() {
-    var body=$('#unm-vm-body');if(!body.length)return;body.html('<tr><td colspan="8">Loading…</td></tr>');
-    post('inventory').done(function(r){latestVms=r.vms||[];seeds=r.seeds||[];renderInventory();renderSeeds();}).fail(err);
+function renderInventoryStatus() {
+    var m=inventoryMeta,parts=[];
+    if(m.observedAt)parts.push('Inventory observed '+fmtWhen(m.observedAt));
+    if(m.refreshing)parts.push('Refreshing in background…');
+    else if(m.stale&&m.available)parts.push('Showing last available inventory');
+    if(m.error)parts.push(m.error);
+    $('#unm-inventory-status').text(parts.join(' · '));
+}
+
+function loadInventory(refresh) {
+    if(!$('#unm-vm-body').length||document.hidden)return;
+    if(pendingPolls['inventory:']){if(refresh!==false)inventoryForcePending=true;return;}
+    clearTimeout(inventoryRetryTimer);
+    // Explicit refresh and completed actions invalidate the display observation.
+    // Initial load/polling reuse it and never blank existing rows.
+    post('inventory',{refresh:refresh===false?0:1}).done(function(r){
+      inventoryMeta=r.inventory||{available:true,complete:true};
+      if(inventoryMeta.available)latestVms=r.vms||[];
+      renderInventory();
+      if(inventoryMeta.refreshing||!inventoryMeta.complete)inventoryRetryTimer=setTimeout(function(){loadInventory(false);},1000);
+    }).fail(function(){
+      inventoryMeta.error='Inventory refresh failed; retrying. Existing rows may be out of date.';
+      inventoryMeta.refreshing=false;inventoryMeta.stale=true;renderInventory();
+    }).always(function(){
+      if(inventoryForcePending){inventoryForcePending=false;loadInventory(true);}
+    });
   }
 
 function loadSeedsOnly() {
@@ -1354,7 +1386,8 @@ function pair() {
   
 $(function() {
     var peerRequest=loadPeers();
-    loadInventory();
+    loadInventory(false);
+    loadSeedsOnly();
     loadJobs();
     loadReplications();
     loadIncomingReplicas();
@@ -1621,9 +1654,12 @@ $(function() {
       
     }
     );
-    if($('#unm-job-body').length){setInterval(loadJobs,4000);setInterval(loadSeedsOnly,4000);setInterval(loadReplications,5000);setInterval(loadIncomingReplicas,5000);}
+    if($('#unm-job-body').length){
+      setInterval(function(){if(!document.hidden){loadJobs();loadSeedsOnly();}},4000);
+      setInterval(function(){if(!document.hidden){loadReplications();loadIncomingReplicas();loadInventory(false);}},5000);
+    }
     pollPeerHealth();healthTimer=setInterval(pollPeerHealth,Math.max(5,Number(appSettings.health_poll_seconds||10))*1000);
-    document.addEventListener('visibilitychange',function(){if(!document.hidden){pollPeerHealth();if($('#unm-peer-list').length)loadPeers({skipHealth:true});}});
+    document.addEventListener('visibilitychange',function(){if(!document.hidden){pollPeerHealth();loadInventory(false);if($('#unm-peer-list').length)loadPeers({skipHealth:true});}});
     
   }
   );

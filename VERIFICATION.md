@@ -1,5 +1,38 @@
 # Verification
 
+## 0.4.5 stable release qualification — 2026-10-12
+
+Author: Richard Skinner.
+
+The owner authorized stable publication after additional testing on the newly licensed DEV02. The released application is `0.4.5`, the fixed installer version is `2026.10.12.02-0.4.5`, and protocol 7 is unchanged. The exact candidate TXZ and PLG recorded below are reused without rebuilding or replacing their tested bytes. Both feeds offer this stable installer; the Community Apps guide describes the current cached-inventory workflow and retains the exact `plugin-stable/unmotion.plg` template URL. The archive remains a separate SHA-256-verified release download, not embedded in the PLG.
+
+The complete Linux verification suite and changed-script ShellCheck checks passed again for this release. All runtime source/build scripts match the tested candidate. New live mixed-version tests used the existing reciprocal DEV01/DEV02 pairing over actual restricted SSH, not a local dispatcher substitute: 0.4.5 and 0.4.3 negotiated protocol 7 and returned healthy peer status in both directions. The older peer correctly omitted the optional display capability. Fresh operational inventory retained its original contract, including names containing spaces. After DEV02's guarded 0.4.3-to-0.4.5 upgrade, the new cached view returned all 37 remote VMs in approximately 0.25 seconds per SSH request; fresh inventory remained separate.
+
+DEV02 (Unraid 7.3.2) reproduced the old boot-time `plugins-error` failure and then passed a real clean reboot with 0.4.5. Its descriptor stayed registered, the cached package restored before the array started, the Starter licence remained valid and discovery advertised successfully. All 62 installed runtime files matched the tested TXZ after reboot. All 37 VM states, settings, host/pairing identities, private keys, authorized keys and existing libvirt hooks matched the pre-upgrade baseline. The normal periodic probe established native-hook readiness after VM Manager started, denying its exact disposable probe before QEMU; no manual service restart was needed. The browser showed all 37 VMs and healthy pairing, and Refresh retained those rows. DEV01 (7.3.3) had already passed the corresponding reboot, browser and disposable-VM lifecycle campaign documented below.
+
+Testing remained within the two lab hosts and isolated Linux fixtures. No production host was upgraded or modified, and no new destructive migration/recovery campaign was required for the display-cache and installer changes. Production installation is left to the owner through the Plugins tab. The preceding candidate evidence below is historical; its references to DEV02 being unavailable and publication pending describe that earlier phase, not the final qualification.
+
+## 0.4.5 unpublished candidate — 2026-10-12
+
+Author: Richard Skinner.
+
+Application version is `0.4.5`, with reserved installer version `2026.10.12.02-0.4.5`. This is a locally built and tested development candidate, not a published release or feed update. Protocol 7 remains unchanged; the optional `inventory-view` read is advertised by `inventoryViewVersion: 1`. Existing operational `inventory` and mutation-time checks remain fresh.
+
+The complete Linux `scripts/verify.sh` suite passed with PHP, Bash, Node, the native Unraid 7.3.3 plugin-manager fixture and privileged mount/PID-isolated checks. ShellCheck warning-level checks passed for the changed shell scripts. New behavioral tests cover RAM-cache privacy and invalidation, boot/version rejection, singleton collection, progressive rows, failed refresh retention, proven empty inventory, mid-scan changes, linear XML inspection, exact peer RPC arguments, hidden tabs, single-flight polling and queued explicit refresh. Boot-restore fixtures cover actual boot ancestry, absence of running host services, normal upgrade exclusion and corrupt authority refusal.
+
+DEV01 (Unraid 7.3.3) had 34 stopped VMs. Its original full inventory call took 35.159 seconds. The candidate exposed basic rows after 3.562 seconds and complete details after 4.566 seconds. Warm-cache backend reads averaged approximately 1.2–1.6 milliseconds; these are server-side measurements, not total browser page-load times. Eight simultaneous live readers each received all 34 rows, with the slowest taking 2.3 milliseconds and one collector observed. A disposable 64 MiB, diskless, networkless VM named `Beta045 Squid Proxy Inventory` exercised define, start, stop and removal. Real lifecycle events invalidated the cache; changes became visible within about 4–10 seconds, including refresh backoff. That test definition was removed; existing VMs stayed stopped.
+
+The restricted dispatcher accepted `inventory-view` under an existing paired-key identity and rejected an unknown key and extra arguments. This was a local live dispatcher test, not a two-host SSH round-trip: DEV02 was unavailable, and Tacgnol was not paired or modified for this task. Existing transport/security regression tests passed. No destructive migration or recovery campaign was repeated.
+
+DEV01's missing installation was traced to early boot, not Community Apps: the previous installer required libvirt to prove managed guests stopped before Unraid had started VM Manager, so Unraid moved the descriptor into `plugins-error`. The candidate preserves authority validation while recognizing verified `rc.local` boot restoration with no installed runtime, QEMU, libvirt or emhttp process. A real DEV01 reboot then restored the plugin from its checksum-verified cached TXZ before the array started; the descriptor remained registered, version 0.4.5 was present, the licence stayed valid and Avahi established the advertisement. With VM Manager unavailable the display reported an unavailable observation, not a successful empty inventory.
+
+After starting the array normally, native fencing reported ready and all 34 VMs remained stopped. All 62 installed runtime files matched the tested TXZ. Settings, host identity, peer records/keys, authorized keys and the native hook matched their pre-upgrade hashes. The lifecycle listener remained running with valid libvirt event options. Browser checks confirmed 34 rows, observation status and retained rows during Refresh, with no unMotion JavaScript errors; unrelated Unraid Connect GraphQL errors were present. Production hosts and their VMs were not changed. Source and companion Community Apps documentation are prepared locally; publication remains pending.
+
+```text
+fea13e9f387860e4c68de661b06d74d79b66bb4a0dce9e219992a5c82b40ef8c  unmotion-0.4.5_stable-noarch-1.txz
+32564189bc3799d64ee838d9481b6d07170391975c97ec4cf2c26b5c7e778001  unmotion-0.4.5.plg
+```
+
 ## 0.4.4 discovery repair — 2026-10-12
 
 Author: Richard Skinner

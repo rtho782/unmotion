@@ -56,10 +56,12 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Fix peer discovery after fresh installs, reboots and updates: explicitly make the public Avahi advertisement readable by the unprivileged discovery service while retaining private settings/key permissions.
+- Show cached VM inventory immediately, with progressive background details, observation age and explicit refresh/error states. Cache only display data in RAM; migration and recovery checks remain fresh.
+- Share display inventory through the existing restricted paired-host interface. HTTPS peer APIs remain future work.
+- Restore the plugin during verified early boot before VM Manager starts, while retaining managed-VM safeguards for normal upgrades.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
-- No migration, cloning, replication, recovery or protocol changes from 0.4.3. Protocol 7 peers running 0.4.2 or later remain compatible.
+- Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
 - Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.

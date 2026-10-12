@@ -41,6 +41,8 @@ At every authorized stable release, review the CA template `MinVer`, guide requi
 
 Status: accepted for future work. Target release: unassigned.
 
+Version 0.4.5 implements a display-only inventory cache and an optional `inventory-view` operation over the existing paired transport (`inventoryViewVersion: 1`). Basic rows precede expensive details; XML is reused within the scan. The old fresh `inventory` operation and safety checks remain unchanged. HTTPS, batched migration preflight and connection reuse below remain future work.
+
 Replace remaining small, command-shaped remote queries with named unMotion operations. The receiving host should own its local inspection and validation, returning structured results instead of making the source orchestrate individual commands.
 
 Planned stages:

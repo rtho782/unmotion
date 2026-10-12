@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.4}"
+EXPECTED_VERSION="${1:-0.4.5}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -43,6 +43,9 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/native-fence-regressions.php"
   php "$ROOT/tests/native-fence-controller-test.php"
   php "$ROOT/tests/upgrade-managed-guard-regressions.php"
+  php "$ROOT/tests/inventory-cache-regressions.php"
+  php "$ROOT/tests/inventory-collector-regressions.php"
+  php "$ROOT/tests/boot-restore-regressions.php"
   php "$ROOT/tests/diagnostic-regressions.php"
   php "$ROOT/tests/seed-concurrency-regressions.php"
   php "$ROOT/tests/seed-archive-regressions.php"
@@ -68,6 +71,7 @@ if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/report.js"
   node "$ROOT/tests/ui-warning-regressions.js"
   node "$ROOT/tests/ui-escaping-regressions.js"
+  node "$ROOT/tests/ui-inventory-regressions.js"
 else
   echo 'WARN: Node.js unavailable; JavaScript syntax check skipped.' >&2
 fi

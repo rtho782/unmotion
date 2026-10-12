@@ -46,6 +46,9 @@ try {
         case 'inventory':
             echo json_encode(['vms'=>unmInventory()],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;
+        case 'inventory-view':
+            echo json_encode(unmInventoryView(),JSON_UNESCAPED_SLASHES)."\n";
+            break;
         case 'usb-list':
             $index=unmUsbSystemIndex(); $items=[];
             foreach(($index['byAddress']??[]) as $device) $items[]=$device;

@@ -1,12 +1,13 @@
 # Architecture
 
-This describes stable 0.4.2: protocol-7 restricted transport, verified process ownership and native pre-start recovery fencing.
+The released architecture uses protocol-7 restricted transport, verified process ownership and native pre-start recovery fencing. Version 0.4.5 adds a display-only inventory cache without changing operational safety checks.
 
 ## Components
 
 - `UnMotion.page` and `UnMotionSettings.page`: Unraid web-GUI pages.
 - `api.php`: CSRF-protected web API dispatcher.
 - `include/lib.php`: discovery, pairing, inventory, preflight, mapping and migration orchestration.
+- `include/inventory-cache.php` and `unmotion-inventory`: 0.4.5 display-only, root-private RAM observations under `/run/unmotion/inventory`, shared by local pages and optional peer reads. A nonblocking worker lock limits collection to one process; atomic publication exposes basic rows before expensive details. Definition fingerprints, lifecycle invalidation and a 30-second observation expiry trigger refreshes, with launch/error backoff. No synchronous libvirt hook calls the collector.
 - `unmotion.js` / `unmotion.css`: client UI and status rendering.
 - `rc.unmotion`: service setup, Avahi `_unmotion._tcp` advertisement and restart recovery.
 - `unmotion-agent`: restricted remote operations used over paired SSH.
@@ -31,6 +32,8 @@ Persistent configuration lives beneath `/boot/config/plugins/unmotion/`, includi
 Pairing uses a host ID as the durable identity and exchanges authorized SSH material reciprocally. Migration preflight builds a transfer plan, validates the destination, then launches a background worker whose JSON state and log are polled by the UI.
 
 unMotion 0.4.2 advertises protocol `7` only. Older 0.4.1 peers used protocol `5` with recovery negotiation through `6` and are incompatible with the current wire protocol. Current pairing keys are restricted to typed, peer/VM/storage-bound operations, without a legacy remote-shell fallback. Both hosts must upgrade together; see [security and upgrade guidance](SECURITY-042.md).
+
+From 0.4.5, `inventoryViewVersion: 1` advertises the optional `unmotion-agent inventory-view` request on that same authenticated transport. Its `inventory` metadata reports availability, completeness, age, staleness, refresh/error status and `displayOnly: true`; `vms` may initially contain basic rows with `detailsPending: true`. Consumers must check this capability before requesting the new view from older peers. The existing `inventory` request is unchanged and uncached; no action may use the display view as authority to start, move or delete anything. No HTTPS peer API is introduced.
 
 Scheduled replication requires a separate replication capability. Its destination ZFS objects remain read-only and inert, separate from the libvirt VM inventory. Authenticated recovery messages bind both host identities, the exact VM/policy, boot IDs and a durable authority term. Coordinated activation creates separately owned ZFS clones. Protocol-7 recovery envelopes retain the existing schema-1 durable authority record; its historical `protocolVersion: 6` is not a wire-protocol negotiation. See [REPLICATION.md](REPLICATION.md) and [RECOVERY.md](RECOVERY.md).
 

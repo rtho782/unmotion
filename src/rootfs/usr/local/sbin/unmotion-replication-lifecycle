@@ -50,7 +50,7 @@ if [[ "$MODE" == --daemon ]]; then
   /usr/local/sbin/unmotion-native-fence ensure
   /usr/local/sbin/unmotion-process register "$PID_FILE.identity" "$$" /usr/local/sbin/unmotion-replication-lifecycle --daemon
   printf '%s\n' "$$" > "$PID_FILE"
-  trap '[[ -z "${EVENT_PID:-}" ]] || /usr/local/sbin/unmotion-process stop "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --all --event lifecycle --loop --timestamp || true; rm -f -- "$PID_FILE" "$PID_FILE.identity" "$PID_FILE.event" "$EVENT_FIFO"' EXIT
+  trap '[[ -z "${EVENT_PID:-}" ]] || /usr/local/sbin/unmotion-process stop "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --event lifecycle --loop --timestamp || true; rm -f -- "$PID_FILE" "$PID_FILE.identity" "$PID_FILE.event" "$EVENT_FIFO"' EXIT
   trap 'exit 0' INT TERM
 fi
 
@@ -440,16 +440,18 @@ run_cycle(){
 
 start_event_listener(){
   [[ "$MODE" == --daemon ]] || return 0
-  [[ -n "$EVENT_PID" ]] && /usr/local/sbin/unmotion-process matches "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --all --event lifecycle --loop --timestamp && return 0
+  [[ -n "$EVENT_PID" ]] && /usr/local/sbin/unmotion-process matches "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --event lifecycle --loop --timestamp && return 0
   [[ -z "$EVENT_PID" ]] || wait "$EVENT_PID" 2>/dev/null || true
   # The event listener is supervised by this process and must not keep the
   # singleton lock alive if its supervising shell exits unexpectedly.
-  "$EVENT_COMMAND" event --all --event lifecycle --loop --timestamp >&7 2>/dev/null 9>&- &
+  # No --domain means every domain. --all means every EVENT TYPE and cannot
+  # be combined with --event on supported libvirt versions.
+  "$EVENT_COMMAND" event --event lifecycle --loop --timestamp >&7 2>/dev/null 9>&- &
   EVENT_PID=$!
   # Allow the child to exec virsh before recording its lifetime, never record
   # only its inherited shell command line or rely on a bare kill -0 check.
   for _attempt in {1..20}; do
-    /usr/local/sbin/unmotion-process register "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --all --event lifecycle --loop --timestamp 2>/dev/null && return 0
+    /usr/local/sbin/unmotion-process register "$PID_FILE.event" "$EVENT_PID" "$EVENT_COMMAND" event --event lifecycle --loop --timestamp 2>/dev/null && return 0
     sleep 0.05
   done
   return 0
@@ -468,5 +470,8 @@ while :; do
   if ! run_cycle; then notify_once "$STATE/lifecycle-cycle-failed" "boot:$BOOT_ID" 'Recovery lifecycle reconciliation failed' 'A lifecycle reconciliation cycle failed. unMotion retained all checkpoint requests and will retry without treating any VM as powered off.' || true; else rm -f -- "$STATE/lifecycle-cycle-failed"; fi
   [[ "$MODE" == --daemon ]] || break
   start_event_listener
-  IFS= read -r -t 2 _event_line <&7 || true
+  if IFS= read -r -t 2 _event_line <&7 && [[ "$_event_line" == *"event 'lifecycle'"* ]]; then
+    # Asynchronous display invalidation only; never add work to the native hook.
+    /usr/local/sbin/unmotion-inventory invalidate >/dev/null 2>&1 || true
+  fi
 done

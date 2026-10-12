@@ -31,7 +31,7 @@ try {
     $action=(string)($_GET['action']??$_POST['action']??'');
     switch ($action) {
         case 'status': reply(['success'=>true,'version'=>UNM_VERSION,'protocol'=>UNM_PROTOCOL,'hostId'=>unmHostId(),'hostname'=>gethostname()]);
-        case 'inventory': reply(['success'=>true,'vms'=>unmInventory(),'seeds'=>unmSeeds()]);
+        case 'inventory': reply(['success'=>true]+unmInventoryView((string)($_POST['refresh']??'')==='1'));
         case 'localHealth': reply(['success'=>true,'health'=>unmHealth()]);
         case 'peerHealth': reply(['success'=>true,'health'=>unmPeerHealth((string)($_POST['peer_id']??''))]);
         case 'settings': reply(['success'=>true,'settings'=>unmLoadConfig(),'capabilities'=>unmCapabilities()]);

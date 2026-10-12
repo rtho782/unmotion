@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.4';
+const UNM_VERSION = '0.4.5';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/transport.php';
 require_once __DIR__.'/preflight-policy.php';
@@ -15,6 +15,7 @@ require_once __DIR__.'/firmware.php';
 require_once __DIR__.'/migration-resolution.php';
 require_once __DIR__.'/process-identity.php';
 require_once __DIR__.'/native-fence.php';
+require_once __DIR__.'/inventory-cache.php';
 // Protocol 7 deliberately rejects unrestricted legacy remote-shell transport.
 // Durable recovery schema-1 records retain their historical protocolVersion=6
 // identity; the SSH transport and all new recovery envelopes require 7.
@@ -430,13 +431,17 @@ function unmCommonDirectory(array $paths): string {
     return '/'.implode('/',$common);
 }
 
-function unmDatasetUsedByOtherVm(string $datasetMountpoint,string $excludeUuid): bool {
+function unmDatasetUsedByOtherVm(string $datasetMountpoint,string $excludeUuid,?array $displayXmlIndex=null): bool {
     $datasetMountpoint=rtrim($datasetMountpoint,'/');
-    $r=unmRun(['virsh','list','--all','--uuid'],null,30);
-    if($r['code']!==0)return true; // Conservative: do not call a dataset dedicated if inventory is unavailable.
-    foreach(preg_split('/\R/',trim($r['stdout']))?:[] as $uuid){
+    if($displayXmlIndex===null){
+        $r=unmRun(['virsh','list','--all','--uuid'],null,30);
+        if($r['code']!==0)return true; // Conservative: do not call a dataset dedicated if inventory is unavailable.
+        $uuids=preg_split('/\R/',trim($r['stdout']))?:[];
+    }else $uuids=array_keys($displayXmlIndex);
+    foreach($uuids as $uuid){
         $uuid=trim($uuid); if($uuid===''||strcasecmp($uuid,$excludeUuid)===0)continue;
-        try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){continue;}
+        if($displayXmlIndex!==null){$xml=$displayXmlIndex[$uuid];if(!is_string($xml))return true;}
+        else try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){continue;}
         if(!preg_match_all('~<disk\b[^>]*\bdevice=(["\'])disk\1[^>]*>.*?</disk>~s',$xml,$blocks))continue;
         foreach($blocks[0] as $block){
             if(!preg_match('~<source\b[^>]*\bfile=(["\'])(.*?)\1~s',$block,$m))continue;
@@ -526,7 +531,7 @@ function unmImageBackingInfo(string $path,string $format=''): array {
     return ['checked'=>true,'hasBackingChain'=>$has,'chain'=>$chain,'error'=>'','errorDetail'=>''];
 }
 
-function unmClassifyVmStorage(array $vm,bool $checkOtherVms=true): array {
+function unmClassifyVmStorage(array $vm,bool $checkOtherVms=true,?array $displayXmlIndex=null): array {
     $fileGroups=[];
     foreach(($vm['disks']??[]) as $i=>$disk){
         if(($disk['type']??'')!=='file')continue;
@@ -561,7 +566,7 @@ function unmClassifyVmStorage(array $vm,bool $checkOtherVms=true): array {
         $mount=rtrim((string)($info['mountpoint']??''),'/');
         $common=rtrim(unmCommonDirectory($paths),'/');
         $dedicated=$mount!==''&&$common!==''&&$mount===$common;
-        if($dedicated&&$checkOtherVms)$dedicated=!unmDatasetUsedByOtherVm($mount,(string)($vm['uuid']??''));
+        if($dedicated&&$checkOtherVms)$dedicated=!unmDatasetUsedByOtherVm($mount,(string)($vm['uuid']??''),$displayXmlIndex);
         $encryption=(string)($info['encryption']??'off');
         $nativeEligible=$dedicated&&$encryption==='off';
         foreach($indexes as $i){
@@ -829,7 +834,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
@@ -958,13 +963,15 @@ function unmMergeUsbDevices(array $persistent, array $live): array {
     return $devices;
 }
 
-function unmParseVm(string $vmIdentifier): array {
-    $inactiveXml = unmDomainXml($vmIdentifier, true);
+function unmParseVm(string $vmIdentifier,?array $displayObservation=null): array {
+    // Only the display collector supplies an observation. Operational callers
+    // retain fresh libvirt/state/storage inspection and never read the RAM cache.
+    $inactiveXml = $displayObservation['xml'] ?? unmDomainXml($vmIdentifier, true);
     $uuid = unmXmlValue($inactiveXml, 'uuid');
     $name = unmXmlValue($inactiveXml, 'name');
     $ref = $uuid !== '' ? $uuid : $vmIdentifier;
-    $state = trim(unmRun(['virsh','domstate',$ref], null, 10)['stdout']);
-    $info = trim(unmRun(['virsh','dominfo',$ref], null, 10)['stdout']);
+    $state = $displayObservation['state'] ?? trim(unmRun(['virsh','domstate',$ref], null, 10)['stdout']);
+    $info = $displayObservation['info'] ?? trim(unmRun(['virsh','dominfo',$ref], null, 10)['stdout']);
     $auto = preg_match('/^Autostart:\s+(\S+)/mi', $info, $m) ? $m[1] : 'unknown';
     $liveXml = '';
     if (!in_array($state, ['shut off','no state',''], true)) {
@@ -1000,7 +1007,7 @@ function unmParseVm(string $vmIdentifier): array {
         'liveXmlAvailable'=>$liveXml !== '',
         'guestAgent'=>unmGuestAgentStatus($ref,$state),
     ];
-    return unmClassifyVmStorage($vm,true);
+    return unmClassifyVmStorage($vm,true,$displayObservation['xmlIndex']??null);
 }
 
 function unmInventory(): array {

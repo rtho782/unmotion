@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.5 — 2026-10-12
+
+- Serve a private RAM-only display inventory, populated by a single background collector shared by browser tabs and paired-host requests. Show basic VM rows before storage and guest-agent details, retain rows during refresh, and distinguish loading, empty and failed observations.
+- Reuse VM XML within each display scan, eliminating repeated cross-VM libvirt lookups. Refresh after definition/lifecycle changes, on request and with a short expiry; display observation time. Prevent overlapping browser polls and suspend background polling in hidden tabs.
+- Add capability-advertised `inventory-view` to the existing restricted protocol-7 peer interface. Preserve fresh `inventory`, preflight and all mutation-time safety checks; HTTPS peer transport is not included.
+- Correct the lifecycle listener's mutually exclusive libvirt event options so events can drive display invalidation as well as existing lifecycle reconciliation.
+- Allow verified early-boot package restoration before VM Manager is running. Continue validating durable authority, and retain normal managed-VM upgrade refusal whenever early boot cannot be proven. Manual installation and Community Apps use the same persistent plugin mechanism.
+
 ## 0.4.4 — 2026-10-12
 
 - Atomically publish a complete, readable Avahi service advertisement on every startup/restart, and use the daemon's reload command instead of accidentally signalling its chroot helper. Newly created or previously root-only advertisement files no longer prevent discovery after installation, reboot or upgrade. Private configuration, pairing keys and runtime-state permissions remain unchanged.

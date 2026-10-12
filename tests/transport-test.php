@@ -30,6 +30,7 @@ denied(fn()=>unmTransportZfsStreamPrefix(str_repeat('x',40),'dataset'),'bad stre
 denied(fn()=>unmTransportZfsStreamPrefix(str_repeat('x',39),'dataset'),'short stream header');
 $valid=[
     "/usr/local/sbin/unmotion-agent capabilities",
+    "/usr/local/sbin/unmotion-agent inventory-view",
     "virsh domuuid 'Squid Proxy' 2>/dev/null",
     "zfs get -pH -o value available 'cache/vm-zvols'",
     "zfs receive -su -o readonly=on -o dedup='off' -o mountpoint='/mnt/cache/domains/Squid Proxy' 'cache/domains/Squid Proxy'",

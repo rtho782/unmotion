@@ -17,7 +17,7 @@ The script verifies regression fixtures, checks current version/protocol invaria
 ## Build
 
 ```bash
-./scripts/build.sh 0.4.4
+./scripts/build.sh 0.4.5
 ```
 
 The script stages `src/rootfs`, applies package permissions and creates a Slackware-style TXZ and a small PLG under `dist/`. The PLG references that exact package on the matching GitHub release tag and supplies its SHA-256 for Unraid's plugin manager to verify. It does not embed the archive. For a new release, update both application version constants, release notes and `RELEASE_ID` first, then pass the matching version. `RELEASE_ID` contains `<application-version> YYYY.MM.DD.NN`, using a fixed UTC release date and zero-padded sequence 01..99. Allocate it once, commit it, and reuse it for every rebuild; the builder rejects mismatches or invalid dates.
@@ -40,6 +40,10 @@ Repeat for `UNRAID-DEV02`, verify the installed version and test discovery/pairi
 For 0.4.2 and later, follow [protocol-7 upgrade requirements](SECURITY-042.md). Keep both mixed-version directions in the rejection test matrix; retaining schema-1 recovery records must not weaken fencing or re-enable native autostart.
 
 ## Release discipline
+
+For display-inventory changes, also verify cold-cache progressive loading, warm-cache latency, multiple tabs/paired readers sharing one collector, definition and lifecycle invalidation, VM Manager outages, and unchanged fresh preflight behavior. Run `tests/inventory-*-regressions.php`, `tests/ui-inventory-regressions.js` and `tests/boot-restore-regressions.php` (included in verification).
+
+Perform a real DEV01 install/reboot test with the array initially stopped. Verify the descriptor remains registered, the matching cached TXZ is used, settings/keys/authority survive, native hooks are present, and discovery recovers. Only genuine `/etc/rc.d/rc.local` ancestry with no installed plugin, QEMU, VM Manager or emhttp permits the early-boot guard exception. A missing libvirt socket during an ordinary upgrade must still fail closed. Do not assume manual PLG installation differs from Community Apps for boot persistence.
 
 1. Preserve the stable installed name `unmotion.plg`.
 2. Update package `VERSION`, `UNM_VERSION`, fixed `RELEASE_ID` and PLG changes. Before publishing each feed, download its current descriptor and run `php scripts/check-release-feed.php candidate.plg current-feed.plg`; reject reused/older IDs, same-version replacements and application downgrades.
