@@ -2,18 +2,20 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.12.01-0.4.4">
+<!ENTITY version "2026.10.12.02-0.4.5">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.4_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.4.5_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.4.4
-- Fix peer discovery after fresh installs, reboots and updates: explicitly make the public Avahi advertisement readable by the unprivileged discovery service while retaining private settings/key permissions.
+### unMotion 0.4.5
+- Show cached VM inventory immediately, with progressive background details, observation age and explicit refresh/error states. Cache only display data in RAM; migration and recovery checks remain fresh.
+- Share display inventory through the existing restricted paired-host interface. HTTPS peer APIs remain future work.
+- Restore the plugin during verified early boot before VM Manager starts, while retaining managed-VM safeguards for normal upgrades.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.4; the Plugins tab shows fixed installer version 2026.10.12.01-0.4.4 for reliable upgrade ordering.
-- No migration, cloning, replication, recovery or protocol changes from 0.4.3. Protocol 7 peers running 0.4.2 or later remain compatible.
+- Application/release version stays 0.4.5; the Plugins tab shows fixed installer version 2026.10.12.02-0.4.5 for reliable upgrade ordering.
+- Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
 - Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.
@@ -195,7 +197,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -212,7 +214,9 @@ function unmProcessUpgradeInventory(): array {
 
 function unmProcessPreinstall(): void {
     if(!function_exists('posix_kill'))throw new RuntimeException('PHP POSIX support is required for safe unMotion service upgrades.');
-    unmProcessAssertManagedGuestsStopped();
+    $bootRestore=unmProcessEarlyBootRestore();
+    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore);
+    if($bootRestore)echo "unMotion: restoring plugin during verified early boot, before VM Manager or QEMU. Durable recovery authority remains fenced.\n";
     $inventory=unmProcessUpgradeInventory();
     if($inventory['workers'])throw new RuntimeException('An unMotion migration, prepared-copy, replication, recovery, incoming transfer, remote request or delayed-cleanup worker is active. Let it finish or cancel it, then retry the upgrade. Do not start new operations while upgrading. No package or pairing settings have been changed.');
     // Use fresh exact /proc identities, never old PID files or the old rc stop
@@ -229,19 +233,51 @@ function unmProcessPreinstall(): void {
 
 // No adoption of an already-running managed QEMU into a new native start fence.
 // Run before stopping lifecycle services or replacing any installed file.
-function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion'): void {
+function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false): void {
     foreach(glob($base.'/native-managed/*.json')?:[] as $markerPath){$m=json_decode((string)@file_get_contents($markerPath),true);$id=(string)($m['replicationId']??'');$uuid=(string)($m['vmUuid']??'');$side=(string)($m['side']??'');if(!is_array($m)||($m['schemaVersion']??null)!==1||!preg_match('/^[a-f0-9-]{36}$/',$uuid)||!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!in_array($side,['source','destination'],true))throw new RuntimeException('Corrupt native managed identity prevents safe upgrade.');$paths=$side==='source'?[$base.'/replications/'.$id.'/recovery.json']:(glob($base.'/replicas/*/'.$id.'/recovery.json')?:[]);$matched=0;foreach($paths as $path){$r=json_decode((string)@file_get_contents($path),true);if(is_array($r)&&($r['replicationId']??'')===$id&&strtolower((string)($r['vmUuid']??''))===$uuid&&($r['side']??'')===$side)++$matched;}if($matched!==1)throw new RuntimeException('Exact native managed authority is missing or ambiguous; reconcile it before upgrading.');}
     $managed=[];foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=json_decode((string)@file_get_contents($path),true);if(!is_array($r))throw new RuntimeException('Corrupt recovery authority must be reconciled before upgrade.');if(in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)&&empty($r['armed'])&&empty($r['managedAutostart'])&&empty($r['activationId'])&&empty($r['claim'])&&empty($r['activation']))continue;$uuid=strtolower((string)($r['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid managed VM identity prevents safe upgrade.');$managed[$uuid]=true;}
     if(!$managed)return;
+    // At genuine rc.local boot replay libvirt is not started yet. The caller
+    // proves that phase and absence of QEMU; missing libvirt alone is NEVER proof.
+    // Authority/marker validation above is deliberately retained in both paths.
+    if($verifiedEarlyBoot)return;
     $run=static function(array $args):string{$p=proc_open(array_merge(['timeout','-k','2','15','virsh'],$args),[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['file','/dev/null','w']],$pipes);if(!is_resource($p))throw new RuntimeException('Cannot check managed VMs before upgrade.');$out=(string)stream_get_contents($pipes[1]);fclose($pipes[1]);if(proc_close($p)!==0)throw new RuntimeException('Libvirt state is unavailable; upgrade cannot prove managed VMs are stopped.');return trim($out);};
     $inventory=strtolower($run(['list','--all','--uuid']));$defined=$inventory===''?[]:preg_split('/\s+/',$inventory);foreach($defined as $entry)if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/',$entry))throw new RuntimeException('Libvirt returned an invalid VM inventory; upgrade refused.');
     foreach(array_keys($managed) as $uuid)if(in_array($uuid,$defined,true)&&strtolower($run(['domstate',$uuid]))!=='shut off')throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
 }
+
+function unmProcessEarlyBootEvidence(array $ancestors,array $processes,bool $installed): bool {
+    if($installed)return false;
+    $bootParent=false;
+    foreach($ancestors as $process)if(unmProcessCommandMatches($process,'/etc/rc.d/rc.local'))$bootParent=true;
+    if(!$bootParent)return false;
+    foreach($processes as $process){
+        $name=basename((string)($process['executable']??''));
+        if(preg_match('/^(?:qemu(?:-.*)?|kvm|libvirtd|virtqemud|emhttpd?)$/',$name))return false;
+    }
+    return true;
+}
+
+function unmProcessEarlyBootRestore(): bool {
+    // A manual install, array stop, broken daemon or missing socket must not
+    // bypass upgrade fencing. Only the actual boot-script ancestry qualifies.
+    $installed=is_file('/usr/local/emhttp/plugins/unmotion/VERSION');
+    if($installed)return false;
+    $ancestors=[];$pid=getmypid();
+    for($i=0;$i<32&&$pid>1;$i++){
+        $process=unmProcessSnapshot($pid);if($process===null)return false;
+        $ancestors[]=$process;$pid=(int)$process['parentPid'];
+    }
+    if(!unmProcessEarlyBootEvidence($ancestors,[],false))return false;
+    $processes=[];
+    foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$process=unmProcessSnapshot((int)basename(dirname($path)));if($process!==null)$processes[]=$process;}
+    return unmProcessEarlyBootEvidence($ancestors,$processes,false);
+}
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.4/unmotion-0.4.4_stable-noarch-1.txz</URL>
-<SHA256>1bf4e34375a3dc45efd3551ee9a1a1b8080d290831c22b9cb20552b4965f3afd</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.4.5/unmotion-0.4.5_stable-noarch-1.txz</URL>
+<SHA256>fea13e9f387860e4c68de661b06d74d79b66bb4a0dce9e219992a5c82b40ef8c</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
