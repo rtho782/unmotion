@@ -2,17 +2,18 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.04.01-0.4.3">
+<!ENTITY version "2026.10.12.01-0.4.4">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.3_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.4.4_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.4.3
+### unMotion 0.4.4
+- Fix peer discovery after fresh installs, reboots and updates: explicitly make the public Avahi advertisement readable by the unprivileged discovery service while retaining private settings/key permissions.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.3; the Plugins tab shows fixed installer version 2026.10.04.01-0.4.3 for reliable upgrade ordering.
-- No migration, cloning, replication, recovery or protocol changes from 0.4.2. Protocol 7 peers remain compatible.
+- Application/release version stays 0.4.4; the Plugins tab shows fixed installer version 2026.10.12.01-0.4.4 for reliable upgrade ordering.
+- No migration, cloning, replication, recovery or protocol changes from 0.4.3. Protocol 7 peers running 0.4.2 or later remain compatible.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
 - Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.
@@ -239,8 +240,8 @@ function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.3/unmotion-0.4.3_stable-noarch-1.txz</URL>
-<SHA256>b9f36d22ddbeda2d45b7ed7e851df8039c22eef0973011d6b9c03a1ec38e56e0</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.4.4/unmotion-0.4.4_stable-noarch-1.txz</URL>
+<SHA256>1bf4e34375a3dc45efd3551ee9a1a1b8080d290831c22b9cb20552b4965f3afd</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
