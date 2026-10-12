@@ -2,6 +2,10 @@
 
 Author: Richard Skinner
 
+## Discovery advertisement permissions (0.4.4 onward)
+
+The startup script atomically publishes the complete public `/etc/avahi/services/unmotion.service` advertisement with mode `0644`, then uses Avahi's own reload command. This repairs an existing root-only advertisement and also covers fresh creation after a boot or package installation, without a window where Avahi reads an incomplete or unreadable file. The private startup umask remains `077`; pairing keys, configuration and runtime state are not made public. No host or VM reboot is needed to apply this update. Protocol 7 remains compatible with 0.4.2 and 0.4.3; normal upgrade safety checks still apply.
+
 ## Installer housekeeping (0.4.3 onward)
 
 unMotion 0.4.3 requires Unraid 7.3.2 or later. Historical 0.4.2 descriptors are not rewritten.
@@ -16,9 +20,9 @@ Validation on 2026-10-04: 62 cleanup assertions and the complete Linux `scripts/
 
 ## Stable channel (0.4.0 onward)
 
-Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.3 uses descriptor version `2026.10.04.01-0.4.3` and package token `0.4.3_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.3. Slackware package filenames retain their independent semantic version and stable token.
+Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.4 uses descriptor version `2026.10.12.01-0.4.4` and package token `0.4.4_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.4. Slackware package filenames retain their independent semantic version and stable token.
 
-Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.04.01-0.4.3`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
+Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.12.01-0.4.4`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
 
 ## Initial feed-branch rename
 

@@ -17,7 +17,7 @@ The script verifies regression fixtures, checks current version/protocol invaria
 ## Build
 
 ```bash
-./scripts/build.sh 0.4.3
+./scripts/build.sh 0.4.4
 ```
 
 The script stages `src/rootfs`, applies package permissions and creates a Slackware-style TXZ and a small PLG under `dist/`. The PLG references that exact package on the matching GitHub release tag and supplies its SHA-256 for Unraid's plugin manager to verify. It does not embed the archive. For a new release, update both application version constants, release notes and `RELEASE_ID` first, then pass the matching version. `RELEASE_ID` contains `<application-version> YYYY.MM.DD.NN`, using a fixed UTC release date and zero-padded sequence 01..99. Allocate it once, commit it, and reuse it for every rebuild; the builder rejects mismatches or invalid dates.

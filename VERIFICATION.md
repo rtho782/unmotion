@@ -1,5 +1,22 @@
 # Verification
 
+## 0.4.4 discovery repair — 2026-10-12
+
+Author: Richard Skinner
+
+The complete Linux `scripts/verify.sh` suite passed with PHP, Bash, Node, the Unraid 7.3.3 plugin-manager fixture and privileged mount/PID-isolated tests. ShellCheck warning-level checks passed for the changed scripts. Discovery regressions cover atomic fresh creation under umask `077`, repair of an existing `0600` advertisement, repeated publication, fresh-file recreation, disabled discovery, failed write/chmod/rename cleanup, explicit daemon reload, names containing spaces and unchanged private permissions. The unfixed startup script fails the regression.
+
+Live diagnosis found two interacting faults: Avahi could not read a root-only advertisement, and the former first-`pidof` reload targeted its chroot helper. The final package publishes an already-readable complete file by rename and uses `avahi-daemon --reload`. DEV01 (Unraid 7.3.3) passed a real 0.4.3-to-0.4.4 install with an initially root-only advertisement; the advertisement was established successfully and a separate 7.3.2/0.4.3 peer discovered it. Settings, host/peer identities, private keys, VM states and existing libvirt hooks were unchanged, and native-fence readiness remained valid without restarting libvirt.
+
+The first unpublished test export exposed CRLF interpreter lines in executable hooks. It was never published or installed on production. DEV01 was restored from its verified 0.4.3 backup before repeating the final upgrade. Package sources now explicitly use LF and the builder/package tests reject CRLF interpreter lines. Compared with the released 0.4.3 archive, final runtime changes are limited to the discovery startup script and application-version constants; the GPL licence text is unchanged apart from line-ending normalization.
+
+Application version is `0.4.4`, installer version is `2026.10.12.01-0.4.4`, and protocol 7 is unchanged. DEV02 was unavailable because its trial expired. No host reboot, browser-only campaign or new destructive migration/recovery campaign was performed for this discovery-only change; fresh boot-file creation and cached/offline installer paths were covered by isolated regressions.
+
+```text
+1bf4e34375a3dc45efd3551ee9a1a1b8080d290831c22b9cb20552b4965f3afd  unmotion-0.4.4_stable-noarch-1.txz
+34484328abce2377db8c27bdf36e2a57eb31229f31f277bcf8979ad258bf5646  unmotion-0.4.4.plg
+```
+
 ## 0.4.3 stable — 2026-10-04
 
 Author: Richard Skinner.

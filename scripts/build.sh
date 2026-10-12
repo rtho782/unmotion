@@ -23,6 +23,16 @@ chmod 0755 "$STAGE/etc/libvirt/hooks/qemu.d/50-unmotion-recovery"
 chmod 0755 "$STAGE/usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/unmotion-package-cache"
 find "$STAGE/usr/local/emhttp/plugins/unmotion" -type f -exec chmod 0644 {} +
 
+# Syntax checks alone accept CRLF PHP shebangs, but Linux cannot execute them.
+# Reject bad exports before an archive or descriptor can be published.
+while IFS= read -r -d '' file; do
+  IFS= read -r first_line < "$file" || true
+  if [[ "$first_line" == '#!'* && "$first_line" == *$'\r'* ]]; then
+    echo "CRLF interpreter line in package source: $file" >&2
+    exit 1
+  fi
+done < <(find "$STAGE" -type f -print0)
+
 tar -C "$STAGE" --owner=0 --group=0 -cJf "$DIST/$PKG" .
 if tar -tvf "$DIST/$PKG" | awk '$1 ~ /^d/ && $1 != "drwxr-xr-x" {print "Unsafe package directory mode: " $0 > "/dev/stderr"; bad=1} END {exit bad?1:0}'; then :; else
   rm -f "$DIST/$PKG"
@@ -46,9 +56,10 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
+- Fix peer discovery after fresh installs, reboots and updates: explicitly make the public Avahi advertisement readable by the unprivileged discovery service while retaining private settings/key permissions.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
-- No migration, cloning, replication, recovery or protocol changes from 0.4.2. Protocol 7 peers remain compatible.
+- No migration, cloning, replication, recovery or protocol changes from 0.4.3. Protocol 7 peers running 0.4.2 or later remain compatible.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
 - Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.

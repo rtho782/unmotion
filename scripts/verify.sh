@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.3}"
+EXPECTED_VERSION="${1:-0.4.4}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -82,6 +82,7 @@ done
 
 bash "$ROOT/tests/static-regressions.sh"
 bash "$ROOT/tests/shell-regressions.sh"
+bash "$ROOT/tests/discovery-permissions-regressions.sh"
 bash "$ROOT/tests/seed-lock-regressions.sh"
 bash "$ROOT/tests/migration-lock-regressions.sh"
 bash "$ROOT/tests/numeric-regressions.sh"

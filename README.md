@@ -1,8 +1,8 @@
 # unMotion
 
-Stable release: **[0.4.3](https://github.com/rtho782/unmotion/releases/tag/0.4.3)**. Both update feeds offer this stable release; installing it selects future stable updates.
+Stable release: **[0.4.4](https://github.com/rtho782/unmotion/releases/tag/0.4.4)**. Both update feeds offer this stable release; installing it selects future stable updates.
 
-Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. 0.4.3 and 0.4.2 remain compatible. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [security and upgrade guidance](docs/SECURITY-042.md) before updating.
+Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. 0.4.4, 0.4.3 and 0.4.2 remain compatible. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [security and upgrade guidance](docs/SECURITY-042.md) before updating.
 
 Includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
 
@@ -56,9 +56,11 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The application reports **0.4.3**. The Plugins tab reports **2026.10.04.01-0.4.3**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+The application reports **0.4.4**. The Plugins tab reports **2026.10.12.01-0.4.4**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
 
 Pair hosts from **Settings → unMotion**, then test connectivity before migrating a VM.
+
+Automatic discovery uses Avahi/mDNS on the local network. Enable discovery on both hosts and allow multicast traffic; if a host is not listed, you can pair using its address instead. unMotion makes its public service advertisement readable by Avahi on startup while keeping pairing keys and private settings restricted.
 
 The installer downloads the versioned TXZ package from GitHub Releases and Unraid verifies its SHA-256 before installation. The package is cached on the boot device for subsequent boots; an initial install or an update to an uncached package needs access to GitHub. Pairing uses root credentials to establish restricted plugin keys, not general-purpose root shells. Paired hosts can still request privileged VM/storage operations: only pair hosts you fully trust.
 

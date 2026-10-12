@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.4 — 2026-10-12
+
+- Atomically publish a complete, readable Avahi service advertisement on every startup/restart, and use the daemon's reload command instead of accidentally signalling its chroot helper. Newly created or previously root-only advertisement files no longer prevent discovery after installation, reboot or upgrade. Private configuration, pairing keys and runtime-state permissions remain unchanged.
+- Add behavioral regression coverage for fresh advertisement creation under a restrictive umask, repair of an existing root-only file, repeated refreshes and discovery-disabled operation.
+- Keep package sources in Unix line-ending format and reject executable hooks with Windows-style interpreter lines during packaging, including exports prepared on Windows.
+- No migration, cloning, replication, recovery or wire-protocol changes. Protocol 7 remains compatible with 0.4.2 and 0.4.3.
+
 ## 0.4.3 — 2026-10-04
 
 - Require Unraid 7.3.2 or later, matching the supported lab baseline.

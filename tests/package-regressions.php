@@ -70,6 +70,7 @@ foreach([
     $pipes=[];$process=proc_open(['tar','-xOf',$package,$entry],[['pipe','r'],['pipe','w'],['pipe','w']],$pipes);
     fclose($pipes[0]);$contents=stream_get_contents($pipes[1]);$error=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);
     packageCheck(proc_close($process)===0&&$contents!=='','Native hook dependency is readable: '.$entry.' '.$error);
+    if (str_starts_with($contents,'#!')) packageCheck(!str_contains(explode("\n",$contents,2)[0],"\r"),'Executable interpreter line must use LF: '.$entry);
     $nativeContents[$entry]=$contents;
     $pipes=[];$process=proc_open([PHP_BINARY,'-l'],[['pipe','r'],['pipe','w'],['pipe','w']],$pipes);
     fwrite($pipes[0],$contents);fclose($pipes[0]);$output=stream_get_contents($pipes[1]).stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);

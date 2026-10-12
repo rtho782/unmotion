@@ -135,16 +135,31 @@ advertise(){
   host=$(hostname | sed 's/[&<>]/_/g'); id=$(cat "$PLUGIN/host_id" 2>/dev/null); version=$(cat /usr/local/emhttp/plugins/unmotion/VERSION 2>/dev/null || echo unknown)
   ssh_port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
   [[ "$ssh_port" =~ ^[0-9]+$ ]] || ssh_port=22
-  cat > "$SERVICE" <<EOF
+  local service_tmp
+  service_tmp=$(mktemp "${SERVICE%/*}/.unmotion.XXXXXX") || return 1
+  if ! cat > "$service_tmp" <<EOF
 <?xml version="1.0" standalone="no"?>
 <!DOCTYPE service-group SYSTEM "avahi-service.dtd">
 <service-group><name replace-wildcards="yes">$host unMotion</name><service><type>_unmotion._tcp</type><port>$ssh_port</port><txt-record>host_id=$id</txt-record><txt-record>version=$version</txt-record><txt-record>protocol=7</txt-record><txt-record>protocol_min=7</txt-record><txt-record>protocol_max=7</txt-record><txt-record>recovery_protocol=1</txt-record></service></service-group>
 EOF
-  pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true
+  then
+    rm -f -- "$service_tmp"
+    return 1
+  fi
+  # Avahi runs unprivileged. This advertisement contains public discovery
+  # metadata, unlike the private state protected by this script's umask 077.
+  # Publish only the finished, readable file: an in-place write can notify
+  # Avahi before chmod, leaving the service ignored until another refresh.
+  if ! chmod 0644 "$service_tmp" || ! mv -f -- "$service_tmp" "$SERVICE"; then
+    rm -f -- "$service_tmp"
+    return 1
+  fi
+  # The daemon also has a chroot helper; pidof's first PID is not its server.
+  avahi-daemon --reload 2>/dev/null || true
 }
 case "${1:-start}" in
   start) init_config || exit 1; advertise; start_replication_lifecycle && start_replication_scheduler ;;
-  stop) stop_replication_runtime || exit 75; rm -f "$SERVICE"; pidof avahi-daemon >/dev/null 2>&1 && kill -HUP "$(pidof avahi-daemon | awk '{print $1}')" 2>/dev/null || true ;;
+  stop) stop_replication_runtime || exit 75; rm -f "$SERVICE"; avahi-daemon --reload 2>/dev/null || true ;;
   restart) stop_replication_scheduler || exit 75; stop_replication_lifecycle || exit 75; init_config || exit 1; advertise; start_replication_lifecycle && start_replication_scheduler ;;
   *) echo "Usage: $0 {start|stop|restart}"; exit 1 ;;
 esac

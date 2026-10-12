@@ -37,6 +37,13 @@ for version in 0.4.3 0.5.0-beta1; do
     echo 'WARN: PHP unavailable; generated PLG XML/checksum regressions skipped.' >&2
   fi
 done
+# A Windows export must not produce an executable /usr/bin/php-with-CR path.
+printf '#!/usr/bin/php\r\n<?php\r\n' > "$TMP/src/rootfs/usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/unmotion-package-cache"
+if bash "$TMP/scripts/build.sh" "$version" > "$TMP/crlf.log" 2>&1; then
+  echo 'CRLF executable interpreter was packaged' >&2
+  exit 1
+fi
+grep -Fq 'CRLF interpreter line in package source:' "$TMP/crlf.log"
 if bash "$TMP/scripts/build.sh" '../invalid' >/dev/null 2>&1; then
   echo 'Unsafe build version accepted' >&2
   exit 1
