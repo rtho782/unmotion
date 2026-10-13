@@ -28,6 +28,14 @@ c840d78fb95640b379bc963213fbe028cd7bf40a33be2f5f4e6f32371df8cc6a  unmotion-0.4.7
 05634976f1134bb3fa5158ca5775641b153b0bcbcdbc54fc386d9d34bb384f47  unmotion-0.4.7.plg
 ```
 
+### Public release verification — 2026-10-13
+
+The owner authorized publication. Tag `0.4.7` points to source commit `3c9af4b9544a9eb4f990fd9e274355e0b37eb500`. The stable GitHub release is public, with the tested TXZ, PLG and `SHA256SUMS`; public downloads match the hashes above. The TXZ download was verified before uploading the PLG or advancing either feed. No tested artifact was rebuilt for publication.
+
+Both current feed descriptors passed `scripts/check-release-feed.php` before advancement. Stable feed commit `6d03810d4585add5edaf768eb3f55bbd1873519e` and beta graduation commit `e76c0e58d2e416b341a4e25a4200c229d98cc347` serve the byte-identical released PLG. Both exact raw installer URLs returned HTTP 200 and the expected SHA-256 after the initial cache refresh. Native `plugin check unmotion.plg` on DEV01 and DEV02 downloaded that same descriptor and reported `2026.10.13.02-0.4.7`; the earlier guarded upgrades from real older packages are documented above.
+
+Community Apps guide/template/profile commit `8a076d35068e5e403e998fad821d6a9e03678e99` is published. Public guide, XML and security guidance match the prepared content. The template and PLG parse successfully, retain author `Richard Skinner` and minimum Unraid `7.3.2`, and have exactly equal stable installer URLs. The advertised release and guide pages are reachable. Catalogue ingestion and user installations were not asserted by these checks.
+
 ## 0.4.6 stable release qualification — 2026-10-13
 
 Author: Richard Skinner
