@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.5';
+const UNM_VERSION = '0.4.6';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/transport.php';
 require_once __DIR__.'/preflight-policy.php';

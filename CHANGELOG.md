@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.6 — 2026-10-13
+
+- Open cold-migration, Warm Move cutover and local-clone dialogs immediately with visible, cancellable safety checks. Keep submission disabled until checks finish, offer retries after failures, and discard cancelled or superseded responses.
+- Retain previously loaded VM storage/guest-agent details during background scans while applying fresh basic state. Update only changed table cells across VM, prepared-move, job, replication and incoming-replica lists, preserving unchanged controls, focus and tooltips.
+- Preserve log reading position and unchanged text selections across refreshes; follow new output only while reading at the bottom. Prevent overlapping log reads and stale responses from a different log.
+- Keep unchanged destination options and paired-host controls in place during health refreshes, and show progress while testing a pairing.
+- No migration, storage, recovery, authentication or protocol changes. Display observations remain non-authoritative; action-time safety checks remain fresh.
+
 ## 0.4.5 — 2026-10-12
 
 - Serve a private RAM-only display inventory, populated by a single background collector shared by browser tabs and paired-host requests. Show basic VM rows before storage and guest-agent details, retain rows during refresh, and distinguish loading, empty and failed observations.

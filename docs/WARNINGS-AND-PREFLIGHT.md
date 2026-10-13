@@ -4,6 +4,12 @@ Author: Richard Skinner
 
 Normal behaviour belongs in transfer details. Actionable problems remain warnings, and irreversible deletion or recovery-ownership changes require explicit confirmation. Warnings are not repeated in an additional generic "risky migration" dialog.
 
+## Setup feedback
+
+Cold migration, Warm Move cutover and local cloning open a dialog immediately. The initial loading panel performs fresh checks; **Migrate/Create clone** remains disabled until they succeed. **Cancel** closes this setup without starting an operation, and a delayed response cannot reopen it. If checks fail or time out, **Recheck** retries with the selected setup options. Once an operation has been submitted, use its job controls rather than closing a setup dialog to cancel it.
+
+Background list refreshes keep unchanged controls and previously observed VM details in place. Newly observed state and completed detail changes still update; the inventory timestamp and refresh/error status describe freshness. Logs follow new output while at the bottom, but preserve your position when you scroll back. None of these display optimizations replace fresh operational preflight or worker checks.
+
 ## Warm Move and cloning
 
 Software TPM presence alone does not require confirmation. Preparation copies storage only; cutover still requires source shutdown and the final disk, TPM and UEFI transfer before destination start. A prepared seed is not a bootable recovery point. Replication's safe/best-effort TPM warnings remain unchanged.

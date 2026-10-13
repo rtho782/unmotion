@@ -20,6 +20,7 @@ var appSettings= {
   ;
   
 var activeVmId='',activeVmName='',activePreflight=null,activeWarmSeedId='',activeOperation='migration',activeCloneName='';
+var activePreflightSerial=0,activePreflightRequest=null,retryPreflight=null;
 var activeReplicationId='',activeReplicationVm=null,activeReplicationPreflight=null;
 var activeReplicationPreflightSerial=0;
 var activeRecoveryId='',activeRecoveryPerspective='',activeRecoveryPayload=null;
@@ -29,6 +30,7 @@ var activeConfirmation=null,activeConfirmationFocus=null;
   var activeMigrateButton=null;
   
 var discoveryTimer=null,peerRefreshTimer=null,discoveryInFlight=false,currentLogId='',currentLogType='job',logTimer=null,healthTimer=null;
+var logRequest=null,logSerial=0,logFirstRead=true;
   
 function esc(v) {
     // Shared by text and quoted attributes: DOM text escaping alone leaves
@@ -111,7 +113,9 @@ function post(action,data) {
     var polling=['inventory','seeds','jobs','replications','incomingReplicas','peerHealth','peers'].indexOf(action)>=0;
     var key=action+':'+String(data.peer_id||'');
     if(polling&&pendingPolls[key])return pendingPolls[key];
-    var request=$.ajax({url:api,method:'POST',data:data,dataType:'json',timeout:polling?30000:0});
+    var preflightRead=['preflight','clonePreflight'].indexOf(action)>=0;
+    var logRead=['jobLog','seedLog','replicationLog'].indexOf(action)>=0;
+    var request=$.ajax({url:api,method:'POST',data:data,dataType:'json',timeout:(polling||logRead)?30000:(preflightRead?120000:0)});
     if(polling){pendingPolls[key]=request;request.always(function(){delete pendingPolls[key];});}
     return request;
     
@@ -214,12 +218,11 @@ function renderSelectedPeerHealth() {
 function renderPeersSelect() {
     var s=$('#unm-peer-select'),selected=s.val();
     if(!s.length)return;
-    s.empty();
-    if(!peers.length)s.append('<option value="">No paired peers</option>');
-    peers.forEach(function(p) {
+    var html=peers.map(function(p) {
       var h=peerHealth[p.id];
-      s.append($('<option>').val(p.id).text(p.name+' ('+p.host+') — '+healthLabel(h)));
-    });
+      return '<option value="'+esc(p.id)+'">'+esc(p.name+' ('+p.host+') — '+healthLabel(h))+'</option>';
+    }).join('')||'<option value="">No paired peers</option>';
+    if(s.data('unm-options')!==html){s.html(html);s.data('unm-options',html);}
     if(selected&&peers.some(function(p){return p.id===selected;}))s.val(selected);
     renderSelectedPeerHealth();
   }
@@ -234,13 +237,13 @@ function pollPeerHealth() {
 function renderPeerCards() {
     var c=$('#unm-peer-list');
     if(!c.length)return;
-    c.empty();
-    if(!peers.length){c.html('<p class="unm-muted">No peers paired yet.</p>');return;}
+    var rows=[];
     peers.forEach(function(p) {
       var caps=p.lastCapabilities||{},storage=caps.storage||{},h=peerHealth[p.id],issues=(h&&h.issues)||[];
       var issueHtml=issues.length?'<ul class="unm-health-issues">'+issues.slice(0,6).map(function(i){return '<li>'+esc(i.message||i.code)+'</li>';}).join('')+'</ul>':'';
-      c.append('<div class="unm-card unm-peer"><div><strong>'+esc(p.name)+'</strong> <span class="unm-health-pill '+healthClass(h)+'">'+esc(healthLabel(h))+'</span><br><span class="unm-muted">root@'+esc(p.host)+':'+esc(p.port)+'</span><br><small>Zvol: '+esc(storage.zvolDataset||'image fallback')+' · Images: '+esc(storage.imageDirectory||'unknown')+'</small>'+issueHtml+'</div><div class="unm-actions"><input type="button" value="Test" class="unm-test-peer" data-id="'+esc(p.id)+'"><input type="button" value="Break pairing" class="unm-remove-peer" data-id="'+esc(p.id)+'"></div></div>');
+      rows.push('<div data-row-id="'+esc(p.id)+'" class="unm-card unm-peer"><div><strong>'+esc(p.name)+'</strong> <span class="unm-health-pill '+healthClass(h)+'">'+esc(healthLabel(h))+'</span><br><span class="unm-muted">root@'+esc(p.host)+':'+esc(p.port)+'</span><br><small>Zvol: '+esc(storage.zvolDataset||'image fallback')+' · Images: '+esc(storage.imageDirectory||'unknown')+'</small>'+issueHtml+'</div><div class="unm-actions"><input type="button" value="Test" class="unm-test-peer" data-id="'+esc(p.id)+'"><input type="button" value="Break pairing" class="unm-remove-peer" data-id="'+esc(p.id)+'"></div></div>');
     });
+    reconcileTableRows(c,rows.join('')||'<p class="unm-muted">No peers paired yet.</p>','div');
   }
 
 function storageText(vm) {
@@ -306,15 +309,55 @@ function recoveryPolicyForVm(vmUuid) {
     return replications.find(function(policy){return String(policy.vmUuid||policy.vmId||'')===String(vmUuid)&&recoveryArmed(policy);})||null;
   }
 
+// Display-only stale-while-revalidate: fresh basic state wins, but a new scan
+// must not replace previously observed details with loading placeholders.
+function mergeInventoryDetails(previous,incoming) {
+    var known=new Map(previous.map(function(vm){return [vm.uuid,vm];}));
+    return incoming.map(function(vm){
+      var old=known.get(vm.uuid);
+      if(!vm.error&&vm.detailsPending&&old&&!old.error&&!old.detailsPending)
+        return Object.assign({},old,vm,{detailsPending:false});
+      return vm;
+    });
+  }
+
+// Reconcile keyed rows and only changed cells. Compare against the last render,
+// not the live DOM: busy buttons, focus, selection and open details belong to
+// the user interaction and must survive an otherwise identical poll.
+function reconcileTableRows(body,html,containerTag) {
+    var target=body[0],staging=document.createElement(containerTag||'tbody'),existing=new Map();
+    staging.innerHTML=html;
+    Array.from(target.children).forEach(function(row){existing.set(row.getAttribute('data-row-id')||row.getAttribute('data-vm-id')||'',row);});
+    Array.from(staging.children).forEach(function(next,index){
+      var key=next.getAttribute('data-row-id')||next.getAttribute('data-vm-id')||'',row=existing.get(key);
+      existing.delete(key);
+      if(!row||row.children.length!==next.children.length){
+        if(row)row.remove();
+        row=next;
+        Array.from(row.children).forEach(function(cell){cell.unmRenderedHtml=cell.innerHTML;});
+      }else Array.from(next.children).forEach(function(cell,i){
+        var current=row.children[i];
+        if(current.unmRenderedHtml!==cell.innerHTML){
+          current.innerHTML=cell.innerHTML;
+          current.unmRenderedHtml=cell.innerHTML;
+        }
+        if(current.className!==cell.className)current.className=cell.className;
+        if(current.colSpan!==cell.colSpan)current.colSpan=cell.colSpan;
+      });
+      if(target.children[index]!==row)target.insertBefore(row,target.children[index]||null);
+    });
+    existing.forEach(function(row){row.remove();});
+  }
+
 function renderInventory() {
-    var body=$('#unm-vm-body');if(!body.length)return;body.empty();
+    var body=$('#unm-vm-body');if(!body.length)return;var rows=[];
     renderInventoryStatus();
-    if(!inventoryMeta.available){body.html('<tr><td colspan="8">'+(inventoryMeta.error?'VM inventory is unavailable. Retrying…':'Loading VM inventory…')+'</td></tr>');return;}
+    if(!inventoryMeta.available){reconcileTableRows(body,'<tr><td colspan="8">'+(inventoryMeta.error?'VM inventory is unavailable. Retrying…':'Loading VM inventory…')+'</td></tr>');return;}
     var peerId=$('#unm-peer-select').val();
     latestVms.forEach(function(vm) {
-      if(vm.error){body.append('<tr><td>'+esc(vm.name)+'</td><td colspan="7" class="unm-bad">'+esc(vm.error)+'</td></tr>');return;}
+      if(vm.error){rows.push('<tr data-vm-id="'+esc(vm.uuid)+'"><td>'+esc(vm.name)+'</td><td colspan="7" class="unm-bad">'+esc(vm.error)+'</td></tr>');return;}
       if(vm.detailsPending){
-        body.append('<tr><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td colspan="2" class="unm-muted">Checking storage and guest agent…</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+esc(vm.autostart)+'</td><td><input type="button" value="Loading details…" disabled></td></tr>');
+        rows.push('<tr data-vm-id="'+esc(vm.uuid)+'"><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td colspan="2" class="unm-muted">Checking storage and guest agent…</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+esc(vm.autostart)+'</td><td><input type="button" value="Loading details…" disabled></td></tr>');
         return;
       }
       var blocked=(vm.pci||[]).length>0,poweredOff=String(vm.state||'').toLowerCase()==='shut off',seed=seedFor(vm.uuid,peerId),actions='<div class="unm-action-stack">';
@@ -341,9 +384,9 @@ function renderInventory() {
       actions+='</div>';
       if(seed&&seed.activeJob)actions=disableSeedActions(actions,seed.activeJob.message);
       var managedRecovery=recoveryPolicyForVm(vm.uuid),autostartHtml=managedRecovery?'<span class="unm-badge unm-recovery-warning">Managed by unMotion</span><br><small class="unm-muted">Native autostart disabled; startup is fenced</small>':esc(vm.autostart);
-      body.append('<tr><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td class="unm-storage-cell">'+esc(storageText(vm))+storageDetailHtml(vm)+'</td><td class="unm-features-cell">'+flags(vm)+'</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+autostartHtml+'</td><td>'+actions+'</td></tr>');
+      rows.push('<tr data-vm-id="'+esc(vm.uuid)+'"><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td class="unm-storage-cell">'+esc(storageText(vm))+storageDetailHtml(vm)+'</td><td class="unm-features-cell">'+flags(vm)+'</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+autostartHtml+'</td><td>'+actions+'</td></tr>');
     });
-    if(!latestVms.length)body.html('<tr><td colspan="8">No VMs found.</td></tr>');
+    reconcileTableRows(body,rows.join('')||'<tr><td colspan="8">No VMs found.</td></tr>');
   }
 
 function disableSeedActions(html,message) {
@@ -353,16 +396,16 @@ function disableSeedActions(html,message) {
   }
 
 function renderSeeds() {
-    var body=$('#unm-seed-body');if(!body.length)return;body.empty();
+    var body=$('#unm-seed-body');if(!body.length)return;var rows=[];
     seeds.forEach(function(seed){
       var actions='<input type="button" value="Log" class="unm-seed-log" data-id="'+esc(seed.id)+'"> ';
       if(seed.state==='READY')actions+='<input type="button" value="Update" class="unm-warm-update" data-vm-id="'+esc(seed.vmUuid)+'" data-seed-id="'+esc(seed.id)+'"> <input type="button" value="Cut over" class="unm-warm-cutover" data-vm-id="'+esc(seed.vmUuid)+'" data-vm-name="'+esc(seed.vmName)+'" data-seed-id="'+esc(seed.id)+'"> <input type="button" value="Remove" class="unm-remove-seed" data-id="'+esc(seed.id)+'">';
       else if(seed.state==='INTERRUPTED')actions+='<input type="button" value="Resume" class="unm-resume-seed" data-id="'+esc(seed.id)+'"> <input type="button" value="Remove failed seed" class="unm-remove-seed" data-id="'+esc(seed.id)+'">';
       else if(seed.state==='FAILED')actions+='<input type="button" value="'+(seed.archiveOnlyAvailable?'Archive failed record':'Delete prepared storage')+'" class="unm-remove-seed" data-record-only="'+(seed.archiveOnlyAvailable?'1':'0')+'" data-id="'+esc(seed.id)+'">';
       if(seed.activeJob)actions=disableSeedActions(actions,seed.activeJob.message);
-      body.append('<tr><td>'+esc(seed.vmName)+'</td><td>'+esc(seed.peerName||seed.peerId)+'</td><td>'+esc(seed.activeJob?'BUSY / '+seed.activeJob.state:seed.state)+'</td><td>'+esc(seed.lastSyncAt||'—')+'</td><td>'+esc(seed.estimateIncomplete?'At least '+fmtBytes(seed.estimatedChangedBytes):fmtBytes(seed.estimatedChangedBytes))+'</td><td>'+actions+'</td></tr>');
+      rows.push('<tr data-row-id="'+esc(seed.id)+'"><td>'+esc(seed.vmName)+'</td><td>'+esc(seed.peerName||seed.peerId)+'</td><td>'+esc(seed.activeJob?'BUSY / '+seed.activeJob.state:seed.state)+'</td><td>'+esc(seed.lastSyncAt||'—')+'</td><td>'+esc(seed.estimateIncomplete?'At least '+fmtBytes(seed.estimatedChangedBytes):fmtBytes(seed.estimatedChangedBytes))+'</td><td>'+actions+'</td></tr>');
     });
-    if(!seeds.length)body.html('<tr><td colspan="6">No prepared moves.</td></tr>');
+    reconcileTableRows(body,rows.join('')||'<tr><td colspan="6">No prepared moves.</td></tr>');
   }
 
 function renderInventoryStatus() {
@@ -382,7 +425,7 @@ function loadInventory(refresh) {
     // Initial load/polling reuse it and never blank existing rows.
     post('inventory',{refresh:refresh===false?0:1}).done(function(r){
       inventoryMeta=r.inventory||{available:true,complete:true};
-      if(inventoryMeta.available)latestVms=r.vms||[];
+      if(inventoryMeta.available)latestVms=mergeInventoryDetails(latestVms,r.vms||[]);
       renderInventory();
       if(inventoryMeta.refreshing||!inventoryMeta.complete)inventoryRetryTimer=setTimeout(function(){loadInventory(false);},1000);
     }).fail(function(){
@@ -549,7 +592,7 @@ function recoveryStateHtml(item) {
   }
 
 function renderReplications() {
-    var body=$('#unm-replication-body');if(!body.length)return;body.empty();
+    var body=$('#unm-replication-body');if(!body.length)return;var rows=[];
     replications.forEach(function(policy){
       var enabled=!(policy.enabled===false||policy.enabled===0||policy.enabled==='0');
       var state=policy.state||policy.status||(enabled?'IDLE':'DISABLED');
@@ -565,14 +608,14 @@ function renderReplications() {
       var canRemoveUnused=Number(policy.generation||0)===0&&!policy.baseSnapshot&&!policy.pending&&!recoveryArmed(policy);
       var removeAction=canRemoveUnused?'<input type="button" value="Remove unused policy" class="unm-remove-replication" data-id="'+esc(policy.id)+'"'+activeDisabled+'>':'<input type="button" value="Replica removal deferred" disabled title="Disable the policy to pause future runs while preserving destination data, recovery points, and resumable receive state">';
       var actions='<div class="unm-action-stack"><input type="button" value="Run now" class="unm-run-replication" data-id="'+esc(policy.id)+'" '+(active||!enabled?'disabled':'')+'><input type="button" value="'+(enabled?'Disable':'Enable')+'" class="unm-toggle-replication" data-id="'+esc(policy.id)+'" data-enable="'+(enabled?'0':'1')+'"><input type="button" value="Configure" class="unm-replicate" data-vm-id="'+esc(policy.vmUuid||policy.vmId)+'" data-vm-name="'+esc(policy.vmName||policy.vm||'VM')+'" data-replication-id="'+esc(policy.id)+'"'+activeDisabled+'><input type="button" value="Recovery" class="unm-recovery-open" data-id="'+esc(policy.id)+'" data-perspective="source"><input type="button" value="Log" class="unm-replication-log" data-id="'+esc(policy.id)+'">'+removeAction+'</div>';
-      body.append('<tr><td>'+esc(policy.vmName||policy.vm||policy.vmUuid)+'</td><td>'+esc(policy.peerName||policy.destinationName||policy.peerId)+'</td><td>'+esc(rpoLabel(policy.rpoSeconds||policy.rpo_seconds))+'</td><td>'+esc(retentionText)+'</td><td>'+esc(state)+'<br>'+recoveryStateHtml(policy)+'</td><td>'+esc(fmtWhen(lastSuccess))+'</td><td>'+esc(enabled?fmtWhen(policy.nextDueAt||policy.nextDueEpoch||policy.nextRunAt):'—')+'</td><td>'+esc(fmtDurationSeconds(lag))+'</td><td>'+actions+'</td></tr>');
+      rows.push('<tr data-row-id="'+esc(policy.id)+'"><td>'+esc(policy.vmName||policy.vm||policy.vmUuid)+'</td><td>'+esc(policy.peerName||policy.destinationName||policy.peerId)+'</td><td>'+esc(rpoLabel(policy.rpoSeconds||policy.rpo_seconds))+'</td><td>'+esc(retentionText)+'</td><td>'+esc(state)+'<br>'+recoveryStateHtml(policy)+'</td><td>'+esc(fmtWhen(lastSuccess))+'</td><td>'+esc(enabled?fmtWhen(policy.nextDueAt||policy.nextDueEpoch||policy.nextRunAt):'—')+'</td><td>'+esc(fmtDurationSeconds(lag))+'</td><td>'+actions+'</td></tr>');
     });
-    if(!replications.length)body.html('<tr><td colspan="9">No scheduled replications. Choose <strong>Replicate</strong> beside an eligible VM to create one.</td></tr>');
+    reconcileTableRows(body,rows.join('')||'<tr><td colspan="9">No scheduled replications. Choose <strong>Replicate</strong> beside an eligible VM to create one.</td></tr>');
   }
 
 function renderIncomingReplicas() {
-    var body=$('#unm-incoming-replica-body');if(!body.length)return;body.empty();
-    incomingReplicas.forEach(function(replica){
+    var body=$('#unm-incoming-replica-body');if(!body.length)return;var rows=[];
+    incomingReplicas.forEach(function(replica,index){
       var points=replica.recoveryPoints||replica.points||[],latest=replica.latestPoint||replica.latest||{},count=Array.isArray(points)?points.length:Number(replica.recoveryPointCount||replica.pointCount||0);
       if(Array.isArray(points)&&points.length&&!Object.keys(latest).length){
         latest=points.find(function(point){return point.id===replica.currentPointId;})||points.slice().sort(function(a,b){return (epochSeconds(b.createdAt||b.capturedAt||b.slotEpoch)||0)-(epochSeconds(a.createdAt||a.capturedAt||a.slotEpoch)||0);})[0]||{};
@@ -580,10 +623,11 @@ function renderIncomingReplicas() {
       var latestAt=latest.capturedAt||latest.capturedAtEpoch||replica.latestCapturedAt||replica.lastSuccessAt;
       var consistency=latest.consistency||replica.consistency||(latest.guestAgentVerified?'guest-agent verified':'not verified');
       var replicationId=replica.replicationId||replica.replication_id||replica.policyId||replica.id;
+      var rowId=replicationId||'inventory-'+index;
       var action=replicationId?'<input type="button" value="Recovery" class="unm-recovery-open" data-id="'+esc(replicationId)+'" data-perspective="destination">':'<input type="button" value="Inventory only" disabled>';
-      body.append('<tr><td>'+esc(replica.vmName||replica.vm||replica.vmUuid)+'</td><td>'+esc(replica.sourceName||replica.sourceHostName||replica.sourceHostId||'Unknown source')+'</td><td>'+esc(count)+'</td><td>'+esc(fmtWhen(latestAt))+'</td><td>'+esc(consistency||'—')+'</td><td>'+recoveryStateHtml(replica)+'<br><small class="unm-muted">'+esc(replica.activationState||replica.state||replica.status||'Replica remains inert')+'</small></td><td>'+action+'</td></tr>');
+      rows.push('<tr data-row-id="'+esc(rowId)+'"><td>'+esc(replica.vmName||replica.vm||replica.vmUuid)+'</td><td>'+esc(replica.sourceName||replica.sourceHostName||replica.sourceHostId||'Unknown source')+'</td><td>'+esc(count)+'</td><td>'+esc(fmtWhen(latestAt))+'</td><td>'+esc(consistency||'—')+'</td><td>'+recoveryStateHtml(replica)+'<br><small class="unm-muted">'+esc(replica.activationState||replica.state||replica.status||'Replica remains inert')+'</small></td><td>'+action+'</td></tr>');
     });
-    if(!incomingReplicas.length)body.html('<tr><td colspan="7">No incoming replica inventory.</td></tr>');
+    reconcileTableRows(body,rows.join('')||'<tr><td colspan="7">No incoming replica inventory.</td></tr>');
   }
 
 function loadReplications() {
@@ -952,6 +996,38 @@ function selectedResourceOptions() {
     
   }
   
+function cancelPreflight() {
+    activePreflightSerial++;
+    activePreflight=null;retryPreflight=null;
+    if(activePreflightRequest&&activePreflightRequest.readyState!==4)activePreflightRequest.abort();
+    activePreflightRequest=null;
+  }
+
+function beginPreflight(title,label,retry) {
+    cancelPreflight();
+    retryPreflight=retry;
+    $('#unm-modal-title').text(title);
+    $('#unm-modal-content').attr('aria-busy','true').html('<div class="unm-page-loading" role="status"><span class="unm-spinner" aria-hidden="true"></span><span>Checking VM storage and destination compatibility…<br><small>Fresh safety checks can take a few seconds. No VM changes have been made.</small></span></div>');
+    $('#unm-confirm-migrate').val(label).prop('disabled',true);
+    $('#unm-recheck').val('Recheck').prop('disabled',true).show();
+    $('#unm-modal').addClass('open').attr('aria-hidden','false');
+    return activePreflightSerial;
+  }
+
+function preflightFailed(xhr,serial) {
+    if(serial!==activePreflightSerial)return;
+    var message='Could not complete the checks. Recheck to try again.';
+    try{message=JSON.parse(xhr.responseText).error||message;}catch(ignore){}
+    $('#unm-modal-content').html('<div class="unm-bad" role="alert">'+esc(message)+'</div>');
+  }
+
+function finishPreflight(serial) {
+    if(serial!==activePreflightSerial)return;
+    activePreflightRequest=null;
+    $('#unm-modal-content').attr('aria-busy','false');
+    $('#unm-recheck').prop('disabled',false);
+  }
+
 function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
     var peer=$('#unm-peer-select').val();
     if(!peer) {
@@ -963,8 +1039,6 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
     activeVmName=vmName;
     activeWarmSeedId=(resourceOverride||{}).warm_seed_id||'';
     if(triggerButton)activeMigrateButton=$(triggerButton);
-    var busyTarget=triggerButton?$(triggerButton):$('#unm-recheck');
-    var stopBusy=setButtonBusy(busyTarget,'Checking');
     var iso=isoOverride||$('#unm-default-iso').val()||(appSettings.copy_isos_default?'copy':'remove');
     var preservedUsb=(resourceOverride|| {
       
@@ -980,11 +1054,13 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
     }
     );
     delete requestOpts._usb_action;
-    post('preflight', {
+    var serial=beginPreflight((activeWarmSeedId?'Warm Move cutover ':'Migrate ')+vmName,'Migrate',function(){showPreflight(vmId,vmName,iso,resourceOverride,null);});
+    activePreflightRequest=post('preflight', {
       vm_id:vmId,peer_id:peer,options:JSON.stringify(requestOpts)
     }
     ).done(function(r) {
-      var p=r.preflight,v=p.vm|| {
+      if(serial!==activePreflightSerial)return;
+      var p=r.preflight||{},v=p.vm|| {
         
       }
       ,rp=p.resourcePlan|| {
@@ -1006,7 +1082,7 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
         
       }
       ;
-      activePreflight=p;
+      activePreflight=p;retryPreflight=null;
       $('#unm-modal-title').text((activeWarmSeedId?'Warm Move cutover ':'Migrate ')+vmName+' to '+((p.peer|| {
         
       }
@@ -1081,21 +1157,22 @@ function showPreflight(vmId,vmName,isoOverride,resourceOverride,triggerButton) {
       if((v.isos||[]).length)html+='<div class="unm-form-row"><label>Optical media</label><select id="unm-iso-action"><option value="copy" '+(iso==='copy'?'selected':'')+'>Copy attached ISOs</option><option value="remove" '+(iso==='remove'?'selected':'')+'>Leave drives empty</option><option value="retain" '+(iso==='retain'?'selected':'')+'>Retain original paths</option></select></div>';
       html+='<div class="unm-card"><strong>Source handling after migration</strong><div class="unm-choice-list"><label><input type="radio" name="unm-source-cleanup" value="unregister" '+(preservedSourceCleanup==='unregister'?'checked':'')+'> <strong>Unregister source VM, retain storage</strong><br><span class="unm-muted">Remove the source libvirt definition while retaining disks, UEFI NVRAM and TPM state.</span></label><label><input type="radio" name="unm-source-cleanup" value="retain" '+(preservedSourceCleanup==='retain'?'checked':'')+'> <strong>Keep source VM registered and rename it</strong><br><span class="unm-muted">Disable autostart and append “ - Migrated to '+esc((p.peer||{}).name||'destination')+'”.</span></label><label><input type="radio" name="unm-source-cleanup" value="delete" '+(preservedSourceCleanup==='delete'?'checked':'')+'> <strong>Delete source VM and storage after validation</strong><br><span class="unm-muted">Delete only after five minutes of continuous destination runtime.</span></label></div></div>';
       $('#unm-modal-content').html(html);
-      $('#unm-modal').addClass('open');
       $('#unm-confirm-migrate').val('Migrate');$('#unm-recheck').show();
       updateMigrationEligibility();
       
     }
-    ).fail(err).always(stopBusy);
+    ).fail(function(xhr){preflightFailed(xhr,serial);}).always(function(){finishPreflight(serial);});
     
   }
 
-function showClonePreflight(vmId,vmName,cloneName,triggerButton) {
+function showClonePreflight(vmId,vmName,cloneName,triggerButton,customizationOverride) {
     activeOperation='clone';activeVmId=vmId;activeVmName=vmName;activeWarmSeedId='';activeCloneName=cloneName||vmName+' - Clone';
-    var stopBusy=setButtonBusy(triggerButton||$('#unm-recheck'),'Checking');
-    var customization=$('#unm-clone-customization').val()||'ubuntu-dhcp';
-    post('clonePreflight',{vm_id:vmId,clone_name:activeCloneName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
-      var p=r.preflight||{},clone=p.clone||{},lines=[];activePreflight=p;
+    var customization=customizationOverride||$('#unm-clone-customization').val()||'ubuntu-dhcp';
+    var requestedName=activeCloneName;
+    var serial=beginPreflight('Clone '+vmName+' on this server','Create clone',function(){showClonePreflight(vmId,vmName,requestedName,null,customization);});
+    activePreflightRequest=post('clonePreflight',{vm_id:vmId,clone_name:requestedName,options:JSON.stringify({guest_customization:customization})}).done(function(r){
+      if(serial!==activePreflightSerial)return;
+      var p=r.preflight||{},clone=p.clone||{},lines=[];activePreflight=p;retryPreflight=null;
       (p.plan||[]).forEach(function(i){lines.push(String(i.kind||'item').toUpperCase()+': '+(i.source||'')+' â†’ '+(i.destination||'')+(i.bytes?' ['+fmtBytes(i.bytes)+']':''));});
       $('#unm-modal-title').text('Clone '+vmName+' on this server');
       var html='<div class="unm-card"><div class="unm-form-row"><label>Clone name</label><input id="unm-clone-name" type="text" maxlength="128" value="'+esc(activeCloneName)+'"></div>';
@@ -1106,12 +1183,13 @@ function showClonePreflight(vmId,vmName,cloneName,triggerButton) {
       html+='<p>Create a full independent copy. The source must remain powered off; the clone finishes stopped with autostart disabled.</p>';
       html+='<div class="unm-card"><strong>New KVM identity</strong><p>UUID: '+esc(clone.uuid||'pending')+'</p><p>MACs: '+esc((clone.macs||[]).join(', ')||'none')+'</p><p>Autostart: disabled; final power state: stopped</p></div>';
       html+='<div class="unm-pre">'+esc(lines.join('\n'))+'</div>';
-      $('#unm-modal-content').html(html);$('#unm-modal').addClass('open');$('#unm-confirm-migrate').val('Create clone');$('#unm-recheck').show();
+      $('#unm-modal-content').html(html);$('#unm-confirm-migrate').val('Create clone');$('#unm-recheck').show();
       updateMigrationEligibility();
-    }).fail(err).always(stopBusy);
+    }).fail(function(xhr){preflightFailed(xhr,serial);}).always(function(){finishPreflight(serial);});
   }
   
 function recheckPreflight() {
+    if(retryPreflight){retryPreflight();return;}
     if(activeOperation==='clone'){activeCloneName=$('#unm-clone-name').val()||'';showClonePreflight(activeVmId,activeVmName,activeCloneName,null);return;}
     var opts=selectedResourceOptions();
     opts._usb_action=$('#unm-usb-action').val()||'cancel';
@@ -1198,7 +1276,7 @@ function loadJobs() {
     var body=$('#unm-job-body');
     if(!body.length)return;
     post('jobs').done(function(r) {
-      body.empty();
+      var rows=[];
       (r.jobs||[]).slice(0,20).forEach(function(j) {
         var failed=['FAILED','INTERRUPTED'].indexOf(j.state)>=0,retry=failed&&(j.jobType||'migration')!=='clone';
         var actions='<input type="button" value="Log" class="unm-log" data-id="'+esc(j.id)+'"> ';
@@ -1209,11 +1287,11 @@ function loadJobs() {
         var cleanupAction=((j.request||{}).SOURCE_CLEANUP_ACTION||'unregister');
         var removable=['CANCELLED','COMPLETE_CLEANED'].indexOf(j.state)>=0||(['COMPLETE','COMPLETE_WITH_WARNINGS'].indexOf(j.state)>=0&&cleanupAction!=='delete');
         if(removable)actions+='<input type="button" value="Remove" class="unm-remove-job" data-id="'+esc(j.id)+'">';
-        body.append('<tr><td>'+esc(j.vm)+'</td><td>'+esc(j.peerName||j.peerId)+'</td><td>'+esc(j.state)+'</td><td><div class="unm-progress"><span style="width:'+parseInt(j.progress||0,10)+'%"></span></div><small>'+esc(j.progress||0)+'%</small></td><td>'+esc(j.message||'')+'</td><td>'+actions+'</td></tr>');
+        rows.push('<tr data-row-id="'+esc(j.id)+'"><td>'+esc(j.vm)+'</td><td>'+esc(j.peerName||j.peerId)+'</td><td>'+esc(j.state)+'</td><td><div class="unm-progress"><span style="width:'+parseInt(j.progress||0,10)+'%"></span></div><small>'+esc(j.progress||0)+'%</small></td><td>'+esc(j.message||'')+'</td><td>'+actions+'</td></tr>');
         
       }
       );
-      if(!(r.jobs||[]).length)body.html('<tr><td colspan="6">No migration or clone jobs yet.</td></tr>');
+      reconcileTableRows(body,rows.join('')||'<tr><td colspan="6">No migration or clone jobs yet.</td></tr>');
       
     }
     ).fail(err);
@@ -1221,27 +1299,39 @@ function loadJobs() {
   }
   
 function refreshLog() {
-    if(!currentLogId)return;
+    if(!currentLogId||logRequest)return;
+    var serial=logSerial;
     var action=currentLogType==='seed'?'seedLog':(currentLogType==='replication'?'replicationLog':'jobLog');
     var data=currentLogType==='seed'?{seed_id:currentLogId}:(currentLogType==='replication'?{replication_id:currentLogId}:{job_id:currentLogId});
-    post(action,data).done(function(r) {
+    logRequest=post(action,data).done(function(r) {
+      if(serial!==logSerial)return;
       var e=$('#unm-log-text');
-      e.text(r.log||'(empty)');
-      e.scrollTop(e[0].scrollHeight);
-      
-    }
-    );
+      var scroll=e.scrollTop(),follow=logFirstRead||e[0].scrollHeight-e[0].clientHeight-scroll<24;
+      var text=r.log||'(empty)';
+      if(e.text()!==text)e.text(text);
+      e.scrollTop(follow?e[0].scrollHeight:scroll);logFirstRead=false;
+    }).fail(function(){
+      if(serial===logSerial&&logFirstRead)$('#unm-log-text').text('Unable to load log. Retrying…');
+    }).always(function(){if(serial===logSerial)logRequest=null;});
     
   }
   
 function showLog(id,type) {
+    cancelLogRead();logFirstRead=true;
     currentLogId=id;currentLogType=type||'job';
     $('#unm-log-title').text(currentLogType==='seed'?'Prepared-copy log':(currentLogType==='replication'?'Replication log':'Job log'));
-    refreshLog();
+    $('#unm-log-text').text('Loading log…');
     $('#unm-log-modal').addClass('open');
+    refreshLog();
     if(logTimer)clearInterval(logTimer);
     logTimer=setInterval(refreshLog,2000);
     
+  }
+
+function cancelLogRead() {
+    logSerial++;
+    if(logRequest&&logRequest.readyState!==4)logRequest.abort();
+    logRequest=null;
   }
   
 function renderSshStatus(ssh) {
@@ -1540,12 +1630,14 @@ $(function() {
     $('.unm-modal-close').on('click',function() {
       var modal=$(this).closest('.unm-modal');
       modal.removeClass('open').attr('aria-hidden','true');
+      if(modal.is('#unm-modal'))cancelPreflight();
       if(modal.is('#unm-recovery-modal')){
         activeRecoveryStatusSerial++;
         if(activeRecoveryStatusRequest&&activeRecoveryStatusRequest.readyState!==4)activeRecoveryStatusRequest.abort();
         activeRecoveryStatusRequest=null;activeRecoveryId='';activeRecoveryPerspective='';activeRecoveryPayload=null;activeRecoveryPointId='';activeRecoveryCheckpointId='';
       }
       if($(this).closest('#unm-log-modal').length) {
+        cancelLogRead();
         currentLogId='';currentLogType='job';
         if(logTimer) {
           clearInterval(logTimer);
@@ -1630,6 +1722,7 @@ $(function() {
     }
     );
     $(document).on('click','.unm-test-peer',function() {
+      var stop=setButtonBusy(this,'Testing');
       post('testPeer', {
         peer_id:$(this).data('id')
       }
@@ -1638,7 +1731,7 @@ $(function() {
         loadPeers();
         
       }
-      ).fail(err);
+      ).fail(err).always(stop);
       
     }
     );

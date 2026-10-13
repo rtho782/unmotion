@@ -1,5 +1,22 @@
 # Verification
 
+## 0.4.6 stable release qualification — 2026-10-13
+
+Author: Richard Skinner
+
+The owner authorized publishing the browser-tested UI changes as a new stable release. Application version is `0.4.6`; fixed installer version is `2026.10.13.01-0.4.6`. Protocol 7, migration/storage workers, recovery fencing and authentication behavior are unchanged. See the [UI test record](docs/TESTING-UI-REFRESH.md) for dialog timing, focus/tooltip preservation, log reading behavior, cancellation and automated regression coverage.
+
+The complete Linux `scripts/verify.sh` suite passed again after the version/build updates, including PHP, Bash, Node and privileged tests in an isolated mount namespace; no missing-tool or skipped-test warnings were reported. The package contains the exact browser-tested JavaScript (`f9764e9759b3333b16f8b28462b9b373dd86aef8ba4b0910d64a28aa34be15e6`).
+
+DEV01 (Unraid 7.3.3) passed a normal guarded native plugin-manager upgrade from 0.4.5 using the exact candidate descriptor and its checksum-verified cached TXZ. All packaged runtime files matched afterwards. Settings, host identity, pairing records/keys, existing libvirt hooks and all VM states were unchanged. Native fencing remained ready. The current package was retained; the superseded cached 0.4.5 package was pruned after successful registration, with a private pre-upgrade backup retained. The existing DEV02 pairing remained healthy with 0.4.6/0.4.5 negotiating protocol 7.
+
+This release qualifies a UI-only change, not a new live migration/storage or reboot campaign. No VM was started, migrated or cloned during release testing; production hosts were not upgraded. Separate TXZ downloads, SHA-256 verification, the stable descriptor identity and the Community Apps stable `PluginURL` are retained. Both feeds graduate to this stable release; the accompanying user guide documents current behavior.
+
+```text
+9088e26e28f023f146d69b81b5dc8235b2a853971bec8cf1e7606f38240c0274  unmotion-0.4.6_stable-noarch-1.txz
+270fcbf0c8d99e2a9656cf0938db63c798500c18370903ab2ba5ede127b248f9  unmotion-0.4.6.plg
+```
+
 ## 0.4.5 stable release qualification — 2026-10-12
 
 Author: Richard Skinner.

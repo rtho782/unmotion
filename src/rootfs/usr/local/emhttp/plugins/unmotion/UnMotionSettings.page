@@ -10,7 +10,7 @@ Tabs="false"
 require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 ?>
 <link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
-<script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
+<script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/unmotion.js'),0,12)?>"></script>
 <div id="unm-flash" class="unm-flash"></div>
 <div id="unm-settings-loading" class="unm-page-loading"><span class="unm-spinner" aria-hidden="true"></span><span class="unm-loading-text">_(Loading unMotion settings…)_</span></div>
 <div id="unm-settings-content" class="unm-loading-hidden">

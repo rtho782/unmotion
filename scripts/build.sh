@@ -56,9 +56,10 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Show cached VM inventory immediately, with progressive background details, observation age and explicit refresh/error states. Cache only display data in RAM; migration and recovery checks remain fresh.
-- Share display inventory through the existing restricted paired-host interface. HTTPS peer APIs remain future work.
-- Restore the plugin during verified early boot before VM Manager starts, while retaining managed-VM safeguards for normal upgrades.
+- Open migration, Warm Move cutover and clone dialogs immediately with visible, cancellable safety checks; keep submission disabled until checks complete.
+- Preserve VM details, unchanged controls, focus and tooltips across background refreshes. Update changed cells instead of rebuilding the lists.
+- Keep log reading position and text selection; follow new output only while at the bottom. Show progress while testing a pairing.
+- Backend migration, recovery and authentication behavior is unchanged. Display observations remain non-authoritative and safety checks stay fresh.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.

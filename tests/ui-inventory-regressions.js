@@ -5,8 +5,9 @@ const source=fs.readFileSync(__dirname+'/../src/rootfs/usr/local/emhttp/plugins/
 const between=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(a)));
 let html='',status='',calls=[],callbacks={},timers=[];
 function $(selector){return {length:1,empty(){html='';return this;},html(value){html=value;return this;},append(value){html+=value;return this;},val(){return '';},text(value){status=value;return this;}};}
-const context={$,document:{hidden:false},inventoryMeta:{available:false,refreshing:true},latestVms:[],inventoryRetryTimer:null,inventoryForcePending:false,pendingPolls:{},clearTimeout(){},setTimeout(fn){timers.push(fn);return 1;},fmtWhen:x=>x,fmtRamMib:x=>String(x),esc:x=>String(x),post(action,data){calls.push({action,data});return {done(fn){callbacks.done=fn;return this;},fail(fn){callbacks.fail=fn;return this;},always(fn){callbacks.always=fn;return this;}};}};
+const context={$,document:{hidden:false},reconcileTableRows(body,value){html=value;},seedFor:()=>null,replicationFor:()=>null,recoveryPolicyForVm:()=>null,storageText:()=>'',storageDetailHtml:()=>'',flags:()=>'',inventoryMeta:{available:false,refreshing:true},latestVms:[],inventoryRetryTimer:null,inventoryForcePending:false,pendingPolls:{},clearTimeout(){},setTimeout(fn){timers.push(fn);return 1;},fmtWhen:x=>x,fmtRamMib:x=>String(x),esc:x=>String(x),post(action,data){calls.push({action,data});return {done(fn){callbacks.done=fn;return this;},fail(fn){callbacks.fail=fn;return this;},always(fn){callbacks.always=fn;return this;}};}};
 vm.createContext(context);
+vm.runInContext(between('function mergeInventoryDetails(','// Reconcile keyed rows'),context);
 vm.runInContext(between('function renderInventory()','function disableSeedActions('),context);
 vm.runInContext(between('function renderInventoryStatus()','function loadSeedsOnly()'),context);
 context.renderInventory();assert.match(html,/Loading VM inventory/);assert.doesNotMatch(html,/No VMs/);
@@ -14,6 +15,20 @@ context.loadInventory(false);assert.equal(calls[0].data.refresh,0);
 callbacks.done({vms:[{name:'Squid Proxy',uuid:'u',state:'running',vcpus:2,memoryMiB:512,autostart:'disable',detailsPending:true}],inventory:{available:true,complete:false,refreshing:true}});
 assert.match(html,/Squid Proxy/);assert.match(html,/Checking storage and guest agent/);assert.match(html,/disabled/);
 assert.equal(timers.length,1,'Partial inventory is polled promptly.');
+const full={uuid:'u',name:'Squid Proxy',state:'shut off',vcpus:1,memoryMiB:512,detailsPending:false,disks:[{path:'/pool/Squid Proxy/disk.raw'}],guestAgent:{connected:true}};
+context.latestVms=[full];
+callbacks.done({vms:[{uuid:'u',name:'Squid Proxy',state:'running',vcpus:2,detailsPending:true}],inventory:{available:true,complete:false,refreshing:true}});
+assert.doesNotMatch(html,/Checking storage and guest agent/,'Repeat scans preserve existing detail display.');
+assert.equal(context.latestVms[0].state,'running','Fresh basic state wins immediately.');
+assert.equal(context.latestVms[0].vcpus,2);assert.equal(context.latestVms[0].disks,full.disks);
+assert.equal(full.state,'shut off','Previous observations are not mutated.');
+callbacks.done({vms:[{...full,disks:[],guestAgent:{connected:false}}],inventory:{available:true,complete:true}});
+assert.equal(context.latestVms[0].disks.length,0,'Completed results can clear removed disks.');
+assert.equal(context.latestVms[0].guestAgent.connected,false,'Changed guest agent details are applied.');
+const error={uuid:'u',name:'Squid Proxy',error:'VM state unavailable'};
+assert.equal(context.mergeInventoryDetails([full],[error])[0],error,'Errors cannot be hidden by old details.');
+assert.equal(context.mergeInventoryDetails([error],[{uuid:'u',detailsPending:true}])[0].detailsPending,true,'Error rows are not treated as completed detail observations.');
+assert.equal(context.mergeInventoryDetails([full],[]).length,0,'Deleted VMs do not linger.');
 const previous=html;context.loadInventory(false);assert.equal(html,previous,'Refresh never blanks rows.');
 callbacks.fail({});assert.match(html,/Squid Proxy/);assert.match(status,/out of date/);
 context.latestVms=[];context.inventoryMeta={available:true,complete:true};context.renderInventory();assert.match(html,/No VMs found/,'Only proven empty inventory shows no VMs.');
@@ -32,4 +47,6 @@ context.post('peerHealth',{peer_id:'one'});context.post('peerHealth',{peer_id:'t
 context.post('startMigration',{});context.post('startMigration',{});assert.equal(requests.length,5,'Mutation semantics unchanged.');
 always[0]();context.post('inventory',{});assert.equal(requests.length,6,'Settled reads can refresh again.');
 assert.equal(requests[0].options.timeout,30000,'Polling has bounded requests.');
+context.post('preflight',{});assert.equal(requests.at(-1).options.timeout,120000,'Read-only preflight cannot wait indefinitely.');
+assert.equal(requests[3].options.timeout,0,'Mutation requests retain their original timeout semantics.');
 console.log('Progressive inventory, loading/empty/error states, row preservation, hidden tabs and single-flight polling passed.');

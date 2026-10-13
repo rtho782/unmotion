@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.5}"
+EXPECTED_VERSION="${1:-0.4.6}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -72,6 +72,8 @@ if command -v node >/dev/null; then
   node "$ROOT/tests/ui-warning-regressions.js"
   node "$ROOT/tests/ui-escaping-regressions.js"
   node "$ROOT/tests/ui-inventory-regressions.js"
+  node "$ROOT/tests/ui-dialog-regressions.js"
+  node "$ROOT/tests/ui-refresh-regressions.js"
 else
   echo 'WARN: Node.js unavailable; JavaScript syntax check skipped.' >&2
 fi

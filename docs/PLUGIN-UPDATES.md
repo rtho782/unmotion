@@ -20,9 +20,9 @@ Validation on 2026-10-04: 62 cleanup assertions and the complete Linux `scripts/
 
 ## Stable channel (0.4.0 onward)
 
-Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.4 uses descriptor version `2026.10.12.01-0.4.4` and package token `0.4.4_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.4. Slackware package filenames retain their independent semantic version and stable token.
+Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.6 uses descriptor version `2026.10.13.01-0.4.6` and package token `0.4.6_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.6. Slackware package filenames retain their independent semantic version and stable token.
 
-Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.12.01-0.4.4`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
+Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.13.01-0.4.6`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
 
 ## Initial feed-branch rename
 
