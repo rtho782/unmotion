@@ -72,8 +72,8 @@ PEERCFG="$BASE/peers/$PEER_ID.cfg"
 # shellcheck disable=SC1090
 source "$PEERCFG"
 REMOTE="${PEER_USER}@${PEER_HOST}"
-SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
-RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
 remote(){ local encoded; encoded="$(/usr/local/sbin/unmotion-transport encode "$@")" || return; ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$encoded"; }
 restricted_rsync_file(){
   local src="$1" dst="$2" rsync_command

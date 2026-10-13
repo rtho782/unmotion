@@ -12,7 +12,7 @@ function fail(Throwable|string $e, int $status=400): never {
     reply(['success'=>false,'error'=>$e instanceof Throwable?$e->getMessage():(string)$e],$status);
 }
 function requirePostMutation(): void {
-    if(($_SERVER['REQUEST_METHOD']??'POST')!=='POST')throw new RuntimeException('This action requires a CSRF-protected POST request.');
+    if(($_SERVER['REQUEST_METHOD']??'')!=='POST')throw new RuntimeException('This action requires a CSRF-protected POST request.');
 }
 function requireRecoveryDirection(string $expected): void {
     if(!hash_equals($expected,(string)($_POST['direction']??'')))throw new RuntimeException('Recovery source/destination direction does not match this action.');
@@ -36,16 +36,19 @@ try {
         case 'peerHealth': reply(['success'=>true,'health'=>unmPeerHealth((string)($_POST['peer_id']??''))]);
         case 'settings': reply(['success'=>true,'settings'=>unmLoadConfig(),'capabilities'=>unmCapabilities()]);
         case 'saveSettings':
+            requirePostMutation();
             $payload=json_decode((string)($_POST['payload']??''),true); if(!is_array($payload)) throw new InvalidArgumentException('Invalid settings payload.');
             $cfg=unmSaveConfig($payload); @exec('/etc/rc.d/rc.unmotion restart >/dev/null 2>&1 &');
             reply(['success'=>true,'settings'=>$cfg]);
         case 'peers': reply(['success'=>true,'peers'=>unmPublicPeers(unmPeers())]);
         case 'pairPeer':
-            $peer=unmPair(['host'=>$_POST['host']??'','port'=>$_POST['port']??22,'password'=>$_POST['password']??'']);
+            requirePostMutation();
+            $peer=unmPair(['host'=>$_POST['host']??'','port'=>$_POST['port']??22,'password'=>$_POST['password']??'','host_fingerprint'=>$_POST['host_fingerprint']??'']);
             reply(['success'=>true,'peer'=>unmPublicPeer($peer)]);
-        case 'testPeer': reply(['success'=>true,'peer'=>unmPublicPeer(unmTestPeer((string)($_POST['peer_id']??'')))]);
+        case 'testPeer': requirePostMutation(); reply(['success'=>true,'peer'=>unmPublicPeer(unmTestPeer((string)($_POST['peer_id']??'')))]);
         case 'removePeer':
         case 'breakPairing':
+            requirePostMutation();
             unmRemovePeer((string)($_POST['peer_id']??''));
             reply(['success'=>true]);
         case 'discover': reply(['success'=>true]+unmDiscover());
@@ -112,6 +115,7 @@ try {
             $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];
             reply(['success'=>true,'preflight'=>unmClonePreflight((string)($_POST['vm_id']??''),(string)($_POST['clone_name']??''),$opts)]);
         case 'startClone':
+            requirePostMutation();
             $vmId=(string)($_POST['vm_id']??'');$cloneName=unmCloneName((string)($_POST['clone_name']??''));
             $opts=json_decode((string)($_POST['options']??'{}'),true)?:[];$customization=(string)($opts['guest_customization']??'ubuntu-dhcp');
             if(!in_array($customization,['ubuntu-dhcp','none-disconnected'],true))throw new InvalidArgumentException('Invalid guest customization mode.');
@@ -134,6 +138,7 @@ try {
             $pid=launchWorker($jobId,$dir,'/usr/local/sbin/unmotion-clone-worker');$job=unmLoadJson($dir.'/job.json',$job);$job['pid']=$pid;$job['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/job.json',$job);
             reply(['success'=>true,'job'=>$job]);
         case 'startMigration':
+            requirePostMutation();
             $migrationAdmission=unmSeedAdmissionLock();
             try {
             $vmId=(string)($_POST['vm_id']??$_POST['vm']??''); $peerId=(string)($_POST['peer_id']??'');
@@ -201,6 +206,7 @@ try {
             } finally {flock($migrationAdmission,LOCK_UN);fclose($migrationAdmission);}
             reply(['success'=>true,'job'=>$latest]);
         case 'resumeJob':
+            requirePostMutation();
             $id=(string)($_POST['job_id']??''); if(!preg_match('/^[A-Za-z0-9_.-]+$/',$id)) throw new InvalidArgumentException('Invalid job id.');
             $dir=UNM_JOBS_DIR.'/'.$id; $job=unmLoadJson($dir.'/job.json'); if(!$job) throw new RuntimeException('Job not found.');
             if(($job['jobType']??'migration')==='clone')throw new RuntimeException('Local clone jobs cannot be resumed; source storage remains unchanged, so start a new clone after reviewing the log.');
@@ -217,11 +223,14 @@ try {
             if(($_POST['confirmation']??'')!=='finish-policy')throw new RuntimeException('Confirm completion of the original source policy.');
             reply(['success'=>true,'job'=>unmResolveMigration((string)($_POST['job_id']??''),true)]);
         case 'cancelJob':
+            requirePostMutation();
             reply(['success'=>true,'job'=>unmCancelJob((string)($_POST['job_id']??''))]);
         case 'removeJob':
+            requirePostMutation();
             unmRemoveJob((string)($_POST['job_id']??''));
             reply(['success'=>true]);
         case 'clearJobs':
+            requirePostMutation();
             reply(['success'=>true,'removed'=>unmClearJobHistory()]);
         case 'jobs': reply(['success'=>true,'jobs'=>unmJobs()]);
         case 'job':

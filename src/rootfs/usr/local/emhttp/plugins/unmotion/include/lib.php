@@ -1,8 +1,10 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.6';
+const UNM_VERSION = '0.4.7';
 require_once __DIR__.'/ssh-keys.php';
+require_once __DIR__.'/pairing-trust.php';
+require_once __DIR__.'/migration-storage.php';
 require_once __DIR__.'/transport.php';
 require_once __DIR__.'/preflight-policy.php';
 require_once __DIR__.'/migration-concurrency.php';
@@ -441,7 +443,7 @@ function unmDatasetUsedByOtherVm(string $datasetMountpoint,string $excludeUuid,?
     foreach($uuids as $uuid){
         $uuid=trim($uuid); if($uuid===''||strcasecmp($uuid,$excludeUuid)===0)continue;
         if($displayXmlIndex!==null){$xml=$displayXmlIndex[$uuid];if(!is_string($xml))return true;}
-        else try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){continue;}
+        else try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){return true;}
         if(!preg_match_all('~<disk\b[^>]*\bdevice=(["\'])disk\1[^>]*>.*?</disk>~s',$xml,$blocks))continue;
         foreach($blocks[0] as $block){
             if(!preg_match('~<source\b[^>]*\bfile=(["\'])(.*?)\1~s',$block,$m))continue;
@@ -567,6 +569,8 @@ function unmClassifyVmStorage(array $vm,bool $checkOtherVms=true,?array $display
         $common=rtrim(unmCommonDirectory($paths),'/');
         $dedicated=$mount!==''&&$common!==''&&$mount===$common;
         if($dedicated&&$checkOtherVms)$dedicated=!unmDatasetUsedByOtherVm($mount,(string)($vm['uuid']??''),$displayXmlIndex);
+        // A mountpoint/name match is not ownership of its files or descendants.
+        if($dedicated)$dedicated=unmReplicationDatasetIsolationErrors($dataset,$mount,$paths,$vm)===[];
         $encryption=(string)($info['encryption']??'off');
         $nativeEligible=$dedicated&&$encryption==='off';
         foreach($indexes as $i){
@@ -835,7 +839,7 @@ function unmCapabilities(): array {
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),'inventoryViewVersion'=>1,
-        'features'=>['restrictedSshTransport'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
+        'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
 }
 
@@ -1070,13 +1074,15 @@ function unmNewDomainMacs(int $count): array {
 
 function unmCloneDatasetIsolated(string $dataset,string $mountpoint,array $diskPaths): bool {
     if($dataset===''||$mountpoint===''||!str_starts_with($mountpoint,'/mnt/'))return false;
-    $children=unmRun(['zfs','list','-H','-r','-d','1','-o','name',$dataset],null,20);
+    if(realpath($mountpoint)!==$mountpoint||!is_dir($mountpoint)||is_link($mountpoint)||!$diskPaths)return false;
+    try{unmHostStateNoNestedMounts($mountpoint);}catch(Throwable $e){return false;}
+    $children=unmRun(['zfs','list','-H','-r','-d','1','-t','filesystem,volume','-o','name',$dataset],null,20);
     if($children['code']!==0)return false;
     $names=array_values(array_filter(preg_split('/\R/',trim($children['stdout']))?:[]));
     if(count($names)!==1||$names[0]!==$dataset)return false;
     $allowed=[];$parents=[];
     foreach($diskPaths as $path){
-        $real=realpath((string)$path);if($real===false||!is_file($real)||is_link($real)||!str_starts_with($real.'/',rtrim($mountpoint,'/').'/'))return false;
+        $real=realpath((string)$path);if($real===false||$real!==$path||!is_file($real)||is_link($path)||(int)(stat($real)['nlink']??0)!==1||!str_starts_with($real.'/',rtrim($mountpoint,'/').'/'))return false;
         $allowed[$real]=true;$parent=dirname($real);
         while($parent!==$mountpoint&&str_starts_with($parent.'/',rtrim($mountpoint,'/').'/')){$parents[$parent]=true;$next=dirname($parent);if($next===$parent)break;$parent=$next;}
     }
@@ -1210,6 +1216,7 @@ function unmSshBase(array $peer): string {
     $parts=['ssh','-T','-p',(string)($peer['port']??22),'-i',$peer['keyPath'],
         '-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6',
         '-o','UserKnownHostsFile='.$peer['knownHosts'],'-o','StrictHostKeyChecking=yes',
+        '-o','GlobalKnownHostsFile=/dev/null','-o','UpdateHostKeys=no',
         ($peer['username']??'root').'@'.$peer['host']];
     return implode(' ',array_map('escapeshellarg',$parts));
 }
@@ -1375,8 +1382,9 @@ function unmPeerIdForAddress(string $host, int $port): string {
     return substr(hash('sha256', strtolower(trim($host) . ':' . $port . ':root')), 0, 24);
 }
 
-function unmCreatePeerMaterial(string $host, int $port): array {
+function unmCreatePeerMaterial(string $host, int $port, string $verifiedHostKey): array {
     unmAssertRemotePeerHost($host);
+    $verifiedHostKey=unmSshHostPublicKey($verifiedHostKey);
     $id = unmPeerIdForAddress($host, $port);
     if (is_file(unmPeerPath($id))) throw new RuntimeException('A pairing already exists for this address. Test it, or explicitly remove it before pairing again.');
     $dir = UNM_PEERS_DIR . '/' . $id;
@@ -1389,12 +1397,8 @@ function unmCreatePeerMaterial(string $host, int $port): array {
     }
     chmod($key, 0600);
     chmod($key . '.pub', 0644);
-    $scan = unmRun('ssh-keyscan -T 10 -p ' . $port . ' ' . escapeshellarg($host), null, 20);
-    if ($scan['code'] !== 0 || trim($scan['stdout']) === '') {
-        throw new RuntimeException('Unable to connect to SSH on the peer. Confirm SSH is enabled under Settings → Management Access and that the SSH port is correct.');
-    }
-    file_put_contents($known, $scan['stdout'], LOCK_EX);
-    chmod($known, 0600);
+    $knownContents='['.$host.']:'.$port.' '.$verifiedHostKey."\n".($port===22?$host.' '.$verifiedHostKey."\n":'');
+    if(file_put_contents($known,$knownContents,LOCK_EX)!==strlen($knownContents)||!chmod($known,0600)||file_get_contents($known)!==$knownContents)throw new RuntimeException('Unable to store the verified peer SSH host key. No password was sent.');
     return [
         'id' => $id,
         'name' => $host,
@@ -1403,7 +1407,7 @@ function unmCreatePeerMaterial(string $host, int $port): array {
         'username' => 'root',
         'keyPath' => $key,
         'knownHosts' => $known,
-        'fingerprint' => trim(unmRun(['ssh-keygen','-lf',$known], null, 10)['stdout']),
+        'fingerprint' => unmSshHostFingerprint($verifiedHostKey),
     ];
 }
 
@@ -1456,14 +1460,18 @@ function unmPrepareReciprocalPeer(array $request): array {
     $incomingPublicKey = unmValidatePublicKey((string)($request['incomingPublicKey'] ?? ''));
     $reciprocalPeerId = trim((string)($request['reciprocalPeerId'] ?? ''));
     $caps = is_array($request['capabilities'] ?? null) ? $request['capabilities'] : [];
+    // Delivered through the initiating connection whose host key was verified
+    // independently. Never discover the return key from an unauthenticated scan.
     if ($host === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $host)) throw new InvalidArgumentException('Invalid reciprocal peer address.');
     if ($port < 1 || $port > 65535) throw new InvalidArgumentException('Invalid reciprocal SSH port.');
     if ($hostId === '' || $hostId === unmHostId()) throw new InvalidArgumentException('Invalid reciprocal host identity.');
     if (($caps['protocolVersion'] ?? null) !== UNM_PROTOCOL || empty($caps['features']['restrictedSshTransport'])) throw new RuntimeException('Reciprocal pairing requires protocol 7 and restricted SSH on both hosts.');
+    if(empty($caps['features']['verifiedHostKeyPairing'])||empty($request['sshHostKey']))throw new RuntimeException('New pairing requires unMotion 0.4.7 or later on both hosts. Existing pairings can be retained.');
+    $hostKey=unmSshHostPublicKey((string)$request['sshHostKey']);
     unmAssertRemotePeerHost($host);
     unmAssertPairIdentityAvailable(unmPeers(),$host,$port,$hostId);
+    $peer = unmCreatePeerMaterial($host, $port, $hostKey);
     unmAppendAuthorizedKey($incomingPublicKey);
-    $peer = unmCreatePeerMaterial($host, $port);
     $peer['name'] = $name !== '' ? $name : $host;
     $peer['hostId'] = $hostId;
     $peer['pluginVersion'] = (string)($request['pluginVersion'] ?? '');
@@ -1498,6 +1506,7 @@ function unmPair(array $input): array {
     $host = trim((string)($input['host'] ?? ''));
     $port = (int)($input['port'] ?? 22);
     $password = (string)($input['password'] ?? '');
+    $expectedFingerprint=trim((string)($input['host_fingerprint']??''));
     if ($host === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $host)) throw new InvalidArgumentException('Invalid hostname or IPv4 address. IPv6 peers are not supported in 0.2.');
     unmAssertRemotePeerHost($host);
     if ($port < 1 || $port > 65535) throw new InvalidArgumentException('Invalid SSH port.');
@@ -1507,7 +1516,10 @@ function unmPair(array $input): array {
         throw new RuntimeException('Local SSH must be enabled and listening before two-way pairing. Open Settings → Management Access and enable SSH.');
     }
 
-    $peer = unmCreatePeerMaterial($host, $port);
+    $hostKey=unmScanPeerHostKey($host,$port);
+    unmAssertSshHostFingerprint($hostKey,$expectedFingerprint);
+    $localHostKey=unmLocalSshHostPublicKey();
+    $peer = unmCreatePeerMaterial($host, $port, $hostKey);
     $pub = trim((string)file_get_contents($peer['keyPath'] . '.pub'));
     $passFile = tempnam('/tmp', 'unm-pass-');
     $askFile = tempnam('/tmp', 'unm-ask-');
@@ -1522,6 +1534,7 @@ function unmPair(array $input): array {
         $remoteCmd = '/usr/local/sbin/unmotion-agent pairing-bootstrap';
         $ssh = 'setsid -w env DISPLAY=:0 SSH_ASKPASS_REQUIRE=force SSH_ASKPASS=' . escapeshellarg($askFile) . ' ssh -T -p ' . $port .
             ' -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive -o NumberOfPasswordPrompts=1' .
+            ' -o GlobalKnownHostsFile=/dev/null -o HostKeyAlgorithms=ssh-ed25519 -o UpdateHostKeys=no' .
             ' -o UserKnownHostsFile=' . escapeshellarg($peer['knownHosts']) . ' -o StrictHostKeyChecking=yes ' . escapeshellarg('root@' . $host) . ' ' . escapeshellarg($remoteCmd);
         $r = unmRun($ssh, $pub, 40);
     } finally {
@@ -1538,6 +1551,7 @@ function unmPair(array $input): array {
         if ($test['code'] !== 0) throw new RuntimeException('Key installed, but the remote unMotion agent could not be reached. Install a protocol-compatible unMotion release on the peer first. ' . trim($test['stderr']));
         $caps = json_decode($test['stdout'], true);
         if (!is_array($caps) || ($caps['protocolVersion'] ?? null) !== UNM_PROTOCOL) throw new RuntimeException('Remote agent returned incompatible capabilities.');
+        if(empty($caps['features']['verifiedHostKeyPairing']))throw new RuntimeException('New pairing requires unMotion 0.4.7 or later on both hosts. Upgrade the peer; existing pairings remain compatible.');
         if (($caps['hostId'] ?? '') === unmHostId()) throw new RuntimeException('The discovered host is this server, not a peer.');
 
         $peer['name'] = $caps['hostname'] ?? $host;
@@ -1557,6 +1571,7 @@ function unmPair(array $input): array {
             'capabilities' => $localCaps,
             'reciprocalPeerId' => $peer['id'],
             'incomingPublicKey' => $pub,
+            'sshHostKey' => $localHostKey,
         ];
         $encoded = base64_encode(json_encode($prepareRequest, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         $prepared = unmRemote($peer, '/usr/local/sbin/unmotion-agent reciprocal-prepare ' . escapeshellarg($encoded), 45);
@@ -4066,10 +4081,13 @@ function unmFinalizeSourceCleanupLocked(string $jobId, string $destinationHostId
     if(($marker['state']??'')==='source_deleted'&&($completedJob['state']??'')==='COMPLETE_CLEANED'&&($completedJob['sourceCleanup']['state']??'')==='complete'&&($completedJob['request']['VM_UUID']??'')===$uuid){
         return ['success'=>true,'removed'=>(array)($completedJob['sourceCleanup']['removed']??[]),'alreadyCompleted'=>true];
     }
-    if(is_file($jobDir.'/manual-resolution.json')){
-        $resolutionJob=unmLoadJson($jobDir.'/job.json');
-        unmResolutionDeleteManifest($jobDir,$resolutionJob,(string)file_get_contents($jobDir.'/source.xml'),$destinationHostId);
-    }
+    // Normal and manually resolved jobs require the same fresh ownership proof.
+    $resolutionJob=unmLoadJson($jobDir.'/job.json');
+    $sourceXml=@file_get_contents($jobDir.'/source.xml');
+    if($sourceXml===false)throw new RuntimeException('Original source XML is unavailable; source data was retained.');
+    if(glob($jobDir.'/source-readonly-*.json'))throw new RuntimeException('An interrupted cleanup left source write-protection evidence. Inspect source-readonly records and the retained dataset before retrying.');
+    unmResolutionDeleteManifest($jobDir,$resolutionJob,$sourceXml,$destinationHostId);
+    foreach((array)($manifest['storage']??[]) as $item)if(in_array($item['kind']??'',['dataset','zvol'],true))unmMigrationSourceSnapshots((string)$item['path'],$jobId);
     $marker = unmLoadJson(UNM_OWNERSHIP_DIR . '/' . $uuid . '.json');
     if (($marker['ownerHostId'] ?? '') !== $destinationHostId || !in_array((string)($marker['state'] ?? ''), ['pending_cleanup','migrated_out'], true)) {
         throw new RuntimeException('Ownership marker does not authorise source deletion.');
@@ -4099,13 +4117,21 @@ function unmFinalizeSourceCleanupLocked(string $jobId, string $destinationHostId
         if ($kind === 'zvol') {
             if ($path === '' || str_contains($path, '@') || str_contains($path, '..')) throw new RuntimeException('Unsafe zvol in cleanup manifest.');
             if (unmRun(['zfs','list','-H','-o','name','-t','volume',$path], null, 15)['code'] === 0) {
-                $r = unmRun(['zfs','destroy','-r',$path], null, 180);
-                if ($r['code'] !== 0) throw new RuntimeException('Unable to destroy source zvol ' . $path . ': ' . trim($r['stderr']));
+                unmDestroyMigrationSourceObject($path,$jobId);
                 $removed[] = $path;
             }
         } elseif ($kind === 'dataset') {
             if ($path === '' || str_contains($path,'@') || str_contains($path,'..')) throw new RuntimeException('Unsafe dataset in cleanup manifest.');
-            if (unmRun(['zfs','list','-H','-o','name','-t','filesystem',$path],null,15)['code']===0) { $r=unmRun(['zfs','destroy','-r',$path],null,180); if($r['code']!==0)throw new RuntimeException('Unable to destroy source dataset '.$path.': '.trim($r['stderr'])); $removed[]=$path; }
+            if (unmRun(['zfs','list','-H','-o','name','-t','filesystem',$path],null,15)['code']===0) {
+                $readonlyJournal=$jobDir.'/source-readonly-'.hash('sha256',$path).'.json';
+                $frozen=unmMigrationFreezeSourceDataset($path,$readonlyJournal);$deleted=false;
+                try{
+                    unmMigrationAssertSourceDataset($path,$sourceXml,$uuid);
+                    unmDestroyMigrationSourceObject($path,$jobId);
+                    $deleted=true;
+                    $removed[]=$path;
+                }finally{if(!$deleted)unmMigrationRestoreSourceDataset($path,$frozen);if($frozen)@unlink($readonlyJournal);}
+            }
         } elseif ($kind === 'image') {
             if (!str_starts_with($path, '/mnt/') || str_contains($path, '/../') || is_link($path)) throw new RuntimeException('Unsafe image path in cleanup manifest: ' . $path);
             if (file_exists($path)) {

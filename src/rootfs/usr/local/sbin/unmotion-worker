@@ -65,7 +65,7 @@ if [[ ! -e "$JOBDIR/source-ownership-before.json" && -f "$BASE/ownership/$VM_UUI
   chmod 600 "$JOBDIR/source-ownership-before.json"
 fi
 SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \
-  -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
 REMOTE="${PEER_USER}@${PEER_HOST}"
 DEST_STARTED=0
 DEST_START_ATTEMPTED=0
@@ -164,7 +164,7 @@ trap on_error ERR
 trap on_exit EXIT
 trap 'trap - ERR INT TERM; finish_cancel' INT TERM
 debug "Worker start: job=$JOB_ID vm=$VM_UUID peer=$REMOTE mode=${MIGRATION_MODE:-cold} debug=$DEBUG_LOGGING"
-debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes $REMOTE"
+debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no $REMOTE"
 
 require(){ command -v "$1" >/dev/null 2>&1 || { log "Missing command: $1"; return 1; }; }
 for c in virsh ssh rsync tar php flock gzip base64 stat unmotion-inspect; do require "$c"; done
@@ -449,6 +449,7 @@ virsh dumpxml "$VM_REF" --inactive >"$SOURCE_XML";/usr/local/sbin/unmotion-trans
 /usr/local/sbin/unmotion-firmware "$SOURCE_XML" "$PEER_ID" "$MAP_TSV" "$REMOTE_CAPS" 2>>"$LOG" || { log 'Firmware changed before cutover.'; exit 23; }
 /usr/local/sbin/unmotion-migration-nvram "$SOURCE_XML" "$DISK_MANIFEST" "$MAP_TSV" "$REMOTE_CAPS" "$NVRAM_PLAN" 2>>"$LOG" || { log 'UEFI NVRAM changed or failed final validation.'; exit 30; }
 ZFS_SOURCES=("${ZVOLS[@]}" "${DATASET_SRCS[@]}")
+/usr/local/sbin/unmotion-migration-storage "$DISK_MANIFEST" "$SOURCE_XML" 2>>"$LOG" || { log 'Source dataset isolation changed before transfer; no native snapshot was sent.'; exit 30; }
 if ((${#ZFS_SOURCES[@]}>0));then
   state SNAPSHOTTING 12 'Creating atomic final ZFS snapshot'
   snaps=();for src in "${ZFS_SOURCES[@]}";do snaps+=("$src@$SNAPSHOT_NAME");done
@@ -549,7 +550,7 @@ transfer_zfs_object(){
   progress_update TRANSFERRING "$base" "$span" "$label" 100 'snapshot GUID verified'
 }
 
-RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
 transfer_file(){
   local src="$1" dst="$2" base="$3" span="$4" label="$5" parent rc src_size dst_size rsync_command
   parent="${dst%/*}"

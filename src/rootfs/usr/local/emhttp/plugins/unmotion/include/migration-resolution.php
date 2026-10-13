@@ -129,7 +129,8 @@ function unmResolutionDeleteManifest(string $dir,array $job,string $expected,str
     $manifest=unmLoadJson($dir.'/source-cleanup.json');$uuid=$job['request']['VM_UUID'];
     foreach(['jobId'=>$job['id']??basename($dir),'vmUuid'=>$uuid,'sourceHostId'=>unmHostId(),'destinationHostId'=>$destinationHost,'policy'=>'delete'] as $key=>$value)
         if(($manifest[$key]??null)!==$value)throw new RuntimeException('A verified source cleanup manifest is unavailable. Legacy jobs cannot safely reconstruct deletion; source data will be retained.');
-    $doc=new DOMDocument();$doc->loadXML($expected,LIBXML_NONET);$xp=new DOMXPath($doc);
+    $doc=new DOMDocument();if(!@$doc->loadXML($expected,LIBXML_NONET)||$doc->doctype)throw new RuntimeException('Original cleanup XML is invalid.');$xp=new DOMXPath($doc);
+    if(strcasecmp(trim($xp->evaluate('string(/domain/uuid)')),$uuid)!==0)throw new RuntimeException('Original cleanup XML belongs to a different VM.');
     $nvram=trim($xp->evaluate('string(/domain/os/nvram)'));
     if(($manifest['nvramPath']??'')!==$nvram)throw new RuntimeException('Cleanup NVRAM differs from the original VM.');
     $tpm=unmTpmStatePath($uuid,$expected,false);
@@ -169,8 +170,9 @@ function unmResolutionDeleteManifest(string $dir,array $job,string $expected,str
         }elseif($kind==='dataset'){
             $r=unmRun(['zfs','get','-H','-o','value','mountpoint',$path],null,15);$mount=trim($r['stdout']);
             if($r['code']!==0||!str_starts_with($mount,'/mnt/'))throw new RuntimeException('Cleanup dataset mountpoint is unavailable.');
-            $members=array_values(array_filter($files,static fn($file)=>str_starts_with($file,rtrim($mount,'/').'/')));
-            $allowed=$members;if($nvram!==''&&str_starts_with($nvram,rtrim($mount,'/').'/'))$allowed[]=$nvram;
+            $members=[];$allowed=[];
+            foreach($files as $file){$physical=(string)(unmResolveUserSharePath($file)['physicalPath']??'');if($physical!==''&&str_starts_with($physical,rtrim($mount,'/').'/')){$members[]=$file;$allowed[]=$physical;}}
+            if($nvram!==''&&str_starts_with($nvram,rtrim($mount,'/').'/'))$allowed[]=$nvram;
             if(!$members||unmDatasetUsedByOtherVm($mount,$uuid)||!unmCloneDatasetIsolated($path,$mount,$allowed))throw new RuntimeException('Cleanup dataset no longer has provably isolated VM contents.');
             foreach($members as $file)$covered[]='file:'.$file;
         }else throw new RuntimeException('Cleanup storage differs from the original VM disks.');

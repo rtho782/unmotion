@@ -19,7 +19,7 @@ if(preg_match_all('~<disk\b[^>]*>.*?</disk>~s',$xml,$blocks))foreach($blocks[0] 
     if($kind==='block'&&str_starts_with($source,'/dev/zvol/')){$out['zvols'][]=substr($source,strlen('/dev/zvol/'));$disks[]=['type'=>'zvol','source'=>$source,'format'=>$format];}
     elseif($kind==='file'){$out['files'][]=$source;$disks[]=['type'=>'file','source'=>$source,'format'=>$format];}
 }
-$vm=unmClassifyVmStorage(['name'=>$out['name'],'uuid'=>$out['uuid'],'disks'=>$disks,'pci'=>[]],true);
+$vm=unmClassifyVmStorage(['name'=>$out['name'],'uuid'=>$out['uuid'],'disks'=>$disks,'pci'=>[],'nvram'=>unmMigrationNvramXml($xml)],true);
 $groups=[];
 foreach($vm['disks'] as $disk){
     if(($disk['type']??'')!=='file')continue;

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.7 — 2026-10-13
+
+- Require an independently obtained Ed25519 SHA-256 SSH host fingerprint before sending the remote root password during new pairing. Pin only that verified host key; exchange the reciprocal host key through the authenticated initiating connection. New pairings require 0.4.7 or later on both hosts. Existing protocol-7 pairings and pins are retained.
+- Prove dataset isolation before selecting native image transfers and recheck it before migration/preparation snapshots. Child datasets, unrelated entries, symbolic links, hard links, nested mounts and uncertain inventory select sparse transfer of exact VM files or block an already admitted native plan.
+- Apply original-VM ownership checks to normal source cleanup as well as manual resolution. Replace recursive source ZFS destruction with exact object/snapshot removal. Foreign snapshots, holds and descendants block cleanup before source unregistration; recheck filesystem contents under temporary read-only protection before destruction. Record the original property and mount state, retry exact-object busy failures within a bound, and restore retained datasets on failure.
+- Require POST for job-history deletion and other persistent web mutations that previously relied only on POST parameters; keep Unraid's CSRF validation in place.
+- Keep wire protocol 7 and recovery schema/authority unchanged. A 0.4.7 source supplies the new storage checks when using an existing older protocol-7 pairing; an older source still uses its installed cleanup behavior. Upgrade both peers for the complete protections.
+
 ## 0.4.6 — 2026-10-13
 
 - Open cold-migration, Warm Move cutover and local-clone dialogs immediately with visible, cancellable safety checks. Keep submission disabled until checks finish, offer retries after failures, and discard cancelled or superseded responses.

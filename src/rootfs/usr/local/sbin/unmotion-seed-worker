@@ -34,9 +34,9 @@ if ! /usr/local/sbin/unmotion-agent recovery-legacy-interlock "$VM_UUID" 'Warm M
   /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 'Recovery authority blocks preparing this VM'
   exit 6
 fi
-SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes)
+SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
 REMOTE="${PEER_USER}@${PEER_HOST}"
-RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes"
+RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
 state(){ /usr/local/sbin/unmotion-seed-state "$SEED_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
 sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
@@ -94,7 +94,7 @@ thaw(){
 }
 trap 'rc=$?; thaw; if ((rc!=0&&FAIL_RECORDED==0)); then /usr/local/sbin/unmotion-seed-state "$SEED_ID" FAILED 0 "Seed operation failed; see log" || true; fi' EXIT
 debug "Worker start: seed=$SEED_ID action=${ACTION:-prepare} vm=${VM_UUID:-unknown} peer=$REMOTE debug=$DEBUG_LOGGING"
-debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes $REMOTE"
+debug "SSH: ssh -T -p $PEER_PORT -i <peer-key> -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile=<known-hosts> -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no $REMOTE"
 
 CAPS="$DIR/remote-capabilities.json"
 VM_JSON="$DIR/vm.json"
@@ -251,6 +251,7 @@ if (( ${#ZFS_SOURCES[@]} > 0 )); then
         thaw
       fi
     fi
+    php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$vm=unmLoadJson($argv[1]);$xml=unmDomainXml($vm["uuid"],true);$seen=[];foreach($vm["disks"]??[] as $disk)if(($disk["transferClass"]??"")==="zfs-dataset-image"&&!isset($seen[$disk["zfsDataset"]])){$seen[$disk["zfsDataset"]]=true;unmMigrationAssertSourceDataset($disk["zfsDataset"],$xml,$vm["uuid"]);}' "$VM_JSON" >>"$LOG" 2>&1 || fail 'Source dataset isolation changed before preparation; no new native snapshot was sent.' 18
     snaps=(); for src in "${ZFS_SOURCES[@]}"; do snaps+=("$src@$NEW_SNAPSHOT"); done
     debug_cmd zfs snapshot "${snaps[@]}"
     zfs snapshot "${snaps[@]}"

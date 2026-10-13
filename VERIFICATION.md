@@ -1,5 +1,33 @@
 # Verification
 
+## 0.4.7 release qualification — 2026-10-13
+
+Author: Richard Skinner
+
+Application version `0.4.7`, fixed installer version `2026.10.13.02-0.4.7`, protocol 7. This release addresses initial SSH trust, VM dataset isolation/source cleanup and web mutation method enforcement. Release documentation and the companion guide were prepared against the current public `main` branches without changing the stable Apps installer URL. Publication checks are recorded separately after the assets and feeds are available.
+
+The complete `scripts/verify.sh` suite passed on both disposable Unraid hosts with PHP, Bash and Node available, including native installer fixtures and privileged isolated tests. The process-service test now overrides Unraid's web prepend only inside its private test namespace; the installed web CSRF checks are unchanged. New regressions cover fingerprint rejection before password authentication, authenticated reciprocal pins, older-peer rejection with upgrade guidance, preservation of existing pairings, shared dataset classification, ownership changes, exact snapshot/hold checks, bounded busy retries and restoration of readonly/mount state. All 33 tested persistent mutation routes reject GET, HEAD, OPTIONS and a missing method; a valid POST reaches the history handler in the isolated endpoint test. Installed GET `clearJobs` also rejected the request and preserved the lab job records.
+
+The owner authorized lab updates and destructive disposable fixtures. Existing outer snapshots were verified for all four DEV01/DEV02 storage disks before testing. Normal guarded upgrades from DEV01 0.4.6 and DEV02 0.4.5 preserved settings, host identities, SSH keys/pins and the existing Unraid hook. Existing 0.4.7/0.4.5 protocol-7 pairing passed before DEV02 was updated. Recovery-protected policy enabled states were preserved; the normal upgrade guard stopped verified idle scheduling services rather than changing recovery authority.
+
+Live checks:
+
+- Fresh reciprocal pairing passed using separate port-22247 SSH listeners with private mount namespaces, plugin records and authorized-key files. A wrong independently supplied fingerprint was rejected before password authentication. The successful exchange pinned the return key through the authenticated channel and installed restricted forced-command client keys. Existing installed pairing records were not replaced.
+- `Security047 Squid Proxy Shared` contained an unrelated child dataset and ordinary file. It used sparse file transfer, copied neither unrelated item, and removed only its declared source disk after 300 seconds of destination runtime. Both unrelated items remained unchanged.
+- `Security047 Squid Proxy Native` used native ZFS transfer. Its exact source dataset was removed without recursive destruction. The first candidate encountered a busy dataset held by the pairing test's private namespace; this exposed the need to restore mount state after a failed destroy. The revised implementation adds that restoration and bounded exact-object retries. Cleanup succeeded after releasing the test namespace and retrying the authenticated callback with completed validation evidence.
+- `Security047 Squid Proxy Late` acquired unrelated contents and a child dataset after transfer. Cleanup was refused after the normal validation period, before source unregistration; its stopped definition, disk and unrelated data remained intact. Its exact test watcher was stopped after observing the refusal.
+- `Security047 Squid Proxy Warm` prepared natively while its blank guest remained running. Cold preflight rejected that running source. The lab stopped this blank guest before cutover, wrote a final disk delta, then performed the prepared cutover and normal delayed source cleanup. Destination SHA-256 matched the saved final source hash: `26878c365fb5ed49076e66c7933ce01fa6c417a5acc8cb9afc8bf6188f82f068`. This test did not exercise graceful shutdown of an operating-system guest.
+- Live held and foreign snapshots blocked source removal without deleting either snapshot. Exact job snapshot/zvol cleanup succeeded only after the test explicitly released/removed its own blockers. Both hosts passed opt-in native typed filesystem/volume receive, wrong-kind and compound-stream rejection, interrupted receive/resume, incremental GUID and explicit dedup/receive-property tests.
+
+Existing automated coverage for discovery decoding/local-host refusal, reciprocal key restrictions, CSRF boundary, cold power state, destination conflicts, sparse transfer, ISO handling, UEFI/TPM, progress stdout isolation and recovery fencing also passed. A stale-pin regression additionally confirms that a failed verified-key write stops pairing before password authentication; the stored pin must match a full write and read-back check. No new browser UI campaign, real network interception attack or power-loss recovery campaign was performed. All lab guests were left stopped, temporary pairing listeners were removed, existing policy enabled states were unchanged and fixture storage/logs were retained for inspection. Production plugin installations were not changed.
+
+Final tested artifacts:
+
+```text
+c840d78fb95640b379bc963213fbe028cd7bf40a33be2f5f4e6f32371df8cc6a  unmotion-0.4.7_stable-noarch-1.txz
+05634976f1134bb3fa5158ca5775641b153b0bcbcdbc54fc386d9d34bb384f47  unmotion-0.4.7.plg
+```
+
 ## 0.4.6 stable release qualification — 2026-10-13
 
 Author: Richard Skinner

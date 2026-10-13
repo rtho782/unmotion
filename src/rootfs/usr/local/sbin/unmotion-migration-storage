@@ -1,0 +1,10 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try {
+    if($argc!==3)throw new InvalidArgumentException('Usage: unmotion-migration-storage manifest.json source.xml');
+    unmMigrationValidateNativePlan($argv[1],$argv[2]);
+} catch(Throwable $e) {
+    fwrite(STDERR,$e->getMessage()."\n");exit(1);
+}

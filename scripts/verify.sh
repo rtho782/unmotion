@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.6}"
+EXPECTED_VERSION="${1:-0.4.7}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -30,6 +30,9 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/package-cache-regressions.php"
   php "$ROOT/tests/release-feed-regressions.php"
   php "$ROOT/tests/ssh-keys-regressions.php"
+  php "$ROOT/tests/pairing-trust-regressions.php"
+  php "$ROOT/tests/api-method-regressions.php"
+  php "$ROOT/tests/migration-storage-regressions.php"
   php "$ROOT/tests/transport-test.php"
   if [[ $(id -u) == 0 ]] && command -v rsync >/dev/null; then
     TRANSPORT_TEST_DIR=$(mktemp -d /tmp/unmotion-transport-test.XXXXXX)

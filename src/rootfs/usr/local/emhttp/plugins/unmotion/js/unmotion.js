@@ -1462,7 +1462,7 @@ function discover() {
 function pair() {
     var stopBusy=setButtonBusy($('#unm-pair'),'Pairing');
     post('pairPeer', {
-      host:$('#peer-host').val(),port:$('#peer-port').val(),password:$('#peer-password').val()
+      host:$('#peer-host').val(),port:$('#peer-port').val(),password:$('#peer-password').val(),host_fingerprint:$('#peer-fingerprint').val()
     }
     ).done(function(r) {
       $('#peer-password').val('');

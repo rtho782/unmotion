@@ -1,12 +1,14 @@
 # unMotion
 
-Stable release: **[0.4.6](https://github.com/rtho782/unmotion/releases/tag/0.4.6)**. Both update feeds offer this stable release; installing it selects future stable updates.
+Stable release: **[0.4.7](https://github.com/rtho782/unmotion/releases/tag/0.4.7)**. Both update feeds offer this stable release; installing it selects future stable updates.
+
+New pairings require independently verified SSH host fingerprints and 0.4.7 or later on both hosts. Dataset isolation checks and exact source cleanup protect unrelated storage; persistent web actions require CSRF-protected POST. Upgrade both peers for the complete protections. See [pairing, storage safety and upgrade guidance](docs/SECURITY-047.md).
 
 Migration/cutover and clone setup opens immediately while fresh checks run, with submission disabled until those checks finish. Background refreshes preserve unchanged details, controls and focus. Logs follow new output while at the bottom and preserve your position when you scroll back.
 
 VM inventory loads progressively from a private RAM cache and shows its observation time. Existing rows remain visible during refresh; **Refresh** requests a new observation. Display data can be briefly out of date: migration, clone and recovery actions still perform fresh safety checks. Paired peers can request the cached display view through the existing restricted SSH interface; no HTTPS peer API is included.
 
-Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. 0.4.2 through 0.4.6 remain compatible. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [security and upgrade guidance](docs/SECURITY-042.md) before updating.
+Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. Existing pairings with 0.4.2 through 0.4.6 remain compatible. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [protocol upgrade guidance](docs/SECURITY-042.md) before updating.
 
 Includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
 
@@ -60,9 +62,15 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The application reports **0.4.6**. The Plugins tab reports **2026.10.13.01-0.4.6**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+The application reports **0.4.7**. The Plugins tab reports **2026.10.13.02-0.4.7**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
 
-Pair hosts from **Settings → unMotion**, then test connectivity before migrating a VM.
+Pair hosts from **Settings → unMotion**, then test connectivity before migrating a VM. Obtain the peer's Ed25519 fingerprint from its console or an already verified connection:
+
+```bash
+ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
+```
+
+Enter the `SHA256:…` value in **Peer Ed25519 fingerprint** with the peer address, SSH port and root password. Obtain this value independently of the new connection; both hosts need 0.4.7 or later for new pairing. Existing pins are preserved, but an upgrade does not independently authenticate an earlier pairing.
 
 Automatic discovery uses Avahi/mDNS on the local network. Enable discovery on both hosts and allow multicast traffic; if a host is not listed, you can pair using its address instead. unMotion makes its public service advertisement readable by Avahi on startup while keeping pairing keys and private settings restricted.
 
