@@ -2,20 +2,21 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.13.01-0.4.6">
+<!ENTITY version "2026.10.13.02-0.4.7">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.6_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.4.7_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.4.6
-- Open migration, Warm Move cutover and clone dialogs immediately with visible, cancellable safety checks; keep submission disabled until checks complete.
-- Preserve VM details, unchanged controls, focus and tooltips across background refreshes. Update changed cells instead of rebuilding the lists.
-- Keep log reading position and text selection; follow new output only while at the bottom. Show progress while testing a pairing.
-- Backend migration, recovery and authentication behavior is unchanged. Display observations remain non-authoritative and safety checks stay fresh.
+### unMotion 0.4.7
+- Verify the peer Ed25519 SSH host fingerprint against a value obtained from its console or an already trusted connection before password authentication. Authenticate the reciprocal host key through that verified pairing channel.
+- New pairing requires 0.4.7 or later on both hosts. Existing protocol-7 pairings and pinned keys are retained; no wire-protocol change.
+- Treat datasets containing child datasets, unrelated entries, links or uncertain ownership as shared storage and transfer exact VM files with sparse rsync.
+- Revalidate native dataset isolation before snapshots and source cleanup. Delete only exact source objects and this migration's snapshot; foreign snapshots, holds and child datasets block cleanup. Failed cleanup retains remaining data for inspection.
+- Require CSRF-protected POST for job-history deletion and every persistent web mutation, preserving Unraid's token checks.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.6; the Plugins tab shows fixed installer version 2026.10.13.01-0.4.6 for reliable upgrade ordering.
+- Application/release version stays 0.4.7; the Plugins tab shows fixed installer version 2026.10.13.02-0.4.7 for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
@@ -277,8 +278,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.6/unmotion-0.4.6_stable-noarch-1.txz</URL>
-<SHA256>9088e26e28f023f146d69b81b5dc8235b2a853971bec8cf1e7606f38240c0274</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.4.7/unmotion-0.4.7_stable-noarch-1.txz</URL>
+<SHA256>c840d78fb95640b379bc963213fbe028cd7bf40a33be2f5f4e6f32371df8cc6a</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
