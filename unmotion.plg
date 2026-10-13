@@ -2,19 +2,20 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.12.02-0.4.5">
+<!ENTITY version "2026.10.13.01-0.4.6">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.5_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.4.6_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.4.5
-- Show cached VM inventory immediately, with progressive background details, observation age and explicit refresh/error states. Cache only display data in RAM; migration and recovery checks remain fresh.
-- Share display inventory through the existing restricted paired-host interface. HTTPS peer APIs remain future work.
-- Restore the plugin during verified early boot before VM Manager starts, while retaining managed-VM safeguards for normal upgrades.
+### unMotion 0.4.6
+- Open migration, Warm Move cutover and clone dialogs immediately with visible, cancellable safety checks; keep submission disabled until checks complete.
+- Preserve VM details, unchanged controls, focus and tooltips across background refreshes. Update changed cells instead of rebuilding the lists.
+- Keep log reading position and text selection; follow new output only while at the bottom. Show progress while testing a pairing.
+- Backend migration, recovery and authentication behavior is unchanged. Display observations remain non-authoritative and safety checks stay fresh.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.5; the Plugins tab shows fixed installer version 2026.10.12.02-0.4.5 for reliable upgrade ordering.
+- Application/release version stays 0.4.6; the Plugins tab shows fixed installer version 2026.10.13.01-0.4.6 for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
@@ -276,8 +277,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.5/unmotion-0.4.5_stable-noarch-1.txz</URL>
-<SHA256>fea13e9f387860e4c68de661b06d74d79b66bb4a0dce9e219992a5c82b40ef8c</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.4.6/unmotion-0.4.6_stable-noarch-1.txz</URL>
+<SHA256>9088e26e28f023f146d69b81b5dc8235b2a853971bec8cf1e7606f38240c0274</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
