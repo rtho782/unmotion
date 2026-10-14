@@ -27,6 +27,7 @@ var activeRecoveryId='',activeRecoveryPerspective='',activeRecoveryPayload=null;
 var activeRecoveryPointId='',activeRecoveryCheckpointId='';
 var activeRecoveryStatusSerial=0,activeRecoveryStatusRequest=null;
 var activeConfirmation=null,activeConfirmationFocus=null;
+var activePairing=null,pairingSerial=0;
   var activeMigrateButton=null;
   
 var discoveryTimer=null,peerRefreshTimer=null,discoveryInFlight=false,currentLogId='',currentLogType='job',logTimer=null,healthTimer=null;
@@ -114,8 +115,9 @@ function post(action,data) {
     var key=action+':'+String(data.peer_id||'');
     if(polling&&pendingPolls[key])return pendingPolls[key];
     var preflightRead=['preflight','clonePreflight'].indexOf(action)>=0;
+    var pairingRead=action==='pairingHostKey';
     var logRead=['jobLog','seedLog','replicationLog'].indexOf(action)>=0;
-    var request=$.ajax({url:api,method:'POST',data:data,dataType:'json',timeout:(polling||logRead)?30000:(preflightRead?120000:0)});
+    var request=$.ajax({url:api,method:'POST',data:data,dataType:'json',timeout:(polling||logRead||pairingRead)?30000:(preflightRead?120000:0)});
     if(polling){pendingPolls[key]=request;request.always(function(){delete pendingPolls[key];});}
     return request;
     
@@ -1460,18 +1462,69 @@ function discover() {
   }
 
 function pair() {
-    var stopBusy=setButtonBusy($('#unm-pair'),'Pairing');
-    post('pairPeer', {
-      host:$('#peer-host').val(),port:$('#peer-port').val(),password:$('#peer-password').val(),host_fingerprint:$('#peer-fingerprint').val()
-    }
-    ).done(function(r) {
-      $('#peer-password').val('');
+    if(activePairing)return;
+    if(!$('#peer-password').val()){flash('Enter the root password for initial pairing.',true);$('#peer-password').trigger('focus');return;}
+    var pending={serial:++pairingSerial,host:String($('#peer-host').val()||'').trim(),port:String($('#peer-port').val()||''),state:'reading',request:null};
+    activePairing=pending;
+    $('#unm-pair,#peer-host,#peer-port,#peer-password').prop('disabled',true);
+    $('#unm-pair-title').text('Trust this host?');
+    $('#unm-pair-content').html('<div class="unm-page-loading" role="status"><span class="unm-spinner" aria-hidden="true"></span><span>Reading the SSH fingerprint for '+esc(pending.host)+':'+esc(pending.port)+'…</span></div>');
+    $('#unm-pair-accept').prop('disabled',true);$('#unm-pair-cancel').val('Cancel').prop('disabled',false);
+    $('#unm-pair-modal').addClass('open').attr('aria-hidden','false');
+    $('#unm-pair-cancel').trigger('focus');
+    // The preview intentionally contains no password or other authentication material.
+    pending.request=post('pairingHostKey',{host:pending.host,port:pending.port}).done(function(r){
+      if(activePairing!==pending||pending.serial!==pairingSerial)return;
+      var key=r.hostKey||{};
+      if(key.host!==pending.host||String(key.port)!==String(Number(pending.port))||key.algorithm!=='Ed25519'||!/^SHA256:[A-Za-z0-9+/]{43}$/.test(key.fingerprint||'')){
+        pairingFailed(pending,'The host did not return a valid SSH fingerprint.');return;
+      }
+      pending.fingerprint=key.fingerprint;pending.state='ready';
+      $('#unm-pair-content').html('<p>The server at <strong>'+esc(pending.host)+':'+esc(key.port)+'</strong> presents this <strong>Ed25519</strong> SSH fingerprint:</p><pre class="unm-pre">'+esc(key.fingerprint)+'</pre><p>Accepting trusts this host for pairing. Future connections must use the same key.</p><details><summary>Verify manually (optional)</summary><p>Compare the fingerprint with the output of this command on the peer’s console, or through a connection you already trust:</p><pre class="unm-pre">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256</pre></details>');
+      $('#unm-pair-accept').prop('disabled',false);
+    }).fail(function(xhr){
+      if(activePairing!==pending||pending.serial!==pairingSerial)return;
+      var message='Unable to read the SSH fingerprint. Check the host address and SSH port.';
+      try{message=JSON.parse(xhr.responseText).error||message;}catch(ignore){}
+      pairingFailed(pending,message);
+    });
+  }
+
+function pairingFailed(pending,message) {
+    if(activePairing!==pending)return;
+    pending.state='failed';
+    $('#unm-pair-content').html('<div class="unm-bad" role="alert">'+esc(message)+'</div>');
+    $('#unm-pair-accept').prop('disabled',true);$('#unm-pair-cancel').val('Close').prop('disabled',false);
+  }
+
+function cancelPairing() {
+    var pending=activePairing;
+    if(pending&&pending.state==='pairing')return false;
+    activePairing=null;pairingSerial++;
+    if(pending&&pending.request&&pending.request.readyState!==4)pending.request.abort();
+    $('#unm-pair,#peer-host,#peer-port,#peer-password').prop('disabled',false);
+    return true;
+  }
+
+function acceptPairing() {
+    var pending=activePairing;
+    if(!pending||pending.state!=='ready'||!pending.fingerprint)return;
+    pending.state='pairing';
+    $('#unm-pair-accept,#unm-pair-cancel').prop('disabled',true);
+    $('#unm-pair-content').html('<div class="unm-page-loading" role="status"><span class="unm-spinner" aria-hidden="true"></span><span>Pairing with '+esc(pending.host)+'…</span></div>');
+    var password=$('#peer-password').val();$('#peer-password').val('');
+    post('pairPeer',{host:pending.host,port:pending.port,password:password,host_fingerprint:pending.fingerprint}).done(function(r){
+      if(activePairing!==pending)return;
+      pending.state='complete';cancelPairing();
+      $('#unm-pair-modal').removeClass('open').attr('aria-hidden','true');
       flash('Paired both ways with '+r.peer.name+'. The password was discarded.');
       loadPeers().then(discover);
-      
-    }
-    ).fail(err).always(stopBusy);
-    
+    }).fail(function(xhr){
+      var message='Pairing failed. Close this dialog to check the details and try again.';
+      try{message=JSON.parse(xhr.responseText).error||message;}catch(ignore){}
+      pairingFailed(pending,message);
+    });
+    password='';
   }
   
 $(function() {
@@ -1627,8 +1680,15 @@ $(function() {
     });
     $('#unm-peer-select').on('change',function(){renderSelectedPeerHealth();renderInventory();});
     $('#unm-recheck').on('click',recheckPreflight);
+    $('#unm-pair-accept').on('click',acceptPairing);
+    $(document).on('keydown',function(event){
+      if(event.key==='Escape'&&activePairing&&cancelPairing()){
+        event.preventDefault();$('#unm-pair-modal').removeClass('open').attr('aria-hidden','true');
+      }
+    });
     $('.unm-modal-close').on('click',function() {
       var modal=$(this).closest('.unm-modal');
+      if(modal.is('#unm-pair-modal')&&!cancelPairing())return;
       modal.removeClass('open').attr('aria-hidden','true');
       if(modal.is('#unm-modal'))cancelPreflight();
       if(modal.is('#unm-recovery-modal')){

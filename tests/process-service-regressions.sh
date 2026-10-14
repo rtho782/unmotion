@@ -12,6 +12,8 @@ trap cleanup EXIT
 # Unraid's CLI ini may prepend a webGui file hidden by the test overlay.
 # Disable that prepend only in this namespace and its fixture descendants.
 scan_ini="$(php --ini | sed -n 's/^Scan for additional .ini files in: *//p')"
+# PHP 8.5 quotes this diagnostic path; quotes are not part of the directory.
+scan_ini="${scan_ini#\"}"; scan_ini="${scan_ini%\"}"
 [[ "$scan_ini" != '(none)' ]] || scan_ini=''
 mkdir -p "$TMP/php-ini"
 printf 'auto_prepend_file =\n' > "$TMP/php-ini/zz-unmotion-test.ini"

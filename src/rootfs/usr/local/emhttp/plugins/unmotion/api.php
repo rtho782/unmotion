@@ -41,6 +41,9 @@ try {
             $cfg=unmSaveConfig($payload); @exec('/etc/rc.d/rc.unmotion restart >/dev/null 2>&1 &');
             reply(['success'=>true,'settings'=>$cfg]);
         case 'peers': reply(['success'=>true,'peers'=>unmPublicPeers(unmPeers())]);
+        case 'pairingHostKey':
+            requirePostMutation();
+            reply(['success'=>true,'hostKey'=>unmPairingHostKey(['host'=>$_POST['host']??'','port'=>$_POST['port']??22])]);
         case 'pairPeer':
             requirePostMutation();
             $peer=unmPair(['host'=>$_POST['host']??'','port'=>$_POST['port']??22,'password'=>$_POST['password']??'','host_fingerprint'=>$_POST['host_fingerprint']??'']);

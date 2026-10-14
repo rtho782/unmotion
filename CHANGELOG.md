@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.8 — 2026-10-14
+
+- Show the peer's Ed25519 SSH fingerprint in a cancellable **Trust this host?** dialog, with **Accept and pair** and optional manual verification instructions. A separate SSH session and pasted fingerprint are no longer required by the new UI.
+- Read the fingerprint without sending credentials or creating pairing keys. Pair only against the explicitly accepted fingerprint; rescan and stop before password authentication if the key changes. Keep existing pins, reciprocal authenticated host-key exchange, restricted client keys and protocol-7 compatibility.
+
 ## 0.4.7 — 2026-10-13
 
 - Require an independently obtained Ed25519 SHA-256 SSH host fingerprint before sending the remote root password during new pairing. Pin only that verified host key; exchange the reciprocal host key through the authenticated initiating connection. New pairings require 0.4.7 or later on both hosts. Existing protocol-7 pairings and pins are retained.

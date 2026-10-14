@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.7';
+const UNM_VERSION = '0.4.8';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -1460,8 +1460,8 @@ function unmPrepareReciprocalPeer(array $request): array {
     $incomingPublicKey = unmValidatePublicKey((string)($request['incomingPublicKey'] ?? ''));
     $reciprocalPeerId = trim((string)($request['reciprocalPeerId'] ?? ''));
     $caps = is_array($request['capabilities'] ?? null) ? $request['capabilities'] : [];
-    // Delivered through the initiating connection whose host key was verified
-    // independently. Never discover the return key from an unauthenticated scan.
+    // Delivered through the initiating connection pinned to the accepted host
+    // key. Never discover the return key from an unauthenticated scan.
     if ($host === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $host)) throw new InvalidArgumentException('Invalid reciprocal peer address.');
     if ($port < 1 || $port > 65535) throw new InvalidArgumentException('Invalid reciprocal SSH port.');
     if ($hostId === '' || $hostId === unmHostId()) throw new InvalidArgumentException('Invalid reciprocal host identity.');
@@ -1503,13 +1503,10 @@ function unmForgetPeerLocal(string $id): void {
 
 function unmPair(array $input): array {
     unmEnsureDirs();
-    $host = trim((string)($input['host'] ?? ''));
-    $port = (int)($input['port'] ?? 22);
+    $endpoint=unmPairingEndpoint($input);
+    $host=$endpoint['host'];$port=$endpoint['port'];
     $password = (string)($input['password'] ?? '');
     $expectedFingerprint=trim((string)($input['host_fingerprint']??''));
-    if ($host === '' || !preg_match('/^[A-Za-z0-9_.-]+$/', $host)) throw new InvalidArgumentException('Invalid hostname or IPv4 address. IPv6 peers are not supported in 0.2.');
-    unmAssertRemotePeerHost($host);
-    if ($port < 1 || $port > 65535) throw new InvalidArgumentException('Invalid SSH port.');
     if ($password === '') throw new InvalidArgumentException('Password is required for initial pairing.');
     $localSsh = unmSshStatus();
     if (!$localSsh['enabled'] || !$localSsh['running'] || !$localSsh['listening']) {

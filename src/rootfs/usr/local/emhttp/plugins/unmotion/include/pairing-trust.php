@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 // Host keys are separate from the restricted client keys installed by pairing.
-// Only the independently verified Ed25519 host key enters known_hosts.
+// Only the explicitly accepted Ed25519 host key enters known_hosts.
 function unmSshHostPublicKey(string $key): string {
     unmManagedSshKeyId($key); // Validate the complete Ed25519 wire representation.
     $parts=preg_split('/\s+/',trim($key),3);
@@ -16,8 +16,8 @@ function unmSshHostFingerprint(string $key): string {
 
 function unmAssertSshHostFingerprint(string $key,string $expected): void {
     $expected=trim($expected);
-    if(!preg_match('~^SHA256:[A-Za-z0-9+/]{43}$~D',$expected))throw new InvalidArgumentException('Enter the peer Ed25519 SHA256 fingerprint from its console or an already trusted connection.');
-    if(!hash_equals($expected,unmSshHostFingerprint($key)))throw new RuntimeException('The peer SSH host key does not match the independently verified fingerprint. No password was sent. Check the address and verify the peer from its console.');
+    if(!preg_match('~^SHA256:[A-Za-z0-9+/]{43}$~D',$expected))throw new InvalidArgumentException('Accept the peer Ed25519 fingerprint before pairing.');
+    if(!hash_equals($expected,unmSshHostFingerprint($key)))throw new RuntimeException('The peer SSH host key changed or does not match the accepted fingerprint. No password was sent. Check the address and review the fingerprint again.');
 }
 
 function unmScannedSshHostKey(string $output): string {
@@ -36,6 +36,22 @@ function unmScanPeerHostKey(string $host,int $port): string {
     $scan=unmRun(['ssh-keyscan','-T','10','-t','ed25519','-p',(string)$port,$host],null,20);
     if($scan['code']!==0||trim($scan['stdout'])==='')throw new RuntimeException('Unable to read the peer Ed25519 SSH host key. Check SSH under Settings → Management Access and the SSH port.');
     return unmScannedSshHostKey($scan['stdout']);
+}
+
+function unmPairingEndpoint(array $input): array {
+    $host=trim((string)($input['host']??''));
+    $port=(string)($input['port']??22);
+    if($host===''||!preg_match('/^[A-Za-z0-9_.-]+$/D',$host))throw new InvalidArgumentException('Enter a hostname or IPv4 address. IPv6 peers are not supported.');
+    if(!preg_match('/^[0-9]{1,5}$/D',$port)||(int)$port<1||(int)$port>65535)throw new InvalidArgumentException('Invalid SSH port.');
+    unmAssertRemotePeerHost($host);
+    return ['host'=>$host,'port'=>(int)$port];
+}
+
+/** Read-only first-contact preview. Never creates keys or sends a password. */
+function unmPairingHostKey(array $input): array {
+    $endpoint=unmPairingEndpoint($input);
+    $key=unmScanPeerHostKey($endpoint['host'],$endpoint['port']);
+    return $endpoint+['algorithm'=>'Ed25519','fingerprint'=>unmSshHostFingerprint($key)];
 }
 
 function unmLocalSshHostPublicKey(): string {

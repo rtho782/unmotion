@@ -1,5 +1,22 @@
 # Verification
 
+## 0.4.8 release qualification — 2026-10-14
+
+Author: Richard Skinner
+
+The owner authorized stable publication of the fingerprint accept/cancel workflow. Application version is `0.4.8`, fixed installer version `2026.10.14.01-0.4.8`, protocol 7. Both installer feeds serve this stable release; Community Apps retains the exact stable installer URL. New pairing requires 0.4.7 or later on both peers, and the initiating host uses 0.4.8 for the dialog. Existing pairing identities and pins are retained.
+
+The [feature test record](docs/TESTING-PAIRING-ACCEPT.md) covers the browser dialog, optional instructions, cancellation, self-pairing rejection, no password authentication during preview, key-change rejection and fresh reciprocal pairing using private lab SSH listeners. The tested JavaScript hash remains `da03e7a97032e3466b901ee7f4b57c527cb0facf09e4c05c8a415c865e2f5204`. First-contact acceptance uses trust on first use; independent comparison is optional, as documented. Strict key pinning, authenticated reciprocal host-key exchange, restricted client keys and the Unraid CSRF boundary remain enforced.
+
+The complete Linux `scripts/verify.sh` suite passed again after the release metadata/build updates, including PHP, Bash, Node and privileged isolated tests. No missing-tool or skipped-test warnings were reported. DEV01 (Unraid 7.3.3) then passed a normal guarded native 0.4.7-to-0.4.8 plugin upgrade using the exact candidate descriptor and cached, SHA-256-verified TXZ. All packaged runtime files matched afterwards. Settings, host identity, pairing records/keys, existing libvirt hooks and every VM state matched the pre-upgrade baseline; native fencing remained ready. The current package was retained and the superseded cached download was pruned after successful registration, with a private pre-upgrade backup retained. DEV01 0.4.8 and unchanged DEV02 0.4.7 negotiated protocol 7 and returned healthy peer status in both directions over actual restricted SSH.
+
+No VM was started, migrated or cloned during release qualification, and no production host was upgraded. Migration/storage workers, cleanup protections and recovery authority are unchanged. This qualification adds a packaged-upgrade check to the feature tests; it is not a new migration or reboot campaign. Release assets use a separate TXZ download with SHA-256 verification, without an embedded archive.
+
+```text
+5c63bf392490beaa4f9e449ebfc9c5ac968fe386542e0c9b53e4179e3e032692  unmotion-0.4.8_stable-noarch-1.txz
+7eca5a30be9f988c6461e9707c7d2d36f6c085a6145a3932620fe31a5dedba51  unmotion-0.4.8.plg
+```
+
 ## 0.4.7 release qualification — 2026-10-13
 
 Author: Richard Skinner

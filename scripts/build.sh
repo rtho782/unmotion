@@ -56,11 +56,10 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Verify the peer Ed25519 SSH host fingerprint against a value obtained from its console or an already trusted connection before password authentication. Authenticate the reciprocal host key through that verified pairing channel.
+- Review the peer Ed25519 SSH fingerprint in a Trust this host? dialog, then Accept and pair or Cancel. Manual verification commands are optional.
+- Read the fingerprint without sending credentials. Pin only the accepted key and stop before password authentication if the key changes. Exchange the reciprocal host key through the authenticated pairing channel.
 - New pairing requires 0.4.7 or later on both hosts. Existing protocol-7 pairings and pinned keys are retained; no wire-protocol change.
-- Treat datasets containing child datasets, unrelated entries, links or uncertain ownership as shared storage and transfer exact VM files with sparse rsync.
-- Revalidate native dataset isolation before snapshots and source cleanup. Delete only exact source objects and this migration's snapshot; foreign snapshots, holds and child datasets block cleanup. Failed cleanup retains remaining data for inspection.
-- Require CSRF-protected POST for job-history deletion and every persistent web mutation, preserving Unraid's token checks.
+- Migration/storage behavior, source-cleanup protections, recovery fencing and Unraid's CSRF checks are unchanged.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.

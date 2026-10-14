@@ -20,11 +20,11 @@ Validation on 2026-10-04: 62 cleanup assertions and the complete Linux `scripts/
 
 ## Stable channel (0.4.0 onward)
 
-Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.7 uses descriptor version `2026.10.13.02-0.4.7` and package token `0.4.7_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.7. Slackware package filenames retain their independent semantic version and stable token.
+Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.8 uses descriptor version `2026.10.14.01-0.4.8` and package token `0.4.8_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.8. Slackware package filenames retain their independent semantic version and stable token.
 
-Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.13.02-0.4.7`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
+Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.14.01-0.4.8`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
 
-New pairings require 0.4.7 or later on both hosts and an independently obtained peer Ed25519 fingerprint. Existing protocol-7 pairings remain usable. Upgrade both peers to apply the source-side storage checks in both directions; follow the [pairing and storage safety guidance](SECURITY-047.md).
+New pairings require 0.4.7 or later on both hosts. An initiating 0.4.8 host displays the Ed25519 fingerprint for explicit acceptance, with optional manual comparison. Existing protocol-7 pairings remain usable. See the [pairing guide](PAIRING.md) and [storage safety guidance](SECURITY-047.md).
 
 ## Initial feed-branch rename
 

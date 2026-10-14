@@ -6,7 +6,9 @@
 
 Finish active jobs, pause scheduled replication and stop recovery-managed VMs before updating. Retain existing pairings, receive state, host identities and recovery authority. Check pairing and native-hook readiness before resuming operations. Protocol 7 and recovery authority are unchanged; existing 0.4.2–0.4.6 pairings remain usable. New pairings require 0.4.7 or later on both hosts. Upgrade both peers to apply the source-side transfer and cleanup protections in both directions.
 
-## Pair a host
+For the current **Accept and pair / Cancel** workflow in 0.4.8, see [Pairing hosts](PAIRING.md). Manual comparison is optional in that workflow; the following section describes 0.4.7's original fingerprint-entry interface.
+
+## Pair a host with 0.4.7
 
 On the peer's local console, or through a connection whose host identity you have already verified, run:
 
