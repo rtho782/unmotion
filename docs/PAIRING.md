@@ -2,7 +2,7 @@
 
 Author: Richard Skinner
 
-The accept/cancel workflow is available in 0.4.8. Both peers require 0.4.7 or later; the initiating host needs 0.4.8 to display this dialog. Wire protocol 7 and the reciprocal pairing exchange are unchanged. Existing 0.4.7 installations use manual fingerprint entry until updated.
+The accept/cancel workflow is available from 0.4.8. Both peers require 0.4.7 or later; the initiating host needs 0.4.8 or later to display this dialog. Wire protocol 7 and the reciprocal pairing exchange are unchanged. Existing 0.4.7 installations use manual fingerprint entry until updated.
 
 Open **Settings → unMotion**, enter the peer address, SSH port and root password, then choose **Pair**. unMotion reads the host's Ed25519 SSH fingerprint and displays **Trust this host?** with the address and port. Choose **Accept and pair** to trust that key and establish the reciprocal pairing, or **Cancel** to return without pairing.
 

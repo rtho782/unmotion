@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.9 — 2026-10-15
+
+- Permit the literal OVMF `X-PciMmio64Mb` firmware option in VM XML, using a bounded decimal string and no other QEMU arguments or environment overrides. Preserve the setting through transfers; arbitrary command-line extensions and file-backed firmware options remain blocked.
+- Advertise the exception as an optional protocol-7 capability and reject unsupported destinations during migration/replication preflight, before transfer. Both hosts need the update for VMs using this option; ordinary VM compatibility is unchanged.
+
 ## 0.4.8 — 2026-10-14
 
 - Show the peer's Ed25519 SSH fingerprint in a cancellable **Trust this host?** dialog, with **Accept and pair** and optional manual verification instructions. A separate SSH session and pasted fingerprint are no longer required by the new UI.

@@ -1,6 +1,8 @@
 # unMotion
 
-Stable release: **[0.4.8](https://github.com/rtho782/unmotion/releases/tag/0.4.8)**. Both update feeds offer this stable release; installing it selects future stable updates.
+Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Both update feeds offer this stable release; installing it selects future stable updates.
+
+VMs using the numeric OVMF `X-PciMmio64Mb` firmware setting can be transferred without removing it. Both peers need 0.4.9 or later for this narrow exception; other custom QEMU arguments remain blocked. See [accepted syntax and peer requirements](docs/OVMF-FIRMWARE.md).
 
 New pairings display the peer's Ed25519 SSH fingerprint with **Accept and pair / Cancel**. Manual verification is optional; both hosts require 0.4.7 or later. Dataset isolation checks and exact source cleanup protect unrelated storage; persistent web actions require CSRF-protected POST. See the [pairing guide](docs/PAIRING.md) and [storage safety and upgrade guidance](docs/SECURITY-047.md).
 
@@ -8,7 +10,7 @@ Migration/cutover and clone setup opens immediately while fresh checks run, with
 
 VM inventory loads progressively from a private RAM cache and shows its observation time. Existing rows remain visible during refresh; **Refresh** requests a new observation. Display data can be briefly out of date: migration, clone and recovery actions still perform fresh safety checks. Paired peers can request the cached display view through the existing restricted SSH interface; no HTTPS peer API is included.
 
-Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. Existing pairings with 0.4.2 through 0.4.8 remain compatible. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [protocol upgrade guidance](docs/SECURITY-042.md) before updating.
+Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. Existing pairings with 0.4.2 through 0.4.9 remain compatible; optional firmware-setting support is checked separately. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [protocol upgrade guidance](docs/SECURITY-042.md) before updating.
 
 Includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
 
@@ -62,7 +64,7 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The application reports **0.4.8**. The Plugins tab reports **2026.10.14.01-0.4.8**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+The application reports **0.4.9**. The Plugins tab reports **2026.10.15.01-0.4.9**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
 
 Pair hosts from **Settings → unMotion**: enter the peer address, SSH port and root password, then choose **Pair**. Review its Ed25519 fingerprint and choose **Accept and pair**, or **Cancel** to return without pairing. If you want to compare the fingerprint independently, expand **Verify manually (optional)** and run this command on the peer's console or through a connection you already trust:
 

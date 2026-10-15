@@ -183,6 +183,7 @@ fi
 debug 'Remote capabilities received successfully.'
 [[ "$(json_get "$CAPS" protocolVersion)" == 7 ]] || fail 'Peer protocol is incompatible; upgrade both hosts to 0.4.2 or later.' 10
 [[ "$(json_get "$CAPS" hostId)" == "$PEER_HOST_ID" ]] || fail 'Peer identity changed; re-pair the hosts.' 11
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmTransportValidateDomainXml(unmDomainXml($argv[1],true),$argv[1],null,unmLoadJson($argv[2]));' "$VM_UUID" "$CAPS" >>"$LOG" 2>&1 || fail 'VM XML or destination firmware support changed; no new snapshot or transfer was started. See the log.' 12
 DEST_IMAGE_DIR="$(json_get "$CAPS" storage.imageDirectory)"
 DEST_IMAGE_ZFS_DATASET="$(json_get "$CAPS" storage.imageZfsDataset || true)"
 DEST_ZVOL_DATASET="$(json_get "$CAPS" storage.zvolDataset || true)"

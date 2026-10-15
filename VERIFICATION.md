@@ -1,5 +1,22 @@
 # Verification
 
+## 0.4.9 release qualification — 2026-10-15
+
+Author: Richard Skinner
+
+The owner authorized stable 0.4.9 publication, both installer feeds and the Community Apps guide. Application version is `0.4.9`; fixed installer version is `2026.10.15.01-0.4.9`. Wire protocol remains 7. The optional `firmwareSettings.ovmfPciMmio64` capability admits only the bounded numeric OVMF setting; ordinary VM compatibility, pairing identities and recovery authority are unchanged. Both hosts need 0.4.9 for VMs using this setting.
+
+The complete Linux `scripts/verify.sh` suite passed again after release metadata/build updates, with PHP, Bash, Node and privileged isolated tests available and no skipped-tool warnings. Firmware regressions passed 62 assertions, transport unit checks 82 and confined/sparse transport integration 21. The [feature test record](docs/TESTING-OVMF-FIRMWARE.md) covers both mixed-peer rejection directions and completed DEV01/DEV02 Warm Moves using native zvol/shared raw images, exact firmware values, UEFI/TPM state and final disk SHA-256. Blank fixtures were explicitly stopped before final cutover; no guest-OS graceful-shutdown or application-consistency claim is made.
+
+DEV01 (Unraid 7.3.3, previous package 0.4.8) and DEV02 (Unraid 7.3.2, previous package 0.4.7) passed guarded native installation of the exact candidate TXZ and PLG. All packaged runtime files matched afterwards. Settings, host identity, pairing records/keys/pins, existing libvirt hooks and all VM states matched their baselines; native fencing remained ready. Both hosts were left with only the fixed `unmotion.plg` descriptor and the verified current package. Superseded downloads were pruned after successful registration, with private pre-upgrade backups retained. The test harness initially used the versioned release-asset basename; its resulting duplicate descriptor was moved to that backup and registration was corrected through the native installer before qualification was accepted. This was a test-deployment correction, not an application patch.
+
+Actual restricted SSH calls between the final packaged hosts returned 0.4.9, protocol 7, the firmware capability and healthy peer status in both directions. No production host was upgraded. Release assets retain the separate TXZ download with SHA-256 verification, not an embedded archive. The exact tested files are reused for publication without rebuilding:
+
+```text
+63bc8db6651a9e890a89b401891a4d6785a9e570ad4b4b9e6b0187bc163e430e  unmotion-0.4.9_stable-noarch-1.txz
+83901e6442a9e53fbdd1cae20cfa4d7ad3afd658cb37150276137d666c2e80be  unmotion-0.4.9.plg
+```
+
 ## 0.4.8 release qualification — 2026-10-14
 
 Author: Richard Skinner

@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.4.8';
+const UNM_VERSION = '0.4.9';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -840,7 +840,7 @@ function unmCapabilities(): array {
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
         'resources'=>unmHostResources(),'inventoryViewVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
-        'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames))];
+        'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
 
 function unmDomainXml(string $vmIdentifier, bool $inactive = true): string {
@@ -1859,7 +1859,7 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
     $tpmMode=unmReplicationTpmInitialMode((string)($options['tpmInitialMode']??$options['tpm_initial_mode']??'none'));
     $vm=unmParseVm($vmIdentifier);$peer=unmTestPeer($peerId);$caps=(array)($peer['lastCapabilities']??[]);
     $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)($peer['hostId']??'')),0,16);
-    try { unmTransportValidateDomainXml(unmDomainXml((string)$vm['uuid'],true),(string)$vm['uuid'],null); }
+    try { unmTransportValidateDomainXml(unmDomainXml((string)$vm['uuid'],true),(string)$vm['uuid'],null,$caps); }
     catch (Throwable $e) { $errors[]='Restricted VM transport: '.$e->getMessage(); }
     try{
         $nvram=unmOwnedNvram($vm);
@@ -4420,7 +4420,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
     try {
         $nvramMaps=[];
         $sourceXml=unmDomainXml((string)$local['uuid'],true);
-        unmTransportValidateDomainXml($sourceXml,(string)$local['uuid'],null);
+        unmTransportValidateDomainXml($sourceXml,(string)$local['uuid'],null,$caps);
         $local['nvram']=unmMigrationNvramXml($sourceXml);
         foreach($plan as $item){
             if(($item['kind']??'')==='zfs-filesystem')foreach($item['files']??[] as $file)$nvramMaps[]=array_merge($file,['bundled'=>true]);

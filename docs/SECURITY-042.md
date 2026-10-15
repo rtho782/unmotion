@@ -39,6 +39,8 @@ ZFS transfer uses a single filesystem or volume stream, whose type is checked be
 
 Custom emulator paths, injected QEMU command lines and unbounded host-file access in VM definitions cannot be imported through a pairing key. A legacy libvirt NVRAM filename must be scoped to the VM UUID; otherwise, with the VM off, use a UUID filename and update the XML, or move the variables file beside its disk using the supported pool-resident layout. Ordinary UUID-scoped NVRAM and software TPM state remain part of the test matrix.
 
+Stable 0.4.9 adds a [narrow numeric OVMF firmware exception](OVMF-FIRMWARE.md), with destination capability checks. Both peers need this support; arbitrary QEMU command lines remain prohibited.
+
 ## Other hardening
 
 Cancellation, service stopping and removal verify a process's boot ID, start ticks, executable and arguments before signalling it. An unrelated process that inherited an old PID is not killed. Inconsistent process records block the unsafe operation rather than authorizing a broad process-group kill.

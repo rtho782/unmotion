@@ -56,10 +56,10 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Review the peer Ed25519 SSH fingerprint in a Trust this host? dialog, then Accept and pair or Cancel. Manual verification commands are optional.
-- Read the fingerprint without sending credentials. Pin only the accepted key and stop before password authentication if the key changes. Exchange the reciprocal host key through the authenticated pairing channel.
-- New pairing requires 0.4.7 or later on both hosts. Existing protocol-7 pairings and pinned keys are retained; no wire-protocol change.
-- Migration/storage behavior, source-cleanup protections, recovery fencing and Unraid's CSRF checks are unchanged.
+- Preserve the numeric OVMF X-PciMmio64Mb firmware setting when moving or replicating a VM. Only its bounded decimal string form is accepted; other custom QEMU arguments, environment overrides and file-backed values remain blocked.
+- Update both hosts to 0.4.9 or later for VMs using this setting. Fresh preflight and worker checks reject a destination without the optional capability before copying.
+- Protocol 7 and existing pairings remain compatible for ordinary VMs. Source power-state rules, storage ownership, source-cleanup protections, UEFI/TPM handling, recovery fencing and Unraid CSRF checks remain enforced.
+- New pairing requires 0.4.7 or later on both hosts. First-contact fingerprint acceptance with optional manual verification remains available from 0.4.8.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.

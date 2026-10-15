@@ -621,18 +621,43 @@ function unmTransportRsync(array $peer,string $path): array {
     }finally{@unlink($filter);@unlink($config);@rmdir($tmp);if(is_resource($lock)){flock($lock,LOCK_UN);fclose($lock);}}
 }
 
+/** Only this literal, numeric firmware knob may bypass the QEMU extension ban. */
+function unmTransportValidateOvmfPciMmio64(DOMElement $commandline): void {
+    $error='Only the numeric OVMF X-PciMmio64Mb firmware setting is permitted in a custom QEMU command line.';
+    if($commandline->attributes->length!==0)throw new RuntimeException($error);
+    $args=[];
+    foreach($commandline->childNodes as $child){
+        if($child instanceof DOMComment||($child instanceof DOMText&&trim($child->textContent)===''))continue;
+        if(!$child instanceof DOMElement||$child->namespaceURI!=='http://libvirt.org/schemas/domain/qemu/1.0'||$child->localName!=='arg'||$child->attributes->length!==1||$child->childNodes->length!==0)throw new RuntimeException($error);
+        $value=$child->getAttributeNode('value');
+        if(!$value||($value->namespaceURI!==null&&$value->namespaceURI!==''))throw new RuntimeException($error);
+        $args[]=$value->value;
+    }
+    // EDK2 accepts 0..16 TiB, expressed in MiB. Canonical decimal input also
+    // rules out QEMU option separators, file=, gen_id= and numeric overflow.
+    if(count($args)!==2||$args[0]!=='-fw_cfg'||!preg_match('~\A(?:name=)?opt/ovmf/X-PciMmio64Mb,string=(0|[1-9][0-9]{0,7})\z~D',$args[1],$m)||(int)$m[1]>16777216)throw new RuntimeException($error);
+}
+
 /** Reject libvirt features that can turn a VM definition into host code/file access. */
-function unmTransportValidateDomainXml(string $xml,string $uuid,?array $peer): void {
+function unmTransportValidateDomainXml(string $xml,string $uuid,?array $peer,?array $destinationCapabilities=null): void {
     unmTransportUuid($uuid);if(strlen($xml)>2097152)throw new RuntimeException('VM XML is too large.');
     $doc=new DOMDocument();if(!@$doc->loadXML($xml,LIBXML_NONET)||$doc->doctype||$doc->documentElement->nodeName!=='domain')throw new RuntimeException('Invalid VM XML.');
     $xp=new DOMXPath($doc);if(strtolower(trim($xp->evaluate('string(/domain/uuid)')))!==$uuid||$xp->query('/domain/uuid')->length!==1)throw new RuntimeException('VM XML identity does not match its reservation.');
     if(!in_array($doc->documentElement->getAttribute('type'),['kvm','qemu'],true))throw new RuntimeException('Only QEMU/KVM domains are allowed.');
     $forbidden='/domain/os/kernel|/domain/os/initrd|/domain/os/dtb|/domain/os/init|/domain/os/initarg|/domain/devices/filesystem|/domain/devices/shmem|/domain/devices/smartcard|/domain/devices/crypto|/domain/devices/pstore|/domain/devices/interface/script|/domain/devices/interface/backend|/domain/devices/disk/backingStore[* or @*]|/domain/devices/disk/dataStore|/domain/devices/disk/auth|/domain/devices/disk/encryption|/domain/devices/*/rom[@file]|/domain/sysinfo/entry[@file]|/domain/devices/hostdev[@type!="usb"]';
     if($xp->query($forbidden)->length)throw new RuntimeException('VM XML includes host-execution, external backing, or unsupported host-device features.');
+    $firmwareCommandline=null;
     foreach($xp->query('//*') as $node){
         if($node->namespaceURI!==null&&$node->namespaceURI!==''){
             $metadata=false;for($p=$node;$p instanceof DOMElement;$p=$p->parentNode)if($p->nodeName==='metadata')$metadata=true;
-            if(!$metadata)throw new RuntimeException('Executable libvirt extension namespaces are not permitted.');
+            if($metadata)continue;
+            if($node->namespaceURI==='http://libvirt.org/schemas/domain/qemu/1.0'&&$node->localName==='commandline'&&$node->parentNode->isSameNode($doc->documentElement)&&$firmwareCommandline===null){
+                unmTransportValidateOvmfPciMmio64($node);
+                if($destinationCapabilities!==null&&empty($destinationCapabilities['firmwareSettings']['ovmfPciMmio64']))throw new RuntimeException('Destination does not support the OVMF X-PciMmio64Mb firmware setting. Update unMotion on both hosts before transferring this VM.');
+                $firmwareCommandline=$node;continue;
+            }
+            if($firmwareCommandline!==null&&$node->parentNode->isSameNode($firmwareCommandline))continue;
+            throw new RuntimeException('Executable libvirt extension namespaces are not permitted.');
         }
     }
     $emulator=trim($xp->evaluate('string(/domain/devices/emulator)'));

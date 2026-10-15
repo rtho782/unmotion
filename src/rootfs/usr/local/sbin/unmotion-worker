@@ -215,7 +215,7 @@ if [[ "$DEST_ZVOL_READY" == 1 ]]; then [[ -n "$DEST_ZVOL_DATASET" ]] && remote "
 
 if ! virsh dominfo "$VM_REF" >>"$LOG" 2>&1; then log "Source VM is no longer defined: $VM_NAME ($VM_UUID)"; exit 18; fi
 if ! virsh dumpxml "$VM_REF" --inactive > "$SOURCE_XML" 2>>"$LOG"; then log "Unable to export the source VM XML: $VM_NAME ($VM_UUID)"; exit 18; fi
-php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmTransportValidateDomainXml(file_get_contents($argv[1]),$argv[2],null);' "$SOURCE_XML" "$VM_UUID" 2>>"$LOG" || { log 'VM definition is not supported by restricted transport; no source shutdown or transfer was performed.'; exit 19; }
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmTransportValidateDomainXml(file_get_contents($argv[1]),$argv[2],null,unmLoadJson($argv[3]));' "$SOURCE_XML" "$VM_UUID" "$REMOTE_CAPS" 2>>"$LOG" || { log 'VM definition is not supported by restricted transport; no source shutdown or transfer was performed.'; exit 19; }
 PRE_STATE="$(virsh domstate "$VM_REF" | tr -d '\r')"
 if [[ "$PRE_STATE" != "shut off" ]]; then virsh dumpxml "$VM_REF" > "$LIVE_XML" 2>>"$LOG" || cp "$SOURCE_XML" "$LIVE_XML"; else cp "$SOURCE_XML" "$LIVE_XML"; fi
 UUID="$(sed -nE 's|.*<uuid>([^<]+)</uuid>.*|\1|p' "$SOURCE_XML" | head -n1 | tr -d '\r')"
