@@ -17,6 +17,14 @@ Actual restricted SSH calls between the final packaged hosts returned 0.4.9, pro
 83901e6442a9e53fbdd1cae20cfa4d7ad3afd658cb37150276137d666c2e80be  unmotion-0.4.9.plg
 ```
 
+### Public release verification — 2026-10-15
+
+Tag `0.4.9` points to source commit `2f8209b52ac06141a51be190a49331887bb24bb1`. GitHub's latest release is public stable 0.4.9 (`draft: false`, `prerelease: false`) with exactly the tested TXZ, PLG and `SHA256SUMS`. Public asset downloads match the hashes above. The TXZ was publicly downloadable and verified before the installer was uploaded, and both feeds advanced only after all assets were verified. No artifact was rebuilt for publication.
+
+Stable feed commit `cceba49073c610452a4b17ce79499b37af6f5b43` and beta-graduation commit `ec4c37bc45841ce16566005f2cd0fac55a507591` serve the identical released descriptor. Both passed `scripts/check-release-feed.php` against their previous descriptors before advancement. Exact raw feed URLs downloaded from the desktop matched the PLG SHA-256. Native `plugin check unmotion.plg` on both dev hosts also downloaded those exact bytes and reported `2026.10.15.01-0.4.9`. The Linux curl client initially retained a preceding cached raw descriptor; independent desktop/native checks used the advertised URLs without commit/query substitutions. Both public feed READMEs matched the prepared guides.
+
+Community Apps commit `e7ec868a888e5fa2142cc5e4e7157980e34dd524` publishes the 0.4.9 user guide, availability table and peer/firmware instructions. Public source and companion guides, firmware guidance, unchanged XML template and profile matched prepared content. The template `PluginURL` exactly equals the stable PLG `pluginURL`; author is `Richard Skinner`, minimum Unraid is `7.3.2`, and all advertised installer URLs are reachable. This verifies publication and lab update discovery, not catalogue ingestion. Production hosts remain for the owner to update through Plugins.
+
 ## 0.4.8 release qualification — 2026-10-14
 
 Author: Richard Skinner
