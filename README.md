@@ -1,6 +1,6 @@
 # unMotion
 
-Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Both update feeds offer this stable release; installing it selects future stable updates.
+Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Beta release: **[0.5.0-beta2](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta2)**, available by opting into the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Community Apps and the stable feed remain on 0.4.9.
 
 VMs using the numeric OVMF `X-PciMmio64Mb` firmware setting can be transferred without removing it. Both peers need 0.4.9 or later for this narrow exception; other custom QEMU arguments remain blocked. See [accepted syntax and peer requirements](docs/OVMF-FIRMWARE.md).
 
@@ -22,6 +22,8 @@ Author: Richard Skinner. Copyright (C) 2026 Richard Skinner.
 Licensed under **GPL-3.0-only**, not GPLv3-or-later. See [LICENSE](LICENSE). Software is provided without warranty under the licence terms.
 
 ## Features
+
+**Beta only — 0.5.0-beta2:** **Settings → unMotion → CPU compatibility levels** provides cached local masks, newest recognised families first, an all-peers comparison and a suggested exact level shared by every selected host. Q35/i440fx references are combined automatically; **Show all revisions** exposes older definitions. **Review and apply to all local VMs** backs up and updates eligible persistent XMLs after fresh checks, preserving topology, pinning and non-CPU settings. The change takes effect at the next full stop/start, not a guest reboot. This prepares for future live migration without powering off, apart from a brief handover stun; **live migration itself is not implemented**. Cold/Warm Move still use a powered-off handover and do not require a shared CPU mode, including Intel/AMD where guest/VM settings are compatible. Older masks may reduce performance or omit guest-required instructions, but can suit lightly loaded essential VMs. These controls are not included in stable 0.4.9. See [CPU compatibility](docs/CPU-COMPATIBILITY.md).
 
 - Reciprocal host discovery and restricted, peer-bound root SSH pairing.
 - Cold migration of powered-off VMs and prepared **Warm Move**, which seeds while running but requires a powered-off final cutover.
@@ -64,7 +66,9 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-The application reports **0.4.9**. The Plugins tab reports **2026.10.15.01-0.4.9**: a fixed release date/sequence followed by the familiar application version, allowing Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+Stable reports **0.4.9** in the application and **2026.10.15.01-0.4.9** in the Plugins tab. Beta reports **0.5.0-beta2** and **2026.11.08.02-0.5.0-beta2** respectively. The fixed release date/sequence allows Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+
+To opt into beta updates, use **Plugins → Install Plugin** with `https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg`, then refresh unMotion. Update both hosts for cached CPU comparison. Ordinary protocol-7 pairing and existing migration workflows remain compatible with 0.4.2 or later; older peers simply cannot provide the optional CPU report. Follow the upgrade safety steps below. Stable installations are not switched automatically.
 
 Pair hosts from **Settings → unMotion**: enter the peer address, SSH port and root password, then choose **Pair**. Review its Ed25519 fingerprint and choose **Accept and pair**, or **Cancel** to return without pairing. If you want to compare the fingerprint independently, expand **Verify manually (optional)** and run this command on the peer's console or through a connection you already trust:
 
@@ -102,6 +106,7 @@ Removal is refused while recovery authority is armed or unresolved. Reconcile re
 
 - [Planned features](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
+- [CPU compatibility and local configuration (beta)](docs/CPU-COMPATIBILITY.md)
 - [Cloning](docs/CLONING.md)
 - [UEFI variables migration](docs/NVRAM-MIGRATION.md)
 - [Migration resolution](docs/MIGRATION-RESOLUTION.md)

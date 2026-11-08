@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0-beta2 — 2026-11-08
+
+- Order validated CPU levels by recognised host-vendor family preference, newest first, with descending numeric revisions within each family. Order legacy CPUs historically (Pentium III, II, Pentium, then 486), with synthetic KVM/QEMU baselines in a separate group below named generations. Keep deprecated and unranked levels inspectable without recommending them over known native levels.
+- Suggest a ranked, non-deprecated exact CPU definition shared by every selected paired host. Refresh the pairing snapshot on each read; wait for all selected peers, withhold suggestions for unavailable/unconfirmed peers, and preserve manually inspected selections.
+- Show one preferred revision per CPU family by default, using the highest exact common revision where available. Add a local-only Show all revisions toggle and informational Unraid-update guidance for confirmed same-family revision/definition differences, without assuming every difference is software-related.
+- Build an automatic Q35/i440fx CPU overview from existing cached reference checks, without a machine-type selector. Combine only exact definitions validated in both references; keep uncertain or mismatching levels unconfirmed. Paired overviews use the existing cached-only operation and can compare identical host CPU definitions across different reference versions, without approving any VM's exact machine version for migration.
+- Inspect saved VM definitions for out-of-scope machine families and non-x86_64/non-KVM configurations. These restrictions apply to the CPU/planned live-migration feature, not existing cold/warm moves. Keep exact VM machine metadata and diagnostic comparisons separate for future operational validation.
+- Explain CPU modes as preparation for future live migration without a power-off, with a brief handover stun; distinguish powered-off cold/Warm Move handover and older masks' workload/performance trade-offs.
+- Add reviewed bulk application of the selected/suggested CPU mode to eligible local persistent VM XMLs, with fresh per-machine validation, original XML backups, stale-review protection and individual skipped/partial results. Preserve non-CPU settings and running guests; changes take effect at the next full stop/start, not a guest reboot.
+- Discover versioned x86_64 KVM CPU compatibility levels, expand migratable CPU feature definitions, and validate them locally with libvirt.
+- Persist observations per effective CPU/hypervisor and machine-type context. Reuse them across reads, page loads, plugin updates and reboots; invalidate changed hardware, microcode/features or hypervisor context. Initial collection runs in the background, with single-collector locking and bounded retries after unavailability.
+- Expose cached reports through an optional, authenticated paired-host operation (CPU capability version 2, wire protocol 7). Remote reads never run CPU validation or queue a collector. Older/offline/unconfirmed peers do not imply compatibility.
+- Add an all-peers comparison table and exact-definition inspector in Settings. CPU model names alone do not establish a common level. Wire protocol 7 is unchanged; the stable feed remains 0.4.9 and live migration is not implemented.
+
 ## 0.4.9 — 2026-10-15
 
 - Permit the literal OVMF `X-PciMmio64Mb` firmware option in VM XML, using a bounded decimal string and no other QEMU arguments or environment overrides. Preserve the setting through transfers; arbitrary command-line extensions and file-backed firmware options remain blocked.

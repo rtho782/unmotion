@@ -11,6 +11,8 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 ?>
 <link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
 <script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/unmotion.js'),0,12)?>"></script>
+<script src="/plugins/unmotion/js/cpu-compatibility.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/cpu-compatibility.js'),0,12)?>"></script>
+<script src="/plugins/unmotion/js/cpu-config.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/cpu-config.js'),0,12)?>"></script>
 <div id="unm-flash" class="unm-flash"></div>
 <div id="unm-settings-loading" class="unm-page-loading"><span class="unm-spinner" aria-hidden="true"></span><span class="unm-loading-text">_(Loading unMotion settings…)_</span></div>
 <div id="unm-settings-content" class="unm-loading-hidden">
@@ -33,6 +35,29 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 <div class="unm-card"><h3>_(Pair a peer)_</h3><p class="unm-muted">_(Enter the peer address, SSH port and root password, then choose Pair to review and accept its SSH fingerprint. New pairing requires unMotion 0.4.7 or later on both hosts. The password is used once to establish restricted Ed25519 keys in both directions, then discarded. Pair only hosts you fully trust.)_</p>
 <div class="unm-form-row"><label for="peer-host">_(Host or IP)_</label><input type="text" id="peer-host"></div><div class="unm-form-row"><label for="peer-port">_(SSH port)_</label><input type="number" id="peer-port" min="1" max="65535" value="22"></div><div class="unm-form-row"><label for="peer-password">_(Password for root)_</label><input type="password" id="peer-password" autocomplete="new-password"></div><div class="unm-actions"><input type="button" id="unm-pair" value="_(Pair)_"><input type="button" id="unm-discover" value="_(Refresh discovery)_"></div><div id="unm-discovery-results"><p class="unm-muted">_(Discovering plugin peers…)_</p></div></div></div>
 <h2>_(Paired peers)_</h2><div id="unm-peer-list"></div>
+<div class="unm-card" id="unm-cpu-compatibility">
+<h3>_(CPU compatibility levels)_</h3>
+<p>_(A shared virtual CPU mode prepares VMs for live migration: moving a running VM without powering it off, apart from a brief handover stun. This release can compare and apply CPU modes; live migration itself is not implemented yet, and CPU compatibility alone is not migration approval.)_</p>
+<p class="unm-muted">_(Cold migration and Warm Move do not require a shared CPU mode: their handover happens with the VM powered off. They remain options for different CPU generations or Intel/AMD hosts where the VM and guest are otherwise compatible. A vendor-specific custom CPU may need adjusting while the VM is off.)_</p>
+<p class="unm-muted">_(CPU results are cached locally and read from paired hosts' caches. Automatic Q35/i440fx reference checks are reused until the effective CPU or hypervisor context changes.)_</p>
+<div class="unm-form-row"><label for="unm-cpu-peer">_(Compare with)_</label><select id="unm-cpu-peer"><option value="*">_(All paired hosts)_</option><option value="">_(Local host only)_</option></select></div>
+<p class="unm-muted">_(CPU compatibility and planned live migration cover x86_64 KVM VMs using Q35 or i440fx. Other machine families are unsupported for that feature; existing cold/warm moves are unchanged. A VM's exact machine type and version must still be checked automatically before any future live migration.)_</p>
+<div id="unm-cpu-scope-results" class="unm-muted" aria-live="polite"></div>
+<div class="unm-actions"><input type="button" id="unm-cpu-check" value="_(Read cached results)_"></div>
+<p id="unm-cpu-status" role="status" aria-live="polite">_(Choose paired hosts, then read cached CPU results.)_</p>
+<p id="unm-cpu-suggestion" role="status" aria-live="polite"></p>
+<p class="unm-muted">_(Recognised CPU families are ordered newest first. One preferred revision per family is shown, favouring an exact match shared by every selected host. The suggestion favours compatibility, not a measured performance score. Older modes hide newer instructions and may reduce performance or fall below a guest OS/application's requirements. An older mode can still be a useful trade-off for an essential, lightly loaded VM that needs to move between older hosts.)_</p>
+<label class="unm-toggle" for="unm-cpu-all-revisions"><input type="checkbox" id="unm-cpu-all-revisions"><span class="unm-toggle-slider"></span><span class="unm-toggle-label">_(Show all revisions)_</span></label>
+<p id="unm-cpu-revision-note" class="unm-muted" aria-live="polite"></p>
+<p id="unm-cpu-version-guidance" class="unm-muted" aria-live="polite"></p>
+<div class="unm-form-row"><label for="unm-cpu-level">_(Compatibility level)_</label><select id="unm-cpu-level" disabled></select></div>
+<div id="unm-cpu-result"></div>
+<input type="hidden" id="unm-cpu-selection" value="">
+<div class="unm-actions"><input type="button" id="unm-cpu-apply" value="_(Review and apply to all local VMs)_" disabled></div>
+<p class="unm-muted">_(Applies the selected mode, including the suggestion when selected, to eligible persistent VM XMLs on this host only. Review affected and skipped VMs first. Original XMLs are backed up; topology, pinning, disks and other VM settings are preserved. No VM is stopped, started or rebooted. The new CPU takes effect on the next full stop/start, not a reboot inside the guest.)_</p>
+<div id="unm-cpu-matrix" class="unm-table-wrap"></div>
 </div>
+</div>
+<div id="unm-cpu-config-modal" class="unm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-cpu-config-title"><div class="unm-modal-box"><h2 id="unm-cpu-config-title">_(Apply CPU compatibility mode)_</h2><div id="unm-cpu-config-content" aria-live="polite"></div><div class="unm-modal-actions"><input type="button" id="unm-cpu-config-cancel" value="_(Cancel)_"><input type="button" id="unm-cpu-config-confirm" value="_(Apply to eligible VMs)_" disabled></div></div></div>
 <div id="unm-pair-modal" class="unm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-pair-title"><div class="unm-modal-box"><h2 id="unm-pair-title">_(Trust this host?)_</h2><div id="unm-pair-content" aria-live="polite"></div><div class="unm-modal-actions"><input type="button" class="unm-modal-close" id="unm-pair-cancel" value="_(Cancel)_"><input type="button" id="unm-pair-accept" value="_(Accept and pair)_" disabled></div></div></div>
 <div id="unm-confirm-modal" class="unm-modal unm-confirm-modal" role="alertdialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-confirm-title" aria-describedby="unm-confirm-message"><div class="unm-modal-box unm-confirm-box"><h2 id="unm-confirm-title">_(Confirm action)_</h2><div id="unm-confirm-message" class="unm-confirm-message"></div><div class="unm-modal-actions"><input type="button" id="unm-confirm-cancel" value="_(Cancel)_"><input type="button" id="unm-confirm-accept" value="_(Continue)_"></div></div></div>

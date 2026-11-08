@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.4.9}"
+EXPECTED_VERSION="${1:-0.5.0-beta2}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -49,6 +49,11 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/upgrade-managed-guard-regressions.php"
   php "$ROOT/tests/inventory-cache-regressions.php"
   php "$ROOT/tests/inventory-collector-regressions.php"
+  php "$ROOT/tests/cpu-compatibility-regressions.php"
+  php "$ROOT/tests/cpu-cache-regressions.php"
+  php "$ROOT/tests/cpu-machines-regressions.php"
+  php "$ROOT/tests/cpu-overview-regressions.php"
+  php "$ROOT/tests/cpu-config-regressions.php"
   php "$ROOT/tests/boot-restore-regressions.php"
   php "$ROOT/tests/diagnostic-regressions.php"
   php "$ROOT/tests/seed-concurrency-regressions.php"
@@ -73,6 +78,10 @@ fi
 if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/unmotion.js"
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/report.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/cpu-compatibility.js"
+  node "$ROOT/tests/ui-cpu-compatibility-regressions.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/cpu-config.js"
+  node "$ROOT/tests/ui-cpu-config-regressions.js"
   node "$ROOT/tests/ui-warning-regressions.js"
   node "$ROOT/tests/ui-escaping-regressions.js"
   node "$ROOT/tests/ui-inventory-regressions.js"

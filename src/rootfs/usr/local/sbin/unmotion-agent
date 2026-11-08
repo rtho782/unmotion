@@ -31,6 +31,14 @@ try {
         case 'capabilities':
             echo json_encode(unmCapabilities(),JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n";
             break;
+        case 'cpu-compatibility':
+            if (count($argv)!==3) throw new InvalidArgumentException('CPU compatibility requires one request.');
+            $raw=base64_decode($argv[2],true);
+            if ($raw===false || strlen($raw)>512) throw new InvalidArgumentException('Invalid CPU compatibility request.');
+            $request=json_decode($raw,true,8,JSON_THROW_ON_ERROR);
+            if (!is_array($request)) throw new InvalidArgumentException('Invalid CPU compatibility request.');
+            echo json_encode(unmCpuCompatibilityCached($request),JSON_THROW_ON_ERROR|JSON_UNESCAPED_SLASHES)."\n";
+            break;
         case 'migration-nvram-check':
         case 'migration-nvram-verify':
             $raw=base64_decode((string)($argv[2]??''),true);

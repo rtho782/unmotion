@@ -35,6 +35,28 @@ try {
         case 'localHealth': reply(['success'=>true,'health'=>unmHealth()]);
         case 'peerHealth': reply(['success'=>true,'health'=>unmPeerHealth((string)($_POST['peer_id']??''))]);
         case 'settings': reply(['success'=>true,'settings'=>unmLoadConfig(),'capabilities'=>unmCapabilities()]);
+        case 'cpuCompatibilityMachines':
+            requirePostMutation();
+            reply(['success'=>true]+unmCpuCompatibilityMachines());
+        case 'cpuCompatibilityScope':
+            requirePostMutation();
+            reply(['success'=>true]+unmCpuCompatibilityVmScope());
+        case 'cpuConfigPreview':
+        case 'cpuConfigApply':
+            requirePostMutation();
+            reply(['success'=>true]+unmCpuConfigService()->execute((string)($_POST['mode']??''),(string)($_POST['definition_hash']??''),(string)($_POST['cache_identity']??''),$action==='cpuConfigApply'?(string)($_POST['review']??''):null));
+        case 'cpuCompatibility':
+        case 'cpuCompatibilityPeer':
+            requirePostMutation();
+            $automatic=!array_key_exists('machine',$_POST);$request=['machine'=>$_POST['machine']??'q35'];
+            $local=$automatic?unmCpuCompatibilityLocalOverview($action==='cpuCompatibility'):($action==='cpuCompatibility'?unmCpuCompatibilityLocal($request):unmCpuCompatibilityCached($request));$peer=null;$peerError='';
+            $peerId=(string)($_POST['peer_id']??'');
+            if ($peerId!=='' && $local['available']) {
+                try {$peer=$automatic?unmCpuCompatibilityPeerOverview($peerId):unmCpuCompatibilityPeer($peerId,$local['context']['machine']);}
+                catch (Throwable $e) {$peerError=$e->getMessage();$peer=['available'=>false,'modes'=>[]];}
+            }
+            $pairedPeers=array_values(array_map(static fn($p)=>['id'=>$p['id'],'name'=>$p['name']??$p['host'],'host'=>$p['host'],'pairingState'=>'paired'],array_filter(unmPeers(),static fn($p)=>($p['pairingState']??'')==='paired')));
+            reply(['success'=>true,'local'=>$local,'peer'=>$peer,'peerError'=>$peerError,'levels'=>unmCpuCompatibilityCommon($local,$peer),'pairedPeers'=>$pairedPeers]);
         case 'saveSettings':
             requirePostMutation();
             $payload=json_decode((string)($_POST['payload']??''),true); if(!is_array($payload)) throw new InvalidArgumentException('Invalid settings payload.');

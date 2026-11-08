@@ -56,10 +56,15 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
-- Preserve the numeric OVMF X-PciMmio64Mb firmware setting when moving or replicating a VM. Only its bounded decimal string form is accepted; other custom QEMU arguments, environment overrides and file-backed values remain blocked.
-- Update both hosts to 0.4.9 or later for VMs using this setting. Fresh preflight and worker checks reject a destination without the optional capability before copying.
-- Protocol 7 and existing pairings remain compatible for ordinary VMs. Source power-state rules, storage ownership, source-cleanup protections, UEFI/TPM handling, recovery fencing and Unraid CSRF checks remain enforced.
-- New pairing requires 0.4.7 or later on both hosts. First-contact fingerprint acceptance with optional manual verification remains available from 0.4.8.
+- Order supported CPU masks by recognised host-vendor family preference and descending model revision, with historical legacy ordering and separate synthetic baselines. Suggest the newest ranked, non-deprecated definition validated on every selected peer, without applying VM settings.
+- Show one preferred shared revision per CPU family by default, with a Show all revisions toggle and informational Unraid-update guidance for confirmed definition differences. Expanding revisions uses existing observations and never rescans or contacts peers.
+- Combine cached Q35/i440fx reference checks automatically, without a machine-type selector. Only identical definitions validated in both references count as supported; host-level matches are not VM-specific migration approval. Other machine families are outside the planned live-migration scope; existing cold/warm moves are unchanged.
+- Add Settings CPU compatibility levels: validated local feature masks and a table of exact definitions common with paired hosts.
+- Collect CPU levels once per effective hardware/software and machine context in a background worker; persist results across page loads, restarts and plugin updates. CPU, microcode, feature and hypervisor changes invalidate affected observations.
+- Paired CPU requests are cache-only and never launch a remote scan. Optional CPU capability version 2 remains within wire protocol 7; older peers show CPU comparison unavailable without losing existing migration support.
+- Review and apply the selected CPU mode to eligible local persistent VM XMLs, with fresh per-machine validation and original XML backups. Preserve topology, pinning and non-CPU settings; running guests change only after a full stop/start, not a guest reboot.
+- CPU modes prepare for future live migration with a brief handover stun; live migration itself is not implemented. Cold and Warm Move remain powered-off handovers without requiring a shared CPU profile. Older masks can reduce performance or omit guest-required instructions.
+- The supported numeric OVMF setting remains available from 0.4.9 on both hosts; arbitrary QEMU command lines remain blocked. First-contact fingerprint acceptance remains available from 0.4.8.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
 - Application/release version stays $VERSION; the Plugins tab shows fixed installer version $PLUGIN_VERSION for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.

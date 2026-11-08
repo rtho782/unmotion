@@ -17,6 +17,9 @@ init_config(){
   /usr/local/sbin/unmotion-security-upgrade || return 1
   mkdir -p "$PLUGIN" "$PLUGIN/peers" "$PLUGIN/jobs" "$PLUGIN/ownership" "$PLUGIN/seeds" "$PLUGIN/replications" "$PLUGIN/replicas" "$REPLICATION_RUNTIME" /var/log/unmotion
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; unmWriteRuntimeConfig(unmLoadConfig()); unmHostId();' >/dev/null 2>&1 || true
+  # CPU discovery is display-only. Never delay startup/fencing or recalculate a
+  # valid persistent observation just because the plugin or host restarted.
+  [[ ! -x /usr/local/sbin/unmotion-cpu-compatibility ]] || nohup setsid /usr/local/sbin/unmotion-cpu-compatibility warmup </dev/null >>/var/log/unmotion/cpu-compatibility.log 2>&1 &
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmJobs() as $j){if(in_array($j["state"]??"",array_merge(unmActiveJobStates(),["STARTING_DESTINATION","OWNERSHIP_HANDOFF"]),true)){ $p=UNM_JOBS_DIR."/".$j["id"]."/job.json"; $j["state"]="INTERRUPTED";$j["message"]=(($j["jobType"]??"migration")==="clone"?"Host or plugin restarted; cancel this job to clean its exact clone destinations, then start a new clone":"Host or plugin restarted; job may be resumed");$j["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$j);}}' >/dev/null 2>&1 || true
   php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php"; foreach(unmSeeds() as $seed){if(in_array($seed["state"]??"",["STARTING","PREFLIGHT","SNAPSHOTTING","TRANSFERRING","REMOVING"],true)){ $p=unmSeedPath((string)$seed["id"])."/seed.json"; $seed["state"]="INTERRUPTED";$seed["message"]="Host or plugin restarted; run Update or Remove after checking the destination";$seed["updatedAt"]=date(DATE_ATOM);unmAtomicJson($p,$seed);}}' >/dev/null 2>&1 || true
   for request in "$PLUGIN"/incoming/*/source-cleanup-request.json; do

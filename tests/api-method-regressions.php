@@ -10,6 +10,7 @@ $requestFile=tempnam(sys_get_temp_dir(),'unmotion-request-');
 $actions=['saveSettings','pairPeer','testPeer','removePeer','breakPairing','startClone','startMigration','resumeJob','cancelJob','removeJob','clearJobs','createReplication','updateReplication','setReplicationEnabled','runReplicationNow','removeReplication','prepareWarm','updateWarm','resumeWarm','removeWarm','recoveryArm','recoveryDisarm','recoveryStartSource','recoveryHold','recoveryHoldRelease','recoveryEvidence','recoveryRenewClaim','recoveryActivate','recoveryStartActivation','recoveryRetryCheckpoint','recoveryStopActivation','recoveryRemoveActivation','resolveMigration'];
 try {
     $actions[]='pairingHostKey';
+    $actions[]='cpuCompatibility';$actions[]='cpuCompatibilityPeer';$actions[]='cpuCompatibilityMachines';$actions[]='cpuCompatibilityScope';$actions[]='cpuConfigPreview';$actions[]='cpuConfigApply';
     foreach($actions as $action)foreach(['GET','HEAD','OPTIONS',''] as $method){
         $code='$_SERVER["REQUEST_METHOD"]='.var_export($method,true).';$_GET["action"]='.var_export($action,true).';require '.var_export($fixture,true).';';
         file_put_contents($requestFile,'<?php '.$code);$r=unmRun([PHP_BINARY,$requestFile],null,10);$reply=json_decode($r['stdout'],true);

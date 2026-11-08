@@ -1,0 +1,19 @@
+#!/usr/bin/php
+<?php
+declare(strict_types=1);
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try {
+    if(getenv('UNM_SSH_KEY_ID'))throw new RuntimeException('CPU collection requires local administration.');
+    if(($argv[1]??'')==='warmup'&&$argc===2)$machines=['q35','pc'];
+    elseif(($argv[1]??'')==='collect'&&$argc===3){
+        $raw=base64_decode($argv[2],true);if($raw===false||strlen($raw)>512)throw new RuntimeException('Invalid CPU collection request.');
+        $request=json_decode($raw,true,8,JSON_THROW_ON_ERROR);if(!is_array($request))throw new RuntimeException('Invalid CPU collection request.');
+        $machines=[unmCpuCompatibilityRequest($request)];
+    }else throw new RuntimeException('Usage: unmotion-cpu-compatibility warmup | collect BASE64_JSON');
+    foreach($machines as $machine){
+        $cache=unmCpuCompatibilityCache();
+        $cache->collect($machine,static fn($r)=>unmCpuCompatibilityInspect($r,'unmRun',unmHostId(),gethostname()?:'unknown'),'unmCpuCompatibilityFingerprint');
+    }
+}catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(1);}
