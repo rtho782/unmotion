@@ -2,20 +2,25 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.15.01-0.4.9">
+<!ENTITY version "2026.11.08.02-0.5.0-beta2">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.9_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta2-noarch-1.txz">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.4.9
-- Preserve the numeric OVMF X-PciMmio64Mb firmware setting when moving or replicating a VM. Only its bounded decimal string form is accepted; other custom QEMU arguments, environment overrides and file-backed values remain blocked.
-- Update both hosts to 0.4.9 or later for VMs using this setting. Fresh preflight and worker checks reject a destination without the optional capability before copying.
-- Protocol 7 and existing pairings remain compatible for ordinary VMs. Source power-state rules, storage ownership, source-cleanup protections, UEFI/TPM handling, recovery fencing and Unraid CSRF checks remain enforced.
-- New pairing requires 0.4.7 or later on both hosts. First-contact fingerprint acceptance with optional manual verification remains available from 0.4.8.
+### unMotion 0.5.0-beta2
+- Order supported CPU masks by recognised host-vendor family preference and descending model revision, with historical legacy ordering and separate synthetic baselines. Suggest the newest ranked, non-deprecated definition validated on every selected peer, without applying VM settings.
+- Show one preferred shared revision per CPU family by default, with a Show all revisions toggle and informational Unraid-update guidance for confirmed definition differences. Expanding revisions uses existing observations and never rescans or contacts peers.
+- Combine cached Q35/i440fx reference checks automatically, without a machine-type selector. Only identical definitions validated in both references count as supported; host-level matches are not VM-specific migration approval. Other machine families are outside the planned live-migration scope; existing cold/warm moves are unchanged.
+- Add Settings CPU compatibility levels: validated local feature masks and a table of exact definitions common with paired hosts.
+- Collect CPU levels once per effective hardware/software and machine context in a background worker; persist results across page loads, restarts and plugin updates. CPU, microcode, feature and hypervisor changes invalidate affected observations.
+- Paired CPU requests are cache-only and never launch a remote scan. Optional CPU capability version 2 remains within wire protocol 7; older peers show CPU comparison unavailable without losing existing migration support.
+- Review and apply the selected CPU mode to eligible local persistent VM XMLs, with fresh per-machine validation and original XML backups. Preserve topology, pinning and non-CPU settings; running guests change only after a full stop/start, not a guest reboot.
+- CPU modes prepare for future live migration with a brief handover stun; live migration itself is not implemented. Cold and Warm Move remain powered-off handovers without requiring a shared CPU profile. Older masks can reduce performance or omit guest-required instructions.
+- The supported numeric OVMF setting remains available from 0.4.9 on both hosts; arbitrary QEMU command lines remain blocked. First-contact fingerprint acceptance remains available from 0.4.8.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.9; the Plugins tab shows fixed installer version 2026.10.15.01-0.4.9 for reliable upgrade ordering.
+- Application/release version stays 0.5.0-beta2; the Plugins tab shows fixed installer version 2026.11.08.02-0.5.0-beta2 for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
@@ -277,8 +282,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.9/unmotion-0.4.9_stable-noarch-1.txz</URL>
-<SHA256>63bc8db6651a9e890a89b401891a4d6785a9e570ad4b4b9e6b0187bc163e430e</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta2/unmotion-0.5.0_beta2-noarch-1.txz</URL>
+<SHA256>e13307444bb968bdccec26e6d2c133ab135a38d9a8a75cb8394b200549e57629</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
