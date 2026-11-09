@@ -98,7 +98,9 @@ function unmInventoryView(bool $refresh=false): array {
         $r=unmRun('nohup setsid /usr/local/sbin/unmotion-inventory refresh </dev/null >/dev/null 2>&1 &',null,2);
         if ($r['code']!==0) throw new RuntimeException('Unable to start inventory refresh.');
     });
-    return $cache->view($fingerprint,time());
+    $view=$cache->view($fingerprint,time());
+    foreach($view['vms'] as &$vm){$uuid=(string)$vm['uuid'];$vm['liveManaged']=file_exists(UNM_BOOT_DIR.'/live-managed/'.$uuid.'.json')||file_exists(UNM_BOOT_DIR.'/live-authority/'.$uuid.'.json');if($vm['liveManaged']){try{$vm['liveAuthority']=unmLiveNativeRecord(UNM_BOOT_DIR,$uuid)['state']??'UNKNOWN';}catch(Throwable){$vm['liveAuthority']='UNKNOWN';}}}unset($vm);
+    return $view;
 }
 
 function unmInventoryBasicVm(string $uuid,string $xml,string $info): array {

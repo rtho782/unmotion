@@ -1,0 +1,40 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+require_once '/usr/local/emhttp/plugins/unmotion/include/live-migration.php';
+try{
+    if(posix_geteuid()!==0)throw new RuntimeException('Root is required.');umask(0077);
+    $mode=$argv[1]??'';$id=unmLiveId($argv[2]??'');$job=unmLiveJob($id);$runtime=unmLiveRuntime($id);
+    if(!unmLiveAlive($job))throw new RuntimeException('Live migration session is inactive.');
+    if($mode==='relay'){unmLiveRelay($id,$argv[3]??'');exit;}
+    if($mode==='client'){
+        if($job['role']!=='source')throw new RuntimeException('Wrong control direction.');$peer=unmLivePeerForJob($job);$token=trim((string)file_get_contents($runtime.'/token'));
+        $args=unmLiveSshArgs($peer,['jobId'=>$id,'token'=>$token],'live-control');$p=proc_open($args,[0=>STDIN,1=>STDOUT,2=>STDERR],$pipes);if(!$p)throw new RuntimeException('Cannot open control transport.');exit(proc_close($p));
+    }
+    if($job['role']!=='destination')throw new RuntimeException('Wrong server direction.');
+    if($mode==='benchmark'){
+        $lock=fopen($runtime.'/benchmark.lock','c');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))throw new RuntimeException('Bandwidth measurement already active.');
+        stream_set_blocking(STDIN,false);$bytes=0;$deadline=microtime(true)+30;
+        while(!feof(STDIN)){$r=[STDIN];$w=[];$e=[];if(microtime(true)>$deadline||!unmLiveAlive($job))throw new RuntimeException('Bandwidth measurement expired.');if(stream_select($r,$w,$e,1)>0){$v=fread(STDIN,262144);if($v===false)throw new RuntimeException('Bandwidth read failed.');$bytes+=strlen($v);if($bytes>33554432)throw new RuntimeException('Bandwidth sample exceeded its limit.');}}
+        if($bytes!==33554432)throw new RuntimeException('Incomplete bandwidth sample.');fwrite(STDOUT,json_encode(['bytes'=>$bytes])."\n");exit;
+    }
+    $name=$mode==='control'?'control.lock':($argv[3]??'').'.lock';
+    if(!in_array($name,['control.lock','memory.lock','disk.lock'],true))throw new RuntimeException('Invalid stream channel.');
+    $lock=fopen($runtime.'/'.$name,'c');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))throw new RuntimeException('Migration channel is already in use.');
+    if($mode==='control'){
+        if(file_exists($runtime.'/control-consumed'))throw new RuntimeException('The single-use migration control session has been consumed.');
+        $backend=stream_socket_client('unix:///var/run/libvirt/libvirt-sock',$error,$text,5);if(!$backend)throw new RuntimeException('Local libvirt is unavailable.');
+        $guard=new UnmLiveRpcGuard($job,static function($kind,$value)use($id){unmLiveLog($id,'RPC '.$kind.' '.json_encode($value));},static function()use($job,$runtime){
+            $r=unmLiveNativeRecord(UNM_BOOT_DIR,$job['vmUuid']);$state=unmLiveVmState($job['vmUuid']);if(($r['jobId']??'')!==$job['id']||($r['state']??'')!=='RECEIVING'||$state['state']!=='undefined'||!$state['qemuAbsent'])throw new RuntimeException('Incoming live VM ownership/conflict check failed.');
+            $f=fopen($runtime.'/control-consumed','x');if(!$f)throw new RuntimeException('Migration control prepare was already consumed.');fclose($f);
+        });
+        unmLiveRpcProxy(STDIN,STDOUT,$backend,$guard,static fn()=>unmLiveAlive($job));fclose($backend);
+    }elseif($mode==='data'){
+        $channel=$argv[3]??'';$path=$runtime.'/'.$channel.'.sock';if(!in_array($channel,['memory','disk'],true)||is_link($path)||!file_exists($path)||filetype($path)!=='socket')throw new RuntimeException('Incoming data socket is unavailable.');
+        $backend=stream_socket_client('unix://'.$path,$error,$text,5);if(!$backend)throw new RuntimeException('Incoming data socket is unavailable.');
+        unmLiveRawPump(STDIN,STDOUT,$backend,static fn()=>unmLiveAlive($job));fclose($backend);
+    }else throw new RuntimeException('Unknown live I/O operation.');
+}catch(Throwable $e){if(isset($id)&&preg_match('/\Alive-[a-f0-9]{24}\z/D',$id))unmLiveLog($id,'Transport rejected: '.$e->getMessage());fwrite(STDERR,'unMotion live transport: '.$e->getMessage()."\n");exit(1);}

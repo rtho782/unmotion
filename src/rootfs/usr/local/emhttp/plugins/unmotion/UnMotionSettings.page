@@ -37,11 +37,11 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 <h2>_(Paired peers)_</h2><div id="unm-peer-list"></div>
 <div class="unm-card" id="unm-cpu-compatibility">
 <h3>_(CPU compatibility levels)_</h3>
-<p>_(A shared virtual CPU mode prepares VMs for live migration: moving a running VM without powering it off, apart from a brief handover stun. This release can compare and apply CPU modes; live migration itself is not implemented yet, and CPU compatibility alone is not migration approval.)_</p>
+<p>_(A shared virtual CPU mode enables compatible VMs to move while running, without a shutdown apart from a brief handover pause. This beta offers a restricted initial live-migration workflow; CPU compatibility alone is not migration approval. Fresh VM, software, storage, device and ownership checks must also pass.)_</p>
 <p class="unm-muted">_(Cold migration and Warm Move do not require a shared CPU mode: their handover happens with the VM powered off. They remain options for different CPU generations or Intel/AMD hosts where the VM and guest are otherwise compatible. A vendor-specific custom CPU may need adjusting while the VM is off.)_</p>
 <p class="unm-muted">_(CPU results are cached locally and read from paired hosts' caches. Automatic Q35/i440fx reference checks are reused until the effective CPU or hypervisor context changes.)_</p>
 <div class="unm-form-row"><label for="unm-cpu-peer">_(Compare with)_</label><select id="unm-cpu-peer"><option value="*">_(All paired hosts)_</option><option value="">_(Local host only)_</option></select></div>
-<p class="unm-muted">_(CPU compatibility and planned live migration cover x86_64 KVM VMs using Q35 or i440fx. Other machine families are unsupported for that feature; existing cold/warm moves are unchanged. A VM's exact machine type and version must still be checked automatically before any future live migration.)_</p>
+<p class="unm-muted">_(CPU compatibility and live migration cover x86_64 KVM VMs using Q35 or i440fx. Other machine families are unsupported for that feature; existing cold/warm moves are unchanged. Live preflight automatically checks the VM's exact machine version, active CPU and the first beta's narrower device/storage requirements.)_</p>
 <div id="unm-cpu-scope-results" class="unm-muted" aria-live="polite"></div>
 <div class="unm-actions"><input type="button" id="unm-cpu-check" value="_(Read cached results)_"></div>
 <p id="unm-cpu-status" role="status" aria-live="polite">_(Choose paired hosts, then read cached CPU results.)_</p>

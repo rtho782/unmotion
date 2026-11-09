@@ -1,0 +1,11 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+// libvirt's ext transport before 12.5 cannot pass arguments and sanitizes its
+// environment. A host-exclusive worker writes this root-private job pointer.
+$path='/var/lib/unmotion/live-client-job';
+if(is_link($path)||!is_file($path)||fileowner($path)!==0||(fileperms($path)&0077)!==0){fwrite(STDERR,"No private live client job.\n");exit(1);}
+$argv=['unmotion-live-io','client',trim((string)file_get_contents($path))];
+require '/usr/local/sbin/unmotion-live-io';

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-beta3 — 2026-11-09
+
+- Add experimental live migration for running BIOS guests with one independent raw/qcow2 file disk, an active custom CPU profile and ordinary bridge NICs. Fresh checks cover exact machine/software compatibility, CPU vendor/generation/features, conflicts, disk isolation and capacity.
+- Carry control, RAM and disk traffic through job-bound encrypted channels on the existing restricted pairing, without a general libvirt connection or shell. Pin the control adapter to the reviewed libvirt 12.2.0 ABI and reject unknown/replayed operations and unsafe flags.
+- Receive the destination paused; durably fence source starts and prove source QEMU absence before destination resume. Add native admission/reconnect identity checks and explicit paired reconciliation, including guarded renewal after runtime credential loss.
+- Measure encrypted throughput/RAM dirty rate, request libvirt cancellation rather than forced power-off, retain source/partial disks and refuse upgrades/removal during unresolved ownership.
+- Add styled immediate preflight and separate live-job controls/logs. Wire protocol 7 and ordinary unmanaged cold/warm/clone/recovery behavior are preserved.
+- First-beta scope excludes UEFI, TPM, passthrough, ISOs, zvols/multiple disks and recovery/replication-managed guests. One live job per host; migrated guests remain live-managed and cannot yet return to Cold/Warm Move, clone, replication-policy or bulk CPU workflows. Lab handover gaps were approximately 1.85–2.13 seconds, not a guaranteed 500 ms stun. Published as an opt-in prerelease; stable remains 0.4.9.
+
 ## 0.5.0-beta2 — 2026-11-08
 
 - Order validated CPU levels by recognised host-vendor family preference, newest first, with descending numeric revisions within each family. Order legacy CPUs historically (Pentium III, II, Pentium, then 486), with synthetic KVM/QEMU baselines in a separate group below named generations. Keep deprecated and unranked levels inspectable without recommending them over known native levels.

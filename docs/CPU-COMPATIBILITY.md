@@ -1,10 +1,12 @@
 # CPU compatibility checks
 
+0.5.0-beta3 provides CPU preparation and [separate live-migration checks with a restricted initial workflow](LIVE-MIGRATION-BETA.md); a cached host match alone never approves a VM migration.
+
 Author: Richard Skinner
 
-Available in **[0.5.0-beta2](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta2)** through the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable 0.4.9 does not include these controls. CPU comparison and reviewed local bulk configuration are implemented; live migration itself is not. Update both paired hosts for cached CPU comparison; older protocol-7 peers retain their existing workflows but cannot provide the optional CPU report.
+Available in **[0.5.0-beta3](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta3)** through the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable 0.4.9 does not include these controls. Update both paired hosts for live migration; older protocol-7 peers retain their existing workflows but may lack the optional CPU report or live-migration capability.
 
-A shared virtual CPU is preparation for **live migration without powering the VM off**, apart from a brief handover stun. Other live-migration checks will still be required. **Cold migration and Warm Move do not require a common CPU mode** because their handover occurs while powered off. They remain useful across generations and Intel/AMD hosts where the VM and guest are otherwise compatible; a vendor-specific custom CPU may need adjusting while the VM is off.
+A shared active virtual CPU enables **live migration without powering the VM off**, apart from a brief handover pause. Fresh VM, machine, software, storage, device and ownership checks are also required. **Cold migration and Warm Move do not require a common CPU mode** because their handover occurs while powered off. They remain useful across generations and Intel/AMD hosts where the VM and guest are otherwise compatible; a vendor-specific custom CPU may need adjusting while the VM is off.
 
 Older modes hide newer CPU instructions and can reduce performance or fall below an OS/application's minimum requirements. For an essential, lightly loaded VM, choosing an older supported mode can be a reasonable trade-off for mobility between older hosts. A compatibility suggestion is not a workload benchmark or a guest boot guarantee.
 
@@ -32,7 +34,7 @@ Startup and first-time local collection warm the host's `q35` and `pc` reference
 
 Paired hosts supply their own cached reference reports through the existing interface. Different reference machine versions do not prevent a host CPU match if both hosts independently validated identical definitions across their Q35/i440fx references. A remote request never starts detection. If a peer's reference cache is unavailable, open CPU compatibility on that host to populate it locally.
 
-Other machine families are marked unsupported **for this CPU compatibility/planned live-migration feature**. This does not add restrictions to existing cold/warm moves or modify any guest configuration. Recognizing a Q35/i440fx family does not prove that an exact legacy version is installed or supported on the destination.
+Other machine families are marked unsupported **for this CPU compatibility/live-migration feature**. This does not add restrictions to existing cold/warm moves or modify any guest configuration. Recognizing a Q35/i440fx family does not prove that an exact legacy version is installed or supported on the destination.
 
 A matching host overview is not approval for a particular VM. Applying a CPU mode reads the VM's actual persistent XML and freshly validates its exact machine type/version and selected CPU definition automatically. Future live migration will require its own fresh checks. unMotion does not upgrade the virtual chipset, substitute a newer version or use the cached overview as operational authority. CPU pinning, firmware, devices, storage, networking and migration authority still need separate checks before migration. See [QEMU's migration compatibility requirements](https://www.qemu.org/docs/master/devel/migration/compatibility.html).
 
@@ -60,7 +62,7 @@ For each usable model, unMotion asks `virsh hypervisor-cpu-baseline` for its exp
 
 These are cached observations with timestamps, not operational permission. Successful local detection runs once per effective CPU/hypervisor and machine context and persists at `/boot/config/plugins/unmotion/cpu-compatibility/`. Page loads, repeated API requests, plugin upgrades and reboots reuse valid results. Cheap local fingerprints detect CPU model/vendor/stepping, microcode and feature changes; kernel/QEMU/libvirt/CPU-map changes also invalidate affected results because compatibility can change without replacing the CPU. Clock speed, processor numbering, load and unMotion's own version do not force a rescan.
 
-Only validated definitions count as supported. Unknown/incomplete levels stay unconfirmed in the stored observation; normal reads do not repeatedly retry them. An unavailable VM Manager produces no supported result and uses a retry backoff rather than a request storm. There is one collector at a time, a five-minute per-context scan budget and at most 32 stored contexts. No cached observation may authorize an eventual migration: future operational checks must be fresh.
+Only validated definitions count as supported. Unknown/incomplete levels stay unconfirmed in the stored observation; normal reads do not repeatedly retry them. An unavailable VM Manager produces no supported result and uses a retry backoff rather than a request storm. There is one collector at a time, a five-minute per-context scan budget and at most 32 stored contexts. Cached observations never authorize migration: operational checks are fresh.
 
 ## API and peer compatibility
 
@@ -78,6 +80,6 @@ Read-only checks on a Xeon Platinum 8173M (Skylake) and Xeon Gold 6226R (Cascade
 
 The exact no-TSX Skylake alias in these libvirt builds is `Skylake-Server-noTSX-IBRS`; the previously discussed `Skylake-Server-IBRS-noTSX` name is rejected. The UI discovers versioned names rather than assuming either alias exists.
 
-This validates CPU compatibility only. No VM migration or production VM configuration change was performed. Future VM configuration and migration work will require separate operational checks and lifecycle testing.
+These physical-host checks validated CPU compatibility only. No production VM migration or configuration change was performed. Separate nested-lab live-migration qualification is recorded in [Beta3 testing](TESTING-LIVE-BETA3.md).
 
 Both candidates were installed on the disposable Unraid development hosts. Authenticated paired requests and browser comparison returned 30 common exact definitions; repeated reads and package upgrades/service restarts preserved existing observations. The complete automated suite passed, including CPU definitions, persistent caching, saved machine choices, native plugin-manager fixtures and UI ordering/suggestion/response-isolation tests. See the [Beta2 verification record](TESTING-CPU-BETA2.md) and [initial cache qualification](TESTING-CPU-COMPATIBILITY.md) for coverage and remaining limits.

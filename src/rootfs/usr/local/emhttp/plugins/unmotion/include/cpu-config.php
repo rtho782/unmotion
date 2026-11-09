@@ -61,6 +61,7 @@ function unmCpuConfigHash(string $xml): string {return hash('sha256',unmCpuCompa
 /** Read-only policy inventory; active/resumable work must not retain an older CPU XML. */
 function unmCpuConfigGuard(string $base,string $uuid): void {
     if(unmNativeRecordForVm($base,$uuid)!==null)throw new RuntimeException('Recovery-managed VM: disarm/reconcile recovery before changing its CPU.');
+    if(unmLiveNativeRecord($base,$uuid)!==null)throw new RuntimeException('Live-managed VM: CPU changes are outside this beta\'s guarded ownership workflow.');
     $groups=['seeds/*/seed.json','replications/*/policy.json','jobs/*/job.json'];
     foreach($groups as $group)foreach(glob($base.'/'.$group)?:[] as $path){
         $record=json_decode((string)@file_get_contents($path),true);

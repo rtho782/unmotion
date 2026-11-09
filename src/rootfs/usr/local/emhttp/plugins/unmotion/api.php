@@ -31,6 +31,20 @@ try {
     $action=(string)($_GET['action']??$_POST['action']??'');
     switch ($action) {
         case 'status': reply(['success'=>true,'version'=>UNM_VERSION,'protocol'=>UNM_PROTOCOL,'hostId'=>unmHostId(),'hostname'=>gethostname()]);
+        case 'livePreview':
+            requirePostMutation();$pre=unmLivePreview((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''));
+            reply(['success'=>true,'preview'=>['vmUuid'=>$pre['vmUuid'],'vmName'=>$pre['vmName'],'peerId'=>$pre['peerId'],'machine'=>$pre['spec']['machine'],'memoryMiB'=>$pre['spec']['memoryKiB']/1024,'vcpus'=>$pre['spec']['vcpus'],'diskGiB'=>round($pre['spec']['diskBytes']/1073741824,2),'format'=>$pre['spec']['format'],'warnings'=>$pre['warnings']]]);
+        case 'liveStart':
+            requirePostMutation();reply(['success'=>true,'job'=>unmLiveCreate((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''))]);
+        case 'liveJobs': reply(['success'=>true,'jobs'=>unmLivePublicJobs()]);
+        case 'liveLog':
+            $id=unmLiveId((string)($_POST['id']??''));$job=unmLiveJob($id);$path=dirname(unmLiveJobPath($id)).'/live.log';if(is_link($path))throw new RuntimeException('Redirected log.');
+            $fp=is_file($path)?fopen($path,'r'):false;$log='';if($fp){$length=filesize($path);if($length>262144)fseek($fp,-262144,SEEK_END);$log=(string)stream_get_contents($fp,262144);fclose($fp);}reply(['success'=>true,'log'=>$log]);
+        case 'liveCancel':
+            requirePostMutation();$id=unmLiveId((string)($_POST['id']??''));$j=unmLiveJob($id);
+            if($j['role']!=='source'||$j['bootId']!==unmNativeBoot()||!in_array($j['state'],['QUEUED','PREFLIGHT','SOURCE_MOVING','COPYING'],true))throw new RuntimeException('Cancellation is unavailable after handover or a host restart. Use Reconcile on the source.');
+            unmLivePrivateDir($j['runtime']);file_put_contents($j['runtime'].'/cancel',gmdate('c'));reply(['success'=>true]);
+        case 'liveReconcile': requirePostMutation();reply(unmLiveReconcile(unmLiveId((string)($_POST['id']??''))));
         case 'inventory': reply(['success'=>true]+unmInventoryView((string)($_POST['refresh']??'')==='1'));
         case 'localHealth': reply(['success'=>true,'health'=>unmHealth()]);
         case 'peerHealth': reply(['success'=>true,'health'=>unmPeerHealth((string)($_POST['peer_id']??''))]);

@@ -1,0 +1,11 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{if(posix_geteuid()!==0)throw new RuntimeException('Root is required.');umask(0077);putenv('LC_ALL=C');putenv('LANG=C');$id=unmLiveId($argv[1]??'');unmLiveRunWorker($id);}
+catch(Throwable $e){
+    if(isset($id)&&$e->getCode()!==409)try{$j=unmLiveJob($id);$active=unmProcessRecordedWorker(dirname(unmLiveJobPath($id)).'/process.json','/usr/local/sbin/unmotion-live-worker',[$id]);if($j['state']==='QUEUED'&&$active===null&&(unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid'])['jobId']??'')!==$id)unmLiveUpdate($j,'FAILED',$e->getMessage().' No handover authority was changed.');}catch(Throwable){}
+    fwrite(STDERR,$e->getMessage()."\n");exit(1);
+}

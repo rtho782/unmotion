@@ -3,6 +3,7 @@ declare(strict_types=1);
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Richard Skinner
 // Deliberately standalone: hooks MUST NOT call libvirt, SSH, or the API library.
+require_once __DIR__.'/live-native-fence.php';
 
 function unmNativeJson(string $path): array {
     $value=json_decode((string)@file_get_contents($path),true);
@@ -25,7 +26,7 @@ function unmNativeDaemon(int $pid): array {
 }
 function unmNativeProofStatus(string $run='/run/unmotion/lifecycle'): array {
     try{$proof=unmNativeJson($run.'/native-hook-proof.json');$daemon=unmNativeDaemon((int)($proof['daemon']['pid']??0));
-        if($daemon!==($proof['daemon']??null)||!is_executable('/etc/libvirt/hooks/qemu.d/50-unmotion-recovery')||!hash_equals((string)($proof['hookSha256']??''),(string)@hash_file('sha256','/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'))||!hash_equals((string)($proof['helperSha256']??''),(string)@hash_file('sha256',__FILE__)))throw new RuntimeException('Native recovery hook has not been proven active for this libvirt process and installed build.');
+        if($daemon!==($proof['daemon']??null)||!is_executable('/etc/libvirt/hooks/qemu.d/50-unmotion-recovery')||!hash_equals((string)($proof['hookSha256']??''),(string)@hash_file('sha256','/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'))||!hash_equals((string)($proof['helperSha256']??''),(string)@hash_file('sha256',__FILE__))||!hash_equals((string)($proof['liveHelperSha256']??''),(string)@hash_file('sha256',__DIR__.'/live-native-fence.php')))throw new RuntimeException('Native recovery hook has not been proven active for this libvirt process and installed build.');
         return ['ready'=>true,'daemon'=>$daemon];
     }catch(Throwable $e){return ['ready'=>false,'reason'=>$e->getMessage().' Verify the native hook; a libvirt restart may be required before arming recovery.'];}
 }
@@ -58,6 +59,7 @@ function unmNativeRecordForVm(string $base,string $uuid): ?array {
     if(count($matches)>1)throw new RuntimeException('More than one recovery authority record claims this VM.');return $matches[0]??null;
 }
 function unmNativeAssertRemovable(string $base='/boot/config/plugins/unmotion'): void {
+    unmLiveNativeAssertRemovable($base);
     foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=unmNativeJson($path);if(!in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)||!empty($r['armed'])||!empty($r['managedAutostart'])||!empty($r['activationId'])||!empty($r['activation'])||!empty($r['claim']))throw new RuntimeException('Disarm and reconcile every recovery policy before removing unMotion; native VM fencing must remain installed.');}
     foreach(glob($base.'/native-managed/*.json')?:[] as $path){$m=unmNativeJson($path);$uuid=(string)($m['vmUuid']??'');if(!preg_match('/^[a-f0-9-]{36}$/',$uuid)||unmNativeRecordForVm($base,$uuid)!==null)throw new RuntimeException('Native managed authority must be reconciled before removal.');}
 }
@@ -107,6 +109,7 @@ function unmNativeIssueDestinationPermit(array $record,string $run='/run/unmotio
 function unmNativeFence(string $operation,string $phase,string $xml,string $base='/boot/config/plugins/unmotion',string $run='/run/unmotion/lifecycle',string $locks='/var/lock',?string $testBoot=null): void {
     if(!in_array($operation,['prepare','start','started','restore','migrate','attach','reconnect','release'],true))return;
     $domain=unmNativeDomain($xml);$uuid=$domain['uuid'];$boot=$testBoot??unmNativeBoot();$admission=$run.'/native-admissions/'.$uuid.'.json';
+    unmLiveNativeFence($domain,$operation,$phase,$base,$run,$locks,$boot);
     $context=unmNativeRecordForVm($base,$uuid);if($context===null){if($domain['activationCount']>0)throw new RuntimeException('Activation ownership exists without recovery authority.');return;}
     $id=$context['id'];$lock=unmNativeLock($id,$locks);
     try{$context=unmNativeRecordForVm($base,$uuid);if($context===null)throw new RuntimeException('Recovery authority changed during native admission.');$r=$context['record'];$marker=$run.'/state/'.$id.'.running-authorized';

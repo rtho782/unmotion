@@ -59,6 +59,16 @@ try {
     unlink($recordPath);$destination=array_replace($record,['side'=>'destination']);writeJson($markerPath,array_replace($marker,['side'=>'destination']));
     writeJson($root.'/replicas/peer-one/'.$id.'/recovery.json',$destination);writeJson($root.'/replicas/peer-two/'.$id.'/recovery.json',$destination);
     $before=count($commands);rejects(fn()=>unmProcessAssertManagedGuestsStopped($root),'Ambiguous marked destination authority rejected.');check(count($commands)===$before,'Ambiguous authority rejected before libvirt.');
+    $live=$root.'/live-fixture';mkdir($live,0700);$local='11111111-1111-4111-8111-000000000001';$other='22222222-2222-4222-8222-000000000001';file_put_contents($live.'/host_id',$local);$liveId='live-'.str_repeat('c',24);
+    $liveMarker=['schemaVersion'=>1,'vmUuid'=>$uuid,'jobId'=>$liveId];$liveRecord=$liveMarker+['state'=>'MOVING','role'=>'source','sourceHostId'=>$local,'destinationHostId'=>$other,'bootId'=>'33333333-3333-4333-8333-000000000001','expiresAt'=>time()+300];
+    $lm=$live.'/live-managed/'.$uuid.'.json';$lr=$live.'/live-authority/'.$uuid.'.json';writeJson($lm,$liveMarker);
+    rejects(fn()=>unmProcessAssertManagedGuestsStopped($live),'Missing live authority refused.');writeJson($lr,$liveRecord);
+    rejects(fn()=>unmProcessAssertManagedGuestsStopped($live),'Unfinished live authority refuses normal upgrade.');unmProcessAssertManagedGuestsStopped($live,true);check(true,'Verified early boot restores unfinished live fence without libvirt calls.');
+    writeJson($lr,array_replace($liveRecord,['state'=>'OWNER']));$replies=[[['list','--all','--uuid'],$uuid."\n",0],[['domstate',$uuid],"running\n",0]];rejects(fn()=>unmProcessAssertManagedGuestsStopped($live),'Running live owner refuses upgrade.');check(!$replies,'Live owner state freshly queried.');
+    $replies=[[['list','--all','--uuid'],$uuid."\n",0],[['domstate',$uuid],"shut off\n",0]];unmProcessAssertManagedGuestsStopped($live);check(!$replies,'Stopped live owner allows upgrade.');
+    writeJson($lr,array_replace($liveRecord,['state'=>'RETIRED']));$replies=[[['list','--all','--uuid'],'',0]];unmProcessAssertManagedGuestsStopped($live);check(!$replies,'Retired absent source allows upgrade.');
+    unlink($lm);rejects(fn()=>unmProcessAssertManagedGuestsStopped($live),'Missing live marker still refuses upgrade.');writeJson($lm,$liveMarker);
+    file_put_contents($live.'/host_id',$other);rejects(fn()=>unmProcessAssertManagedGuestsStopped($live),'Foreign host live authority refuses upgrade.');file_put_contents($live.'/host_id',$local);
     foreach($commands as $command)check(in_array($command[5],['list','domstate'],true),'Guard never issues a mutating virsh command.');
     check(!$exitCodes,'Mocked process handles closed.');
     echo 'Managed upgrade guard regressions passed ('.$checks.").\n";

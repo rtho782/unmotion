@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.0-beta2}"
+EXPECTED_VERSION="${1:-0.5.0-beta3}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -45,6 +45,11 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/recovery-disk-binding-regressions.php"
   php "$ROOT/tests/native-grant-regressions.php"
   php "$ROOT/tests/native-fence-regressions.php"
+  php "$ROOT/tests/live-rpc-regressions.php"
+  php "$ROOT/tests/live-fence-regressions.php"
+  php "$ROOT/tests/live-preflight-regressions.php"
+  php "$ROOT/tests/live-record-regressions.php"
+  php "$ROOT/tests/live-worker-regressions.php"
   php "$ROOT/tests/native-fence-controller-test.php"
   php "$ROOT/tests/upgrade-managed-guard-regressions.php"
   php "$ROOT/tests/inventory-cache-regressions.php"
@@ -81,6 +86,8 @@ if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/cpu-compatibility.js"
   node "$ROOT/tests/ui-cpu-compatibility-regressions.js"
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/cpu-config.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/live-migration.js"
+  node "$ROOT/tests/ui-live-migration-regressions.js"
   node "$ROOT/tests/ui-cpu-config-regressions.js"
   node "$ROOT/tests/ui-warning-regressions.js"
   node "$ROOT/tests/ui-escaping-regressions.js"

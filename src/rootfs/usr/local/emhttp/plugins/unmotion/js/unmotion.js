@@ -377,6 +377,7 @@ function renderInventory() {
           actions+='<input type="button" value="Warm Move blocked" disabled title="'+esc(warmBlockedReason(vm))+'">';
         }
       }
+      if(!blocked&&!vm.tpm&&!poweredOff&&peerId)actions+='<input type="button" class="unm-live-migrate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="Live migrate (beta)">';
       var replication=replicationFor(vm.uuid,peerId);
       if(peerId)actions+='<input type="button" class="unm-replicate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" data-replication-id="'+esc(replication?replication.id:'')+'" value="'+(replication?'Configure replication':'Replicate')+'">';
       else actions+='<input type="button" value="Replicate" disabled title="Select a paired destination first">';
@@ -384,6 +385,7 @@ function renderInventory() {
       else if(vm.tpm)actions+='<input type="button" value="Clone blocked by TPM" disabled title="Cloning virtual TPM identity or secrets is not supported">';
       else actions+='<input type="button" class="unm-clone" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="'+(poweredOff?'Clone locally':'Power off before clone')+'" '+(poweredOff?'':'disabled')+'>';
       actions+='</div>';
+      if(vm.liveManaged){var liveActions=$('<div>').html(actions);liveActions.find('input').not('.unm-live-migrate').prop('disabled',true).attr('title','Use live migration controls for live-managed VMs in this beta');if(vm.liveAuthority!=='OWNER')liveActions.find('.unm-live-migrate').prop('disabled',true).attr('title','Reconcile the existing live handover first');actions=liveActions.html();}
       if(seed&&seed.activeJob)actions=disableSeedActions(actions,seed.activeJob.message);
       var managedRecovery=recoveryPolicyForVm(vm.uuid),autostartHtml=managedRecovery?'<span class="unm-badge unm-recovery-warning">Managed by unMotion</span><br><small class="unm-muted">Native autostart disabled; startup is fenced</small>':esc(vm.autostart);
       rows.push('<tr data-vm-id="'+esc(vm.uuid)+'"><td><strong>'+esc(vm.name)+'</strong><br><small class="unm-muted">'+esc(vm.uuid)+'</small></td><td>'+esc(vm.state)+'</td><td class="unm-storage-cell">'+esc(storageText(vm))+storageDetailHtml(vm)+'</td><td class="unm-features-cell">'+flags(vm)+'</td><td>'+esc(vm.vcpus)+'</td><td>'+esc(fmtRamMib(vm.memoryMiB))+'</td><td>'+autostartHtml+'</td><td>'+actions+'</td></tr>');

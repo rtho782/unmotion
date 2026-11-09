@@ -182,6 +182,7 @@ function unmTransportOwned(array $peer,string $path,string $kind='file'): array 
 }
 
 function unmTransportVmOff(string $uuid): bool {
+    unmLiveLegacyInterlock($uuid);
     $r=unmRun(['virsh','domstate',unmTransportUuid($uuid)],null,15);
     if($r['code']===0&&trim($r['stdout'])==='shut off')return true;
     if($r['code']===0)throw new RuntimeException('The destination VM must be shut off.');
@@ -588,6 +589,15 @@ function unmTransportTree(array $tree,?array $peer,string $keyId,int $depth=0): 
 
 function unmTransportDispatch(array $request,string $keyId): array {
     if(($request['v']??null)!==7)throw new RuntimeException('Protocol 7 is required.');$peer=unmTransportPeer($keyId);
+    if($request['op']==='live-call'){
+        if($peer===null||($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');
+        require_once __DIR__.'/live-migration.php';return unmTransportResult(0,json_encode(unmLiveRemote($peer,$request['args']),JSON_THROW_ON_ERROR)."\n");
+    }
+    if(in_array($request['op'],['live-control','live-data','live-benchmark'],true)){
+        if($peer===null||($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');
+        require_once __DIR__.'/live-migration.php';$kind=match($request['op']){'live-control'=>'control','live-data'=>'data','live-benchmark'=>'benchmark'};$job=unmLiveStreamAuthorize($request['args'],$peer,$kind);
+        return unmTransportRun(array_merge(['/usr/local/sbin/unmotion-live-io',$kind,$job['id']],$kind==='data'?[$request['args']['channel']]:[]),true);
+    }
     if($request['op']==='operations')return unmTransportTree((array)($request['args']['tree']??[]),$peer,$keyId);
     if($request['op']==='rsync-receive'&&$peer!==null&&($peer['pairingState']??'')==='paired')return unmTransportRsync($peer,(string)($request['args']['path']??''));
     throw new RuntimeException('Unsupported unMotion RPC.');
