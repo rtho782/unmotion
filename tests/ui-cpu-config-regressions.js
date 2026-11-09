@@ -25,6 +25,7 @@ assert.equal(requests[0].options.method,'POST');assert.equal(requests[0].options
 click('unm-cpu-config-cancel');requests[0].success(result);assert.equal($('#unm-cpu-config-modal').props.visible,false,'Late cancelled preview stays closed.');
 click('unm-cpu-apply');requests.at(-1).success(result);
 assert.equal($('#unm-cpu-config-confirm').props.disabled,false);assert.match($('#unm-cpu-config-content').children[2].content,/<script>/,'VM names are rendered as text.');
+assert.match($('#unm-cpu-config-content').children[1].content,/VMX\/SVM exposure is preserved/,'Review explains nested preservation without claiming peer compatibility.');
 $('#unm-cpu-selection').val(selected('Different-v3'));click('unm-cpu-config-confirm');assert.equal(requests.length,2,'A changed selection cannot apply an old review.');
 click('unm-cpu-config-cancel');click('unm-cpu-apply');requests.at(-1).success(result);click('unm-cpu-config-confirm');
 assert.equal(requests.at(-1).options.data.action,'cpuConfigApply');assert.equal(requests.at(-1).options.data.review,result.review);

@@ -56,6 +56,9 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
 ### unMotion $VERSION
+- Verify CPU XML semantically across libvirt's direct CPU-child ordering, without ignoring feature policies, topology or non-CPU changes. Reapplying an unchanged mode is idempotent.
+- Preserve existing Intel VMX/AMD SVM exposure, including implicit host-passthrough nesting and explicit opt-outs. Freshly validate each augmented guest CPU; unsupported nested requirements are skipped rather than stripped. Retain console credentials through secure persistent XML reads and backups.
+- Validate full active/pending nested CPU contracts and Intel KVM nesting during live preflight. AMD SVM guests retain CPU/Cold/Warm Move support but are blocked from live migration in this beta because active nested workloads are unsafe to migrate.
 - Add experimental live migration for running BIOS guests with one independent raw/qcow2 file disk, an active compatible custom CPU and ordinary bridge NICs. Both peers require this beta and matching qualified QEMU/libvirt; the migration-only adapter currently supports libvirt 12.2.0.
 - Use restricted job-bound SSH channels for control/RAM/disk. Receive paused, durably fence source starts and confirm source QEMU absence before destination resume. Retain source/partial disks; exclude UEFI, TPM, passthrough, ISOs, zvols/multiple disks and replication/recovery-managed VMs.
 - Add immediate live preflight, encrypted-link/RAM dirty-rate measurements, cancellation and explicit paired reconciliation. Limit live work to one job per host and preserve wire protocol 7. The first beta restricts live-managed VMs to live moves/native owner starts; consult the live-migration guide before testing.

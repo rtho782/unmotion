@@ -49,6 +49,11 @@ function unmLiveCpu(string $xml): string {
     $copy->documentElement->setAttribute('check','full');
     if((new DOMXPath($copy))->query('/cpu/feature[@name="invtsc" and @policy="require"]')->length)throw new RuntimeException('Non-migratable invariant TSC is not supported.');return $copy->saveXML($copy->documentElement);
 }
+function unmLiveNestedCpu(string $cpu,?callable $enabled=null): void {
+    $d=unmCpuCompatibilityXml($cpu);$xp=new DOMXPath($d);$enabled??='unmCpuNestedEnabled';
+    if($xp->query('/cpu/feature[@name="svm" and (@policy="require" or @policy="force")]')->length)throw new RuntimeException('AMD SVM nested hypervisors are supported for CPU configuration, but not live migration in this beta. Use Cold/Warm Move.');
+    if($xp->query('/cpu/feature[@name="vmx" and (@policy="require" or @policy="force")]')->length&&!$enabled('vmx'))throw new RuntimeException('Intel VMX is required but KVM nesting is not enabled on this host.');
+}
 function unmLiveInspectXml(string $xml): array {
     $d=unmCpuCompatibilityXml($xml);$xp=new DOMXPath($d);$uuid=unmTransportUuid(trim($xp->evaluate('string(/domain/uuid)')));$name=trim($xp->evaluate('string(/domain/name)'));
     foreach(['/domain/name','/domain/uuid','/domain/memory','/domain/vcpu','/domain/os/type','/domain/cpu'] as $required)if($xp->query($required)->length!==1)throw new RuntimeException('Duplicated or missing live VM identity/resources.');
@@ -89,6 +94,7 @@ function unmLiveValidateDestination(array $spec): void {
     $machine=$spec['machine'];unmCpuCompatibilityRequest(['machine'=>$machine]);
     unmLiveCommand(['virsh','domcapabilities','--virttype','kvm','--arch','x86_64','--machine',$machine]);
     unmLiveCommand(['virsh','hypervisor-cpu-compare','/dev/stdin','--error','--virttype','kvm','--arch','x86_64','--machine',$machine],$spec['cpuXml']);
+    unmLiveNestedCpu($spec['cpuXml']);
     foreach($spec['bridges'] as $bridge){if(!preg_match('/\A[A-Za-z0-9_.:-]{1,15}\z/D',$bridge)||!is_dir('/sys/class/net/'.$bridge.'/bridge'))throw new RuntimeException('Missing equivalent destination bridge: '.$bridge);}
     $state=unmLiveVmState($spec['vmUuid']);if($state['state']!=='undefined'||!$state['qemuAbsent'])throw new RuntimeException('A destination VM already has this UUID.');
     $names=explode("\n",trim(unmLiveCommand(['virsh','list','--all','--name'])));if(in_array($spec['vmName'],$names,true))throw new RuntimeException('A destination VM already has this name.');
@@ -109,8 +115,11 @@ function unmLiveSource(string $uuid): array {
     if($pending['machine']!==$spec['machine']||$pending['diskPath']!==$spec['diskPath']||$pending['vcpus']!==$spec['vcpus']||$pending['memoryKiB']!==$spec['memoryKiB'])throw new RuntimeException('Pending machine/disk/resource changes require a full stop/start before live migration.');
     // Expand both active and pending CPU definitions on the source, not from a
     // cached host report. A next-boot CPU setting is not the running CPU ABI.
-    $expanded=[];foreach([$spec['cpuXml'],$pending['cpuXml']] as $cpu)$expanded[]=unmCpuCompatibilityDefinition(unmLiveCommand(['virsh','hypervisor-cpu-baseline','/dev/stdin','--features','--migratable','--virttype','kvm','--arch','x86_64','--machine',$spec['machine']],$cpu));
+    // Do not strip nested virtualization from the contract while comparing it.
+    // It must survive expansion and receive fresh validation on both hosts.
+    $expanded=[];foreach([$spec['cpuXml'],$pending['cpuXml']] as $cpu)$expanded[]=unmCpuCompatibilityDefinition(unmLiveCommand(['virsh','hypervisor-cpu-baseline','/dev/stdin','--features','--virttype','kvm','--arch','x86_64','--machine',$spec['machine']],$cpu));
     if($expanded[0]!==$expanded[1])throw new RuntimeException('The selected CPU mode is not active yet. Fully stop/start the VM first.');
+    $spec['cpuXml']=$expanded[0];unmLiveNestedCpu($spec['cpuXml']);
     $path=$spec['diskPath'];unmTransportPath($path);if(is_link($path)||!is_file($path)||realpath($path)!==$path)throw new RuntimeException('Live disk path must be a real, independent file.');
     unmLiveFileSystem($path);
     $stat=stat($path);if(!$stat||$stat['nlink']!==1)throw new RuntimeException('Hard-linked disks are excluded from live migration.');
@@ -122,8 +131,8 @@ function unmLiveSource(string $uuid): array {
 function unmLivePreview(string $uuid,string $peerId): array {
     $peer=unmPeer($peerId);if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');unmAssertRemotePeerHost($peer['host']);
     $local=unmLivePlatform();$spec=unmLiveSource($uuid);
-    try{$remote=unmLiveRpc($peer,'inspect',['xml'=>$spec['liveXml']],45);}catch(Throwable $e){if(str_contains($e->getMessage(),'Unsupported unMotion RPC'))throw new RuntimeException('Live migration requires matching 0.5.0-beta3 on both peers. Cold/Warm Move protocol-7 compatibility is unchanged.');throw $e;}
-    if(($remote['platform']['version']??'')!==UNM_VERSION)throw new RuntimeException('Live migration requires matching 0.5.0-beta3 on both hosts. Existing Cold/Warm Move compatibility is unchanged.');
+    try{$remote=unmLiveRpc($peer,'inspect',['xml'=>$spec['liveXml']],45);}catch(Throwable $e){if(str_contains($e->getMessage(),'Unsupported unMotion RPC'))throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both peers. Cold/Warm Move protocol-7 compatibility is unchanged.');throw $e;}
+    if(($remote['platform']['version']??'')!==UNM_VERSION)throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both hosts. Existing Cold/Warm Move compatibility is unchanged.');
     if(!unmLiveGeneration($local,$remote['platform']))throw new RuntimeException('The destination must be a confirmed same/newer CPU generation from the same vendor.');
     if($local['hypervisor']!==$remote['platform']['hypervisor'])throw new RuntimeException('This first beta requires matching QEMU/libvirt versions.');
     return ['vmUuid'=>$uuid,'vmName'=>$spec['vmName'],'peerId'=>$peerId,'spec'=>$spec,'local'=>$local,'remote'=>$remote['platform'],'warnings'=>['The guest will briefly pause during handover; this is not a zero-latency guarantee.','Bridge names are checked, but equivalent physical networks and any in-guest VLAN configuration remain your responsibility.','The old source disk is retained; this beta never deletes it automatically.']];

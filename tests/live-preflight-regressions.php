@@ -6,6 +6,10 @@ function check(bool $v,string $m): void {global $checks;if(!$v)throw new Runtime
 function denied(string $xml,string $m):void{try{unmLiveInspectXml($xml);}catch(Throwable){check(true,$m);return;}throw new RuntimeException($m);}
 $xml='<domain type="kvm"><name>Squid Proxy</name><uuid>11111111-1111-4111-8111-000000000001</uuid><memory unit="KiB">2097152</memory><vcpu>2</vcpu><os><type arch="x86_64" machine="pc-q35-9.2">hvm</type></os><cpu mode="custom" match="exact"><model fallback="forbid">Cascadelake-Server-v5</model></cpu><devices><emulator>/usr/bin/qemu-system-x86_64</emulator><disk type="file" device="disk"><driver type="qcow2" cache="none"/><source file="/mnt/cache/domains/Squid Proxy/vdisk.qcow2"/><target dev="vda" bus="virtio"/></disk><interface type="bridge"><source bridge="br0"/></interface></devices></domain>';
 $s=unmLiveInspectXml($xml);check($s['vmName']==='Squid Proxy'&&$s['vcpus']===2&&$s['memoryKiB']===2097152,'eligible file disk/spaces/resources');
+$vmx='<cpu><feature name="vmx" policy="require"/></cpu>';$svm='<cpu><feature name="svm" policy="require"/></cpu>';
+unmLiveNestedCpu($vmx,fn($f)=>true);check(true,'Intel nested VMX has a fresh host gate');
+foreach([[$vmx,fn($f)=>false],[$svm,fn($f)=>true]] as [$cpu,$enabled]){try{unmLiveNestedCpu($cpu,$enabled);}catch(RuntimeException){check(true,'unavailable VMX or unsafe AMD nested live migration rejected');continue;}throw new RuntimeException('Nested live gate missing.');}
+unmLiveNestedCpu(str_replace('require','disable',$svm),fn($f)=>false);check(true,'disabled SVM is not an active nested guest');
 foreach(['<tpm/>','<hostdev/>','<filesystem/>','<shmem/>','<redirdev/>','<memory/>'] as $device)denied(str_replace('</devices>',$device.'</devices>',$xml),'excluded device '.$device);
 foreach(['<loader>/loader</loader>','<nvram>/vars</nvram>'] as $os)denied(str_replace('</os>',$os.'</os>',$xml),'UEFI not qualified');
 denied(str_replace('</domain>','<memoryBacking><hugepages/></memoryBacking></domain>',$xml),'huge pages excluded');

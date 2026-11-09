@@ -29,6 +29,15 @@ cpuAssert((new DOMXPath(unmCpuCompatibilityXml($latent['xml'])))->query('/domain
 $nested=unmCpuConfigTransform($original,str_replace('</cpu>','<feature policy="require" name="vmx"/><feature policy="require" name="vmx-ept"/></cpu>',$mask));
 cpuAssert((new DOMXPath(unmCpuCompatibilityXml($nested['xml'])))->query('/domain/cpu/feature[@name="vmx-ept" and @policy="require"]')->length===1,'A model explicitly requiring VMX keeps its subfeatures.');
 cpuAssert(unmCpuConfigTransform($change['xml'],$mask)['hash']===unmCpuConfigTransform($change['xml'],$mask)['targetHash'],'Idempotent transform.');
+$ordered=unmCpuCompatibilityXml($change['xml']);$ox=new DOMXPath($ordered);$oc=$ox->query('/domain/cpu')->item(0);$topology=$ox->query('/domain/cpu/topology')->item(0);$oc->insertBefore($topology,$ox->query('/domain/cpu/feature')->item(0));
+cpuAssert(unmCpuConfigHash($ordered->saveXML())===$change['targetHash'],'Libvirt topology ordering is semantically unchanged.');
+cpuAssert(unmCpuConfigTransform($ordered->saveXML(),$mask)['hash']===unmCpuConfigTransform($ordered->saveXML(),$mask)['targetHash'],'A reordered saved CPU remains idempotent.');
+foreach(['cores="2"'=>'cores="3"','name="sse2"'=>'name="different"','cpuset="2"'=>'cpuset="4"','policy="require" name="sse2"'=>'policy="disable" name="sse2"'] as $old=>$new)cpuAssert(unmCpuConfigHash(str_replace($old,$new,$change['xml']))!==$change['targetHash'],'Meaningful CPU/topology/non-CPU differences remain visible.');
+$explicitNested=unmCpuConfigTransform(str_replace('<cache mode="passthrough"/>','<feature policy="require" name="vmx"/><feature policy="disable" name="vmx-ept"/>',$original),str_replace('</cpu>','<feature policy="require" name="vmx-ept"/></cpu>',$mask));
+$en=new DOMXPath(unmCpuCompatibilityXml($explicitNested['xml']));cpuAssert($en->query('/domain/cpu/feature[@name="vmx" and @policy="require"]')->length===1&&$en->query('/domain/cpu/feature[@name="vmx-ept" and @policy="disable"]')->length===1,'Existing explicit VMX and nested subfeature policies survive.');
+$svm=unmCpuConfigTransform($original,$mask,['svm'=>'require']);cpuAssert((new DOMXPath(unmCpuCompatibilityXml($svm['xml'])))->query('/domain/cpu/feature[@name="svm" and @policy="require"]')->length===1,'AMD SVM can be preserved independently of the base mask.');
+$noVmx=unmCpuConfigTransform(str_replace('<cache mode="passthrough"/>','<feature policy="disable" name="vmx"/>',$original),str_replace('</cpu>','<feature policy="require" name="vmx"/></cpu>',$mask));cpuAssert((new DOMXPath(unmCpuCompatibilityXml($noVmx['xml'])))->query('/domain/cpu/feature[@name="vmx" and @policy="disable"]')->length===1,'Explicit VMX opt-out wins over selected model.');
+$console=unmCpuConfigTransform(str_replace('<devices>','<devices><graphics type="vnc" passwd="test-console-secret"/>',$original),$mask);cpuAssert(str_contains($console['xml'],'test-console-secret'),'Secure console XML survives transformation.');
 cpuReject(fn()=>unmCpuConfigTransform($original,str_replace('name="lm"','name="other"',$mask)),'64-bit');
 cpuReject(fn()=>unmCpuConfigTransform(str_replace('pc-q35-9.2','microvm',$original),$mask),'Q35');
 cpuReject(fn()=>unmCpuConfigTransform(str_replace('x86_64','i686',$original),$mask),'x86_64');
@@ -38,26 +47,30 @@ cpuReject(fn()=>unmCpuConfigTransform(str_replace('<devices>','<q:commandline xm
 cpuReject(fn()=>unmCpuConfigTransform('<!DOCTYPE domain [<!ENTITY x "bad">]>'.$original,$mask),'Invalid CPU');
 
 $tmp=sys_get_temp_dir().'/unmotion-cpu-config-'.bin2hex(random_bytes(6));mkdir($tmp,0700);mkdir($tmp.'/locks',0700);
-$domains=[$a=>$original,$b=>cpuFixture($b,'Another VM')];$calls=[];$managed=false;$failDefine='';$compareOk=true;$expandOk=true;$schemaOk=true;$guarded=[];$minimumBackups=2;
+$domains=[$a=>$original,$b=>cpuFixture($b,'Another VM')];$calls=[];$managed=false;$failDefine='';$compareOk=true;$expandOk=true;$schemaOk=true;$guarded=[];$minimumBackups=2;$normalize=false;$tamper=false;$nestedCompareOk=true;
 $view=['available'=>true,'cache'=>['identity'=>$identity],'modes'=>[['id'=>'Test-v2','status'=>'supported','cpuXml'=>$mask,'definitionHash'=>$hash]]];
-$runner=function(array $args,?string $input,int $timeout)use(&$domains,&$calls,&$managed,&$failDefine,&$compareOk,&$expandOk,&$minimumBackups,$mask,$tmp){
+$runner=function(array $args,?string $input,int $timeout)use(&$domains,&$calls,&$managed,&$failDefine,&$compareOk,&$expandOk,&$minimumBackups,&$normalize,&$tamper,&$nestedCompareOk,$mask,$tmp){
     $calls[]=$args;$out='';$code=0;$error='';
     switch($args[1]){
         case 'list':$out=implode("\n",array_keys($domains));break;
-        case 'dumpxml':$out=$domains[$args[2]];break;
+        case 'dumpxml':cpuAssert(in_array('--security-info',$args,true),'Every persistent XML read must retain credentials.');$out=$domains[$args[2]];break;
+        case 'capabilities':$out='<capabilities><host><cpu><vendor>Intel</vendor><feature name="vmx"/></cpu></host></capabilities>';break;
         case 'dominfo':$out="Persistent: yes\nManaged save: ".($managed?'yes':'no')."\nState: running\n";break;
         case 'hypervisor-cpu-baseline':$out=$expandOk?$mask:str_replace('name="sse2"','name="different"',$mask);break;
-        case 'hypervisor-cpu-compare':$code=$compareOk?0:1;$error=$compareOk?'':'CPU unsupported now';break;
+        case 'hypervisor-cpu-compare':$code=$compareOk?0:1;$error=$compareOk?'':'CPU unsupported now';if(!$nestedCompareOk&&(new DOMXPath(unmCpuCompatibilityXml($input)))->query('/cpu/feature[@name="vmx" and @policy="require"]')->length){$code=1;$error='Nested CPU unsupported now';}break;
         case 'define':
             cpuAssert(count(glob($tmp.'/backups/*/*.xml')?:[])===$minimumBackups,'Every original must be backed up before any define.');
             $x=new DOMXPath(unmCpuCompatibilityXml($input));$id=$x->evaluate('string(/domain/uuid)');
-            if($id===$failDefine){$code=1;$error='Injected define failure';}else $domains[$id]=$input;
+            if($id===$failDefine){$code=1;$error='Injected define failure';}else{
+                if($normalize){$d=unmCpuCompatibilityXml($input);$q=new DOMXPath($d);$c=$q->query('/domain/cpu')->item(0);$t=$q->query('/domain/cpu/topology')->item(0);if($t)$c->insertBefore($t,$q->query('/domain/cpu/feature')->item(0));$input=$d->saveXML();}
+                $domains[$id]=$tamper?str_replace('cpuset="2"','cpuset="4"',$input):$input;
+            }
             break;
         default:throw new RuntimeException('Unexpected command '.json_encode($args));
     }
     return ['code'=>$code,'stdout'=>$out,'stderr'=>$error];
 };
-$service=new UnmCpuConfigService($runner,fn()=>$view,function($uuid)use(&$guarded){if(in_array($uuid,$guarded,true))throw new RuntimeException('Guarded VM');},$tmp.'/locks',$tmp.'/backups','test-host|boot',null,function($xml)use(&$schemaOk){return $schemaOk;});
+$service=new UnmCpuConfigService($runner,fn()=>$view,function($uuid)use(&$guarded){if(in_array($uuid,$guarded,true))throw new RuntimeException('Guarded VM');},$tmp.'/locks',$tmp.'/backups','test-host|boot',null,function($xml)use(&$schemaOk){return $schemaOk;},fn($feature)=>false);
 try{
     $preview=$service->execute('Test-v2',$hash,$identity);
     cpuAssert($preview['eligible']===2&&$preview['applied']===0,'Preview must be nonmutating.');
@@ -85,15 +98,24 @@ try{
     cpuAssert(!array_intersect(['start','shutdown','destroy','reboot','managedsave-remove','autostart'],array_column($calls,1)),'No guest lifecycle/autostart commands allowed.');
     cpuReject(fn()=>$service->execute('Test-v2',$hash,$identity,$preview['review']),'Nothing was changed');
     $domains=[$a=>$original,$b=>cpuFixture($b,'Another VM')];$failDefine='';$minimumBackups=4;
-    $done=$service->execute('Test-v2',$hash,$identity,$preview['review']);
+    $normalize=true;$done=$service->execute('Test-v2',$hash,$identity,$preview['review']);
     cpuAssert($done['complete']&&$done['applied']===2,'All eligible definitions apply successfully.');
     $again=$service->execute('Test-v2',$hash,$identity);cpuAssert($again['eligible']===0&&count(array_filter($again['vms'],fn($r)=>$r['status']==='unchanged'))===2,'Already matching definitions are unchanged.');
     $aliasMask=str_replace('Test-v2','Canonical-v1',$mask);$aliasHash=hash('sha256',$aliasMask);
     $aliasView=$view;$aliasView['modes'][0]['cpuXml']=$aliasMask;$aliasView['modes'][0]['definitionHash']=$aliasHash;
     $aliasRun=function($args,$input,$timeout)use($runner,$aliasMask){return $args[1]==='hypervisor-cpu-baseline'?['code'=>0,'stdout'=>$aliasMask,'stderr'=>'']:$runner($args,$input,$timeout);};
-    $aliasService=new UnmCpuConfigService($aliasRun,fn()=>$aliasView,fn($uuid)=>null,$tmp.'/locks',$tmp.'/backups','test-host|boot',null,fn($xml)=>true);
+    $aliasService=new UnmCpuConfigService($aliasRun,fn()=>$aliasView,fn($uuid)=>null,$tmp.'/locks',$tmp.'/backups','test-host|boot',null,fn($xml)=>true,fn($feature)=>false);
     $aliasPlan=$aliasService->execute('Test-v2',$aliasHash,$identity);
     cpuAssert($aliasPlan['eligible']===0,'Persist selected versioned name, not an equivalent internal baseline name.');
+    $nestedService=new UnmCpuConfigService($runner,fn()=>$view,fn($uuid)=>null,$tmp.'/locks',$tmp.'/backups','test-host|boot',null,fn($xml)=>true,fn($feature)=>$feature==='vmx');
+    $domains=[$a=>$original,$b=>cpuFixture($b,'Another VM')];$nestedPlan=$nestedService->execute('Test-v2',$hash,$identity);
+    cpuAssert($nestedPlan['eligible']===2&&$nestedPlan['vms'][0]['nestedVirtualization']===['vmx'],'Host-passthrough implicit VMX is explicitly preserved and freshly validated.');
+    $nestedCompareOk=false;cpuAssert($nestedService->execute('Test-v2',$hash,$identity)['eligible']===0,'Unavailable augmented nested contract is skipped even when the ordinary base compare succeeds.');$nestedCompareOk=true;
+    $amdRunner=static function($args,$input,$timeout)use($runner){if($args===['virsh','capabilities'])return ['code'=>0,'stdout'=>'<capabilities><host><cpu><vendor>AMD</vendor></cpu></host></capabilities>','stderr'=>''];return $runner($args,$input,$timeout);};
+    $amdService=new UnmCpuConfigService($amdRunner,fn()=>$view,fn($uuid)=>null,$tmp.'/locks',$tmp.'/backups','test-host|boot',null,fn($xml)=>true,fn($feature)=>$feature==='svm');
+    cpuAssert($amdService->execute('Test-v2',$hash,$identity)['vms'][0]['nestedVirtualization']===['svm'],'Implicit AMD SVM is preserved even when implicit in the host model rather than listed as an extra capability.');
+    $domains[$a]=str_replace('<cache mode="passthrough"/>','<feature name="vmx" policy="require"/>',$original);$disabled=$service->execute('Test-v2',$hash,$identity);cpuAssert($disabled['vms'][0]['status']==='skipped'&&str_contains($disabled['vms'][0]['reason'],'nesting is not enabled'),'Explicit nested requirement cannot be dropped when the module is disabled.');$domains[$a]=$original;
+    $tamper=true;$minimumBackups=6;$bad=$service->execute('Test-v2',$hash,$identity,$preview['review']);cpuAssert(!$bad['complete']&&$bad['vms'][0]['status']==='needs_review','Non-CPU changes after define still stop the batch.');$tamper=false;
     mkdir($tmp.'/policies');mkdir($tmp.'/policies/seeds');mkdir($tmp.'/policies/seeds/test');
     file_put_contents($tmp.'/policies/seeds/test/seed.json',json_encode(['vmUuid'=>$a,'state'=>'READY']));
     cpuReject(fn()=>unmCpuConfigGuard($tmp.'/policies',$a),'Prepared');

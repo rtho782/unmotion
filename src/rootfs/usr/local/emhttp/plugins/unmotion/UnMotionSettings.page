@@ -55,6 +55,7 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 <input type="hidden" id="unm-cpu-selection" value="">
 <div class="unm-actions"><input type="button" id="unm-cpu-apply" value="_(Review and apply to all local VMs)_" disabled></div>
 <p class="unm-muted">_(Applies the selected mode, including the suggestion when selected, to eligible persistent VM XMLs on this host only. Review affected and skipped VMs first. Original XMLs are backed up; topology, pinning, disks and other VM settings are preserved. No VM is stopped, started or rebooted. The new CPU takes effect on the next full stop/start, not a reboot inside the guest.)_</p>
+<p class="unm-muted">_(Nested virtualization already exposed through VMX/SVM is preserved, including host-passthrough exposure when KVM nesting is enabled. Explicit feature opt-outs remain disabled. The augmented CPU is freshly validated locally; unsupported requirements are skipped, not silently removed. Intel nested live migration also checks the full CPU contract and KVM nesting on both hosts. AMD SVM guests cannot use live migration in this beta.)_</p>
 <div id="unm-cpu-matrix" class="unm-table-wrap"></div>
 </div>
 </div>

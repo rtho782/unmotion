@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0-beta4 — 2026-11-09
+
+- Fix CPU-configuration verification when libvirt moves topology before features. Normalize only known direct CPU-child ordering; feature policies, topology values, duplicates and non-CPU XML remain verified. Reapplying a matching mode is idempotent.
+- Preserve existing VMX/SVM exposure, including implicit host-passthrough/host-model nesting and explicit opt-outs. Freshly validate each augmented CPU and KVM nesting; skip unsupported requirements rather than silently removing them.
+- Read, back up and verify secure persistent XML so CPU changes retain console credentials. CPU configuration never restarts a guest.
+- Compare full active/pending CPU contracts without stripping nested features; check Intel nesting on both live-migration hosts. AMD SVM CPU configuration remains supported, but SVM-enabled live migration is blocked because active nested AMD workloads are unsafe to migrate.
+- Preserve protocol 7, cached host CPU reports and ownership fencing. Both peers need matching Beta4 for live migration. Stable and Community Apps remain on 0.4.9.
+
 ## 0.5.0-beta3 — 2026-11-09
 
 - Add experimental live migration for running BIOS guests with one independent raw/qcow2 file disk, an active custom CPU profile and ordinary bridge NICs. Fresh checks cover exact machine/software compatibility, CPU vendor/generation/features, conflicts, disk isolation and capacity.

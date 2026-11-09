@@ -1,8 +1,8 @@
-# Live migration — 0.5.0-beta3
+# Live migration — 0.5.0-beta4
 
 Author: Richard Skinner
 
-[0.5.0-beta3](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta3) is an experimental prerelease on the [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable and Community Apps remain on 0.4.9. Use disposable VMs and verified backups for initial testing.
+[0.5.0-beta4](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta4) is an experimental prerelease on the [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable and Community Apps remain on 0.4.9. Use disposable VMs and verified backups for initial testing.
 
 Live migration copies a running VM's disk and RAM without a guest shutdown/reboot, preserving its UUID, MAC addresses, CPU profile and resources. A handover pause is unavoidable. A 500 ms stun is a target, not a guarantee: initial nested-lab tests observed approximately 1.85–2.13 second packet gaps, including ownership confirmation.
 
@@ -10,11 +10,12 @@ Cold migration and Warm Move retain their existing powered-off handover. They do
 
 ## First-beta requirements
 
-- Matching Beta3 builds, reciprocal pairing and a proven native start fence on both hosts.
+- Matching Beta4 builds, reciprocal pairing and a proven native start fence on both hosts.
 - x86_64 KVM, a confirmed same/newer CPU generation from the same vendor and a compatible **active** custom CPU definition. Apply a shared mode and fully stop/start first; changing next-boot XML or rebooting inside the guest is not enough.
 - Exact versioned Q35/i440fx machine, matching QEMU/libvirt versions and unchanged resources. The migration-only control adapter is qualified for **libvirt 12.2.0**; other versions fail preflight without an unrestricted fallback.
 - One independent raw/qcow2 file on a direct pool/disk path with `cache="none"` or `directsync`. No user-share indirection, backing chain, internal image snapshot, encrypted image, hard link or disk used by another VM.
 - BIOS firmware and ordinary bridge NICs. Bridge names are checked; equivalent physical networks and in-guest VLAN settings remain your responsibility.
+- Intel VMX guests require KVM nesting enabled on both hosts, a fully validated nested CPU contract and compatible nested workloads. CPU application preserves existing VMX/SVM exposure, but cached base-mask matches alone do not certify nested requirements. AMD SVM-enabled guests are blocked from live migration; the kernel warns of unsafe behavior with active nested AMD workloads. See [kernel guidance](https://docs.kernel.org/virt/kvm/x86/running-nested-guests.html).
 
 UEFI/NVRAM, TPM, PCI/GPU/USB passthrough, ISO/CD-ROM devices, zvols, multiple disks, host CPU/NUMA pinning, huge pages, memory hotplug, shared-memory/filesystem devices and QEMU overrides are excluded. Replication/recovery-managed guests and VMs with prepared Warm Moves are excluded. Other workflows keep their existing support for these configurations.
 

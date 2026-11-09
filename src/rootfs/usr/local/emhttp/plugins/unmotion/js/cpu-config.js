@@ -34,7 +34,7 @@
       if(selection!==$('#unm-cpu-selection').val()){content('The CPU selection changed. Close this review and try again.');return;}
       review=value.review;
       content(value.eligible+' VM(s) will use '+value.mode+' after their next full stop/start. Running guests are unchanged. Paired hosts are not modified.');
-      $('<p>').text('Older modes can reduce performance or omit instructions required by the guest. Original XMLs will be backed up on this host. Skipped VMs are not changed.').appendTo('#unm-cpu-config-content');
+      $('<p>').text('Older modes can reduce performance or omit instructions required by the guest. Existing VMX/SVM exposure is preserved and validated locally; an ordinary shared mask does not by itself prove nested migration compatibility. Original XMLs are backed up. Skipped VMs are not changed.').appendTo('#unm-cpu-config-content');
       rows(value);$('#unm-cpu-config-confirm').prop('disabled',!value.eligible);
     },function(error){content(error||'CPU configuration could not be reviewed. No VM was changed.');});
   }
