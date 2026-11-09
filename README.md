@@ -1,13 +1,17 @@
 # unMotion beta update feed
 
-This branch serves **unMotion 0.5.0-beta2** (Plugins-tab version **2026.11.08.02-0.5.0-beta2**). Requires Unraid 7.3.2 or later. The [stable feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg) and Community Apps installer remain on 0.4.9.
+This branch serves **unMotion 0.5.0-beta3** (Plugins-tab version **2026.11.08.03-0.5.0-beta3**). Requires Unraid 7.3.2 or later. The [stable feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg) and Community Apps installer remain on 0.4.9.
 
 Opt into beta updates with the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg) through **Plugins → Install Plugin**. It downloads a separate SHA-256-verified TXZ and keeps future updates on this beta track. Stable installations are not switched automatically.
 
-Beta2 adds cached local/paired CPU compatibility, suggested shared modes and reviewed bulk configuration of eligible local VM XMLs. Original XMLs are backed up, and CPU changes take effect at the next full stop/start—not a guest reboot. **Live migration itself is not implemented.** Cold Move and Warm Move still hand over with the VM powered off and do not require a shared CPU mode where the VM/guest are otherwise compatible.
+Beta3 adds experimental live migration for running BIOS guests with one independent raw/qcow2 file disk, an active compatible custom CPU and ordinary bridge NICs. Both peers need matching Beta3 and the qualified matching QEMU/libvirt stack (libvirt 12.2.0). UEFI, TPM, passthrough, ISOs, zvols/multiple disks and recovery/replication-managed VMs are excluded. Only one live job may run per host. Start with disposable guests and verified backups.
 
-Update both hosts for cached CPU comparison. Wire protocol 7 is unchanged; older protocol-7 peers retain existing workflows but cannot supply the optional CPU report. Finish active operations, pause replication and stop recovery-managed guests before upgrading. Preserve the installed descriptor filename `unmotion.plg`.
+Migrated guests remain live-managed: native owner starts and further live moves work, but their Cold/Warm Move, clone, replication-policy and bulk CPU changes are blocked. Safe hand-back/unmanage is not implemented. Source/partial disks are retained. Nested-lab TCP handover gaps were approximately 1.85–2.13 seconds, not a guaranteed 500 ms stun.
 
-Read the [user guide](https://github.com/rtho782/unmotion-community-apps/blob/main/README.md), [release notes](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta2), [CPU compatibility guide](https://github.com/rtho782/unmotion/blob/0.5.0-beta2/docs/CPU-COMPATIBILITY.md) and [upgrade guidance](https://github.com/rtho782/unmotion/blob/main/docs/SECURITY-042.md).
+Cached local/paired CPU comparison, shared-mode suggestions and reviewed next-boot configuration remain available. CPU changes take effect after a full stop/start, not a guest reboot; live preflight separately checks the active VM. Existing Cold/Warm Move handovers remain powered-off and do not require a shared CPU mode where VM/guest settings are otherwise compatible.
+
+Wire protocol 7 is unchanged; older protocol-7 peers retain existing workflows but lack live support. Finish active operations, pause replication, reconcile live handovers and stop recovery/live-managed guests before upgrading. Preserve the installed descriptor filename `unmotion.plg`; never delete authority records to bypass a blocked upgrade/start.
+
+Read the [user guide](https://github.com/rtho782/unmotion-community-apps/blob/main/README.md), [release notes](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta3), [live-migration requirements](https://github.com/rtho782/unmotion/blob/0.5.0-beta3/docs/LIVE-MIGRATION-BETA.md), [CPU compatibility guide](https://github.com/rtho782/unmotion/blob/0.5.0-beta3/docs/CPU-COMPATIBILITY.md) and [upgrade guidance](https://github.com/rtho782/unmotion/blob/main/docs/SECURITY-042.md).
 
 Author: Richard Skinner. GPL-3.0-only.
