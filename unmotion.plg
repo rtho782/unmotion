@@ -2,14 +2,17 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.11.08.03-0.5.0-beta3">
+<!ENTITY version "2026.11.09.01-0.5.0-beta4">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta3-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta4-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.5.0-beta3
+### unMotion 0.5.0-beta4
+- Verify CPU XML semantically across libvirt's direct CPU-child ordering, without ignoring feature policies, topology or non-CPU changes. Reapplying an unchanged mode is idempotent.
+- Preserve existing Intel VMX/AMD SVM exposure, including implicit host-passthrough nesting and explicit opt-outs. Freshly validate each augmented guest CPU; unsupported nested requirements are skipped rather than stripped. Retain console credentials through secure persistent XML reads and backups.
+- Validate full active/pending nested CPU contracts and Intel KVM nesting during live preflight. AMD SVM guests retain CPU/Cold/Warm Move support but are blocked from live migration in this beta because active nested workloads are unsafe to migrate.
 - Add experimental live migration for running BIOS guests with one independent raw/qcow2 file disk, an active compatible custom CPU and ordinary bridge NICs. Both peers require this beta and matching qualified QEMU/libvirt; the migration-only adapter currently supports libvirt 12.2.0.
 - Use restricted job-bound SSH channels for control/RAM/disk. Receive paused, durably fence source starts and confirm source QEMU absence before destination resume. Retain source/partial disks; exclude UEFI, TPM, passthrough, ISOs, zvols/multiple disks and replication/recovery-managed VMs.
 - Add immediate live preflight, encrypted-link/RAM dirty-rate measurements, cancellation and explicit paired reconciliation. Limit live work to one job per host and preserve wire protocol 7. The first beta restricts live-managed VMs to live moves/native owner starts; consult the live-migration guide before testing.
@@ -23,7 +26,7 @@
 - CPU modes support live migration with a brief handover pause, whose duration depends on the workload and ownership checks. Cold and Warm Move remain powered-off handovers without requiring a shared CPU profile. Older masks can reduce performance or omit guest-required instructions.
 - The supported numeric OVMF setting remains available from 0.4.9 on both hosts; arbitrary QEMU command lines remain blocked. First-contact fingerprint acceptance remains available from 0.4.8.
 - Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.5.0-beta3; the Plugins tab shows fixed installer version 2026.11.08.03-0.5.0-beta3 for reliable upgrade ordering.
+- Application/release version stays 0.5.0-beta4; the Plugins tab shows fixed installer version 2026.11.09.01-0.5.0-beta4 for reliable upgrade ordering.
 - Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
 - Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
 - Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
@@ -295,8 +298,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta3/unmotion-0.5.0_beta3-noarch-1.txz</URL>
-<SHA256>a5847188809f158c8e13c149d22e430cf9d5a13faf991123c1d7890cede3a7ef</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta4/unmotion-0.5.0_beta4-noarch-1.txz</URL>
+<SHA256>ae55e4233ee0887fbca5aaf08800f74de9a39630d86aa836844b0c39b26c6ad4</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
