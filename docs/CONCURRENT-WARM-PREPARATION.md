@@ -17,6 +17,12 @@ This covers prepare, update and resume workers. With matching protocol-7 peers, 
 
 These reservations coordinate seeds admitted by the **same source host**, not independent administrators or unrelated source hosts. They do not create a distributed storage lock, expand support for shared writable guest disks, or make out-of-band XML/storage edits safe. Existing destination conflict checks, readonly prepared storage, UUID checks, shutdown/final-delta cutover and resumable-receive preservation remain in force.
 
+## File image verification in Beta5
+
+0.5.0-beta5 permits raw/qcow2 images to grow during online Prepare and Update. The destination length must match rsync's single-file transfer statistics; malformed statistics, truncated destinations and transfer errors still fail. A powered-off seed also requires an unchanged source length.
+
+Online image seeds are provisional, not independently bootable backups. Cutover powers off the source and forces the final mutable-image delta even when size/timestamps match. It verifies the stable source and destination lengths before proceeding to VM definition/start. This can read the whole image even when few blocks changed; the delta transfer still avoids sending matching blocks. ZFS snapshots, holds and resume-token handling are unchanged.
+
 ## Tests
 
 `tests/seed-concurrency-regressions.php` covers independent admissions, same-VM conflicts, source/destination path overlaps, peer aliases, retained/partial reservations, legacy records, hardlinks, FUSE aliases, worker mapping changes, duplicate-worker guards and explicit POST gates. See `VERIFICATION.md` for the live lab results and their limits.

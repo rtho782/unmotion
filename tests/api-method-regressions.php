@@ -11,7 +11,7 @@ $actions=['saveSettings','pairPeer','testPeer','removePeer','breakPairing','star
 try {
     $actions[]='pairingHostKey';
     $actions[]='cpuCompatibility';$actions[]='cpuCompatibilityPeer';$actions[]='cpuCompatibilityMachines';$actions[]='cpuCompatibilityScope';$actions[]='cpuConfigPreview';$actions[]='cpuConfigApply';
-    foreach(['livePreview','liveStart','liveCancel','liveReconcile'] as $action)$actions[]=$action;
+    foreach(['livePreview','liveStart','liveCancel','liveReconcile','cpuDefaultSave','liveHandbackPreview','liveHandback','ordinaryHandoverResolve'] as $action)$actions[]=$action;
     foreach($actions as $action)foreach(['GET','HEAD','OPTIONS',''] as $method){
         $code='$_SERVER["REQUEST_METHOD"]='.var_export($method,true).';$_GET["action"]='.var_export($action,true).';require '.var_export($fixture,true).';';
         file_put_contents($requestFile,'<?php '.$code);$r=unmRun([PHP_BINARY,$requestFile],null,10);$reply=json_decode($r['stdout'],true);

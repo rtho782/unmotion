@@ -87,15 +87,22 @@ function unmCpuConfigHash(string $xml): string {
         $nodes=[];$known=true;
         foreach($cpu->childNodes as $n){if(!$n instanceof DOMElement||$n->namespaceURI||!in_array($n->tagName,['model','vendor','topology','cache','maxphysaddr','feature','numa'],true)){$known=false;break;}$nodes[]=$n;}
         if(!$known)continue;
-        usort($nodes,static fn($a,$b)=>strcmp($a->tagName,$b->tagName)?:strcmp($a->C14N(),$b->C14N()));foreach($nodes as $n)$cpu->appendChild($n);
+        usort($nodes,static fn($a,$b)=>strcmp($a->tagName,$b->tagName)?:strcmp(unmXmlCanonical($a),unmXmlCanonical($b)));foreach($nodes as $n)$cpu->appendChild($n);
     }
-    return hash('sha256',$dom->C14N());
+    return hash('sha256',unmXmlCanonical($dom));
+}
+/** Cheap display evidence only. Full CPU feature equivalence is checked freshly by live preflight. */
+function unmCpuConfigReadiness(string $pending,?string $active): array {
+    $part=static function($xml){$d=unmCpuCompatibilityXml($xml);$x=new DOMXPath($d);$c=$x->query('/domain/cpu')->item(0);return ['mode'=>$c?->getAttribute('mode')??'default','model'=>$x->evaluate('string(/domain/cpu/model)')];};
+    $next=$part($pending);$now=$active!==null&&$active!==''?$part($active):null;
+    $named=$next['mode']==='custom'&&$next['model']!=='';$same=$now!==null&&$now===$next;
+    return ['active'=>$now,'pending'=>$next,'status'=>$now===null?'next-boot':(!$same?'different':($named?'model-active':'not-configured')),'displayOnly'=>true];
 }
 
 /** Read-only policy inventory; active/resumable work must not retain an older CPU XML. */
 function unmCpuConfigGuard(string $base,string $uuid): void {
     if(unmNativeRecordForVm($base,$uuid)!==null)throw new RuntimeException('Recovery-managed VM: disarm/reconcile recovery before changing its CPU.');
-    if(unmLiveNativeRecord($base,$uuid)!==null)throw new RuntimeException('Live-managed VM: CPU changes are outside this beta\'s guarded ownership workflow.');
+    $live=unmLiveNativeRecord($base,$uuid);if($live!==null&&!unmLiveOrdinaryOwner($live))throw new RuntimeException('Live-managed VM: review powered-off hand-back before changing its CPU.');
     $groups=['seeds/*/seed.json','replications/*/policy.json','jobs/*/job.json'];
     foreach($groups as $group)foreach(glob($base.'/'.$group)?:[] as $path){
         $record=json_decode((string)@file_get_contents($path),true);
@@ -146,6 +153,10 @@ final class UnmCpuConfigService {
         $policies=unmCpuConfigNestedPolicies($xp,$inherited);
         foreach(['vmx','svm'] as $feature)if(($policies[$feature]??'')==='require'&&!($this->nestedEnabled)($feature))throw new RuntimeException('Nested '.$feature.' is required but KVM nesting is not enabled on this host.');
         return $policies;
+    }
+    public function prepareVm(string $xml,string $definition): array {
+        $d=unmCpuCompatibilityXml($xml);$machine=(new DOMXPath($d))->evaluate('string(/domain/os/type/@machine)');
+        return unmCpuConfigTransform($xml,$definition,$this->nestedPolicies($xml,$machine));
     }
     private function lock(string $path) {
         if(is_link($path))throw new RuntimeException('Invalid CPU configuration lock.');

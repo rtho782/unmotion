@@ -7,7 +7,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-client'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-client','unmotion-live-ordinary','unmotion-cpu-editor'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -50,6 +50,8 @@ function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins
         $m=json_decode((string)@file_get_contents($path),true);$uuid=(string)($m['vmUuid']??'');$r=json_decode((string)@file_get_contents($base.'/live-authority/'.$uuid.'.json'),true);
         if(is_link($path)||is_link($candidate)||!preg_match('/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D',$uuid)||basename($path)!==$uuid.'.json'||($m['schemaVersion']??null)!==1||($r['schemaVersion']??null)!==1||($r['vmUuid']??'')!==$uuid||!preg_match('/\Alive-[a-f0-9]{24}\z/D',(string)($m['jobId']??''))||($r['jobId']??'')!==$m['jobId']||!in_array($r['state']??'',['OWNER','MOVING','RECEIVING','RETIRED','ABORTED'],true))throw new RuntimeException('Corrupt live migration authority prevents upgrade.');
         $host=trim((string)@file_get_contents($base.'/host_id'));$pattern='/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D';
+        if(isset($r['workflow'])&&!in_array($r['workflow'],['ordinary','ordinary-pending'],true)||($r['workflow']??'')==='ordinary-pending'&&(($r['state']??'')!=='OWNER'||!preg_match('/\A[a-f0-9]{32}\z/D',(string)($r['handbackNonce']??''))))throw new RuntimeException('Corrupt ordinary hand-back authority prevents upgrade.');
+        if(!$verifiedEarlyBoot&&($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Finish the pending ordinary hand-back before upgrading.');
         if(!in_array($r['role']??'',['source','destination'],true)||!preg_match($pattern,(string)($r['sourceHostId']??''))||!preg_match($pattern,(string)($r['destinationHostId']??''))||$r['sourceHostId']===$r['destinationHostId']||($r[$r['role'].'HostId']??'')!==$host||!preg_match($pattern,(string)($r['bootId']??''))||!is_int($r['expiresAt']??null)||!in_array($r['state'],$r['role']==='source'?['OWNER','MOVING','RETIRED']:['OWNER','RECEIVING','ABORTED'],true))throw new RuntimeException('Live authority host/role is invalid; upgrade refused.');
         if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=true;
     }

@@ -13,8 +13,9 @@ class Element{
   on(k,f){this.handlers[k]=f;return this;}trigger(k){if(this.handlers[k])this.handlers[k]();return this;}
 }
 function $(k){if(typeof k==='function'){ready=k;return;}if(typeof k==='object')return k;if(k.startsWith('<'))return new Element();if(!elements.has(k))elements.set(k,new Element());return elements.get(k);}
-$.ajax=options=>{const h={};const r={options,done(f){h.done=f;return this;},fail(f){h.fail=f;return this;},always(f){h.always=f;return this;},abort(){this.aborted=true;},success(v){h.done(v);h.always();},failure(error){h.fail({responseJSON:{error}});h.always();}};requests.push(r);return r;};
+$.ajax=options=>{const h={};const r={options,done(f){h.done=f;return this;},fail(f){h.fail=f;return this;},always(f){h.always=f;return this;},abort(){this.aborted=true;},success(v){h.done(v);if(h.always)h.always();},failure(error){h.fail({responseJSON:{error}});if(h.always)h.always();}};requests.push(r);return r;};
 const context={jQuery:$,document:{activeElement:{focus(){}}}};vm.createContext(context);vm.runInContext(source,context);ready();
+assert.equal(requests[0].options.data.action,'cpuDefault');const initialDefault=requests.shift();
 function selected(mode='Mode-v2'){return JSON.stringify({mode,definition_hash:'a'.repeat(64),cache_identity:'b'.repeat(64)});}
 function click(id){$('#'+id).handlers.click();}
 const result={success:true,review:'c'.repeat(64),eligible:1,mode:'Mode-v2',vms:[{name:'Squid Proxy <script>',status:'eligible'},{name:'Other VM',status:'skipped',reason:'Saved memory state'}]};
@@ -37,5 +38,13 @@ assert.equal($('#unm-cpu-config-cancel').props.disabled,false);assert.equal($('#
 click('unm-cpu-config-cancel');click('unm-cpu-apply');requests.at(-1).failure('No schema available');assert.equal($('#unm-cpu-config-content').children[0].content,'No schema available');
 click('unm-cpu-config-cancel');click('unm-cpu-apply');requests.at(-1).success(result);click('unm-cpu-config-confirm');requests.at(-1).failure();
 assert.match($('#unm-cpu-config-content').children[0].content,/some XMLs may have been updated/,'Lost apply response must not claim no changes.');
+$('#unm-cpu-selection').val(selected());click('unm-cpu-default');const saveDefault=requests.at(-1),beforeDuplicate=requests.length;
+assert.equal(saveDefault.options.method,'POST');assert.equal(saveDefault.options.data.action,'cpuDefaultSave');assert.equal(saveDefault.options.data.mode,'Mode-v2');
+click('unm-cpu-default');click('unm-cpu-default-clear');assert.equal(requests.length,beforeDuplicate,'Default changes cannot be double-submitted or cleared while saving.');
+initialDefault.success({default:{configured:false,editor:{available:true}}});assert.match($('#unm-cpu-default-status').content,/Validating and saving/,'A stale initial GET cannot overwrite a newer save operation.');
+saveDefault.success({success:true,default:{configured:true,mode:'Mode-v2',editor:{available:true}}});assert.match($('#unm-cpu-default-status').content,/New VM default: Mode-v2/);assert.equal($('#unm-cpu-default-clear').props.disabled,false);
+click('unm-cpu-default-clear');assert.equal(requests.at(-1).options.data.clear,'1');assert.equal(requests.at(-1).options.data.mode,undefined);requests.at(-1).failure();
+assert.match($('#unm-cpu-default-status').content,/Reload to check/,'A lost default-save response is not described as no changes.');
+click('unm-cpu-default-clear');requests.at(-1).success({success:true,default:{configured:false,editor:{available:true}}});assert.match($('#unm-cpu-default-status').content,/No unMotion CPU default/);assert.equal($('#unm-cpu-default-clear').props.disabled,true);
 assert.doesNotMatch(source,/\b(?:confirm|alert)\(/,'Uses a styled review, not native popups.');
-console.log('CPU bulk review, cancellation, stale selection, escaped names, double submission and uncertain result UI passed.');
+console.log('CPU bulk/default review, cancellation, stale selection/GET, escaped names, double submission, clearing and uncertain result UI passed.');

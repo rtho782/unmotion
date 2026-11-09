@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.0-beta4}"
+EXPECTED_VERSION="${1:-0.5.0-beta5}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -50,6 +50,7 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/live-preflight-regressions.php"
   php "$ROOT/tests/live-record-regressions.php"
   php "$ROOT/tests/live-worker-regressions.php"
+  php "$ROOT/tests/live-ordinary-regressions.php"
   php "$ROOT/tests/native-fence-controller-test.php"
   php "$ROOT/tests/upgrade-managed-guard-regressions.php"
   php "$ROOT/tests/inventory-cache-regressions.php"
@@ -59,6 +60,7 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/cpu-machines-regressions.php"
   php "$ROOT/tests/cpu-overview-regressions.php"
   php "$ROOT/tests/cpu-config-regressions.php"
+  php "$ROOT/tests/cpu-default-regressions.php"
   php "$ROOT/tests/boot-restore-regressions.php"
   php "$ROOT/tests/diagnostic-regressions.php"
   php "$ROOT/tests/seed-concurrency-regressions.php"
@@ -89,6 +91,8 @@ if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/live-migration.js"
   node "$ROOT/tests/ui-live-migration-regressions.js"
   node "$ROOT/tests/ui-cpu-config-regressions.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/session.js"
+  node "$ROOT/tests/ui-session-regressions.js"
   node "$ROOT/tests/ui-warning-regressions.js"
   node "$ROOT/tests/ui-escaping-regressions.js"
   node "$ROOT/tests/ui-inventory-regressions.js"
@@ -113,9 +117,11 @@ bash "$ROOT/tests/discovery-permissions-regressions.sh"
 bash "$ROOT/tests/seed-lock-regressions.sh"
 bash "$ROOT/tests/migration-lock-regressions.sh"
 bash "$ROOT/tests/numeric-regressions.sh"
+bash "$ROOT/tests/seed-rsync-regressions.sh"
 bash "$ROOT/tests/completed-receive-regressions.sh"
 bash "$ROOT/tests/start-gate-regressions.sh"
 bash -n "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/numeric.sh"
+bash -n "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/seed-rsync.sh"
 bash -n "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/migration-lock.sh"
 
 echo 'All available verification checks passed.'

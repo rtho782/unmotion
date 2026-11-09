@@ -51,6 +51,23 @@
     },function(error){content(error?error+' Inspect the VM definitions and CPU backup batch results before retrying.':'Connection lost; some XMLs may have been updated. Inspect the VM definitions and /boot/config/plugins/unmotion/cpu-config-backups/ before retrying.');finished();});
   }
   $(function(){
+    var defaultBusy=false,defaultConfigured=false,defaultSerial=0;
+    function showDefault(value){
+      var current=value.default||{},editor=current.editor||{};
+      defaultConfigured=!!current.configured;
+      $('#unm-cpu-default-status').text(current.error||(!editor.available?editor.error:(current.configured?'New VM default: '+current.mode+'. Existing VMs are unchanged.':'No unMotion CPU default is set.')));
+      $('#unm-cpu-default-clear').prop('disabled',!current.configured||defaultBusy);
+    }
+    function saveDefault(clear){
+      if(defaultBusy)return;var chosen=$('#unm-cpu-selection').val();if(!clear&&!chosen)return;
+      defaultBusy=true;defaultSerial++;$('#unm-cpu-default, #unm-cpu-default-clear').prop('disabled',true);$('#unm-cpu-default-status').text('Validating and saving the default for new VMs…');
+      $.ajax({url:'/plugins/unmotion/api.php',method:'POST',dataType:'json',timeout:45000,data:Object.assign(clear?{clear:'1'}:JSON.parse(chosen),{action:'cpuDefaultSave'})}).done(function(value){
+        if(value.success)showDefault(value);else $('#unm-cpu-default-status').text(value.error||'The CPU default could not be saved.');
+      }).fail(function(xhr){$('#unm-cpu-default-status').text((xhr.responseJSON||{}).error||'Connection lost. Reload to check the saved default.');}).always(function(){defaultBusy=false;$('#unm-cpu-default').prop('disabled',!$('#unm-cpu-selection').val());$('#unm-cpu-default-clear').prop('disabled',!defaultConfigured);});
+    }
+    $('#unm-cpu-default').on('click',function(){saveDefault(false);});$('#unm-cpu-default-clear').on('click',function(){saveDefault(true);});
+    var defaultTicket=defaultSerial;
+    $.ajax({url:'/plugins/unmotion/api.php',method:'GET',dataType:'json',data:{action:'cpuDefault'}}).done(function(value){if(defaultTicket===defaultSerial)showDefault(value);}).fail(function(){if(defaultTicket===defaultSerial)$('#unm-cpu-default-status').text('The current CPU default could not be read. Reload to check it.');});
     $('#unm-cpu-apply').on('click',preview);$('#unm-cpu-config-confirm').on('click',apply);$('#unm-cpu-config-cancel').on('click',close);
     $('#unm-cpu-config-modal').on('keydown',function(event){
       if(event.key==='Escape'){event.preventDefault();close();}

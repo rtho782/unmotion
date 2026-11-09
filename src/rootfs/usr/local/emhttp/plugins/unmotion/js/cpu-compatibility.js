@@ -92,7 +92,7 @@
     timer=null;
     var previous=requests;requests=[];previous.forEach(function(request){request.abort();});
     report=null;levelChosen=false;
-    $('#unm-cpu-selection').val('');$('#unm-cpu-apply').prop('disabled',true);
+    $('#unm-cpu-selection').val('');$('#unm-cpu-apply, #unm-cpu-default').prop('disabled',true);
     $('#unm-cpu-level').empty().prop('disabled',true);
     $('#unm-cpu-result').empty();$('#unm-cpu-matrix').empty();
     $('#unm-cpu-check').prop('disabled',false).val('Read cached results');
@@ -112,7 +112,7 @@
     var result=$('#unm-cpu-result').empty();
     var canApply=!!(mode&&mode.definitionHash&&mode.cpuXml&&commonCpuMode(report,mode));
     $('#unm-cpu-selection').val(canApply?JSON.stringify({mode:mode.id,definition_hash:mode.definitionHash,cache_identity:report.local.cache.identity}):'');
-    $('#unm-cpu-apply').prop('disabled',!canApply);
+    $('#unm-cpu-apply, #unm-cpu-default').prop('disabled',!canApply);
     if(!mode)return;
     $('<p>').text('Local: '+mode.status+'. Cached '+(report.local.overviewVersion?'Q35/i440fx host overview':'for '+report.local.context.machine)+' on '+report.local.hostname+' at '+report.local.observedAt+'.').appendTo(result);
     (report.peers||[]).forEach(function(peer){

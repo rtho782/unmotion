@@ -99,7 +99,7 @@ function unmInventoryView(bool $refresh=false): array {
         if ($r['code']!==0) throw new RuntimeException('Unable to start inventory refresh.');
     });
     $view=$cache->view($fingerprint,time());
-    foreach($view['vms'] as &$vm){$uuid=(string)$vm['uuid'];$vm['liveManaged']=file_exists(UNM_BOOT_DIR.'/live-managed/'.$uuid.'.json')||file_exists(UNM_BOOT_DIR.'/live-authority/'.$uuid.'.json');if($vm['liveManaged']){try{$vm['liveAuthority']=unmLiveNativeRecord(UNM_BOOT_DIR,$uuid)['state']??'UNKNOWN';}catch(Throwable){$vm['liveAuthority']='UNKNOWN';}}}unset($vm);
+    foreach($view['vms'] as &$vm){$uuid=(string)$vm['uuid'];$vm['liveManaged']=file_exists(UNM_BOOT_DIR.'/live-managed/'.$uuid.'.json')||file_exists(UNM_BOOT_DIR.'/live-authority/'.$uuid.'.json');if($vm['liveManaged']){try{$r=unmLiveNativeRecord(UNM_BOOT_DIR,$uuid);$vm['liveAuthority']=$r['state']??'UNKNOWN';$vm['liveManaged']=!unmLiveOrdinaryOwner($r);}catch(Throwable){$vm['liveAuthority']='UNKNOWN';}}}unset($vm);
     return $view;
 }
 

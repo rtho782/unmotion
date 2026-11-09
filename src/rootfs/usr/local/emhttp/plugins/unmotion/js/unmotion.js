@@ -290,6 +290,7 @@ function flags(vm) {
     if((vm.usb||[]).length)x.push(featureBadge(vm.usb.length+' USB','USB passthrough needs an explicit retain, remove, or cancel choice. Retention requires a matching device on the destination.','unm-warn'));
     if((vm.pci||[]).length)x.push(featureBadge('PCI blocked','PCIe passthrough is not currently supported and blocks migration.','unm-bad'));
     if(vm.hasCpuPinning)x.push(featureBadge('CPU Pinning','CPU pinning can be retained only when it is valid on the destination; otherwise it must be removed.'));
+    if(vm.cpuReadiness){var cpu=vm.cpuReadiness,next=cpu.pending||{},now=cpu.active||{},label=next.model||next.mode||'default';x.push(featureBadge(cpu.status==='different'?'CPU pending: '+label:(cpu.status==='next-boot'?'Next boot CPU: '+label:'CPU: '+(now.model||now.mode||'default')),'Active CPU: '+(now.model||now.mode||'not running')+'. Next boot: '+label+'. '+(cpu.status==='different'?'A full stop/start is needed for a changed named mode. ':'')+'This is display evidence, not feature-level migration approval; live preflight validates the full active/pending contract.',cpu.status==='different'?'unm-warn':''));}
     if((vm.guestAgent||{}).connected)x.push(featureBadge('Guest agent','QEMU Guest Agent is connected. unMotion can request graceful shutdown and briefly quiesce filesystems for Warm Move snapshots.','unm-ok'));
     if(vm.storageReadiness==='amber')x.push(featureBadge('Warm Move: rsync','Warm Move will use an online seed plus a final powered-off rsync pass. Cutover may take longer than native ZFS replication.'));
     if(vm.storageReadiness==='green')x.push(featureBadge('Warm Move: ZFS','Native ZFS snapshots and incremental send/receive are available, reducing cutover downtime.','unm-ok'));
@@ -377,7 +378,7 @@ function renderInventory() {
           actions+='<input type="button" value="Warm Move blocked" disabled title="'+esc(warmBlockedReason(vm))+'">';
         }
       }
-      if(!blocked&&!vm.tpm&&!poweredOff&&peerId)actions+='<input type="button" class="unm-live-migrate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="Live migrate (beta)">';
+      if(!blocked&&!vm.tpm&&!poweredOff&&peerId){var liveReason=(vm.liveEligibility||{}).reason||'';actions+='<input type="button" class="unm-live-migrate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="Live migrate (beta)" '+((vm.liveEligibility||{}).available===false?'disabled title="'+esc(liveReason)+'"':'')+'>';}
       var replication=replicationFor(vm.uuid,peerId);
       if(peerId)actions+='<input type="button" class="unm-replicate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" data-replication-id="'+esc(replication?replication.id:'')+'" value="'+(replication?'Configure replication':'Replicate')+'">';
       else actions+='<input type="button" value="Replicate" disabled title="Select a paired destination first">';
@@ -1286,6 +1287,7 @@ function loadJobs() {
         var actions='<input type="button" value="Log" class="unm-log" data-id="'+esc(j.id)+'"> ';
         actions+='<input type="button" value="Report a problem" class="unm-report-job" data-id="'+esc(j.id)+'"> ';
         if(j.state==='ATTENTION_REQUIRED'&&(j.jobType||'migration')==='migration')actions+='<input type="button" value="Resolve migration" class="unm-resolve-migration" data-id="'+esc(j.id)+'"> ';
+        if(j.ordinaryHandover&&j.state==='ATTENTION_REQUIRED')actions+='<input type="button" value="Finish guarded handover" class="unm-ordinary-resolve" data-id="'+esc(j.id)+'"> ';
         if(retry)actions+='<input type="button" value="Resume" class="unm-resume" data-id="'+esc(j.id)+'"> ';
         if((isCancellable(j.state)||failed)&&j.state!=='CANCELLING')actions+='<input type="button" value="Cancel" class="unm-cancel-job" data-id="'+esc(j.id)+'"> ';
         var cleanupAction=((j.request||{}).SOURCE_CLEANUP_ACTION||'unregister');
@@ -1745,6 +1747,7 @@ $(function() {
     $(document).on('change','#unm-conflict-action',function(){if($(this).val()==='overwrite')recheckPreflight();else updateMigrationEligibility();});
     $(document).on('input','#unm-clone-name',function(){$('#unm-confirm-migrate').prop('disabled',true).attr('title','Recheck after changing the clone name.');});
     $(document).on('change','#unm-clone-customization',function(){activeCloneName=$('#unm-clone-name').val()||activeCloneName;showClonePreflight(activeVmId,activeVmName,activeCloneName,null);});
+    $(document).on('click','.unm-ordinary-resolve',function(){var button=this,id=$(this).attr('data-id');requestConfirmation({title:'Finish guarded handover?',message:'Recheck the retired source, exact reserved definition and destination. Commit destination ownership without starting it or deleting source files. The source remains fenced. Then start the destination and use Resolve migration for the original source policy.',acceptLabel:'Finish handover'}).done(function(yes){if(!yes)return;var finish=setButtonBusy(button,'Finishing');post('ordinaryHandoverResolve',{id:id}).done(function(r){flash(r.message);loadJobs();loadInventory();}).fail(err).always(finish);});});
     $(document).on('click','.unm-resolve-migration',function(){
       var button=this,id=$(this).attr('data-id'),stop=setButtonBusy(button,'Checking both hosts');
       post('migrationResolution',{job_id:id}).done(function(r){

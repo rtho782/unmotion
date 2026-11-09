@@ -26,7 +26,7 @@ function unmNativeDaemon(int $pid): array {
 }
 function unmNativeProofStatus(string $run='/run/unmotion/lifecycle'): array {
     try{$proof=unmNativeJson($run.'/native-hook-proof.json');$daemon=unmNativeDaemon((int)($proof['daemon']['pid']??0));
-        if($daemon!==($proof['daemon']??null)||!is_executable('/etc/libvirt/hooks/qemu.d/50-unmotion-recovery')||!hash_equals((string)($proof['hookSha256']??''),(string)@hash_file('sha256','/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'))||!hash_equals((string)($proof['helperSha256']??''),(string)@hash_file('sha256',__FILE__))||!hash_equals((string)($proof['liveHelperSha256']??''),(string)@hash_file('sha256',__DIR__.'/live-native-fence.php')))throw new RuntimeException('Native recovery hook has not been proven active for this libvirt process and installed build.');
+        if($daemon!==($proof['daemon']??null)||!is_executable('/etc/libvirt/hooks/qemu.d/50-unmotion-recovery')||!hash_equals((string)($proof['hookSha256']??''),(string)@hash_file('sha256','/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'))||!hash_equals((string)($proof['helperSha256']??''),(string)@hash_file('sha256',__FILE__))||!hash_equals((string)($proof['liveHelperSha256']??''),unmLiveNativeHelperHash()))throw new RuntimeException('Native recovery hook has not been proven active for this libvirt process and installed build.');
         return ['ready'=>true,'daemon'=>$daemon];
     }catch(Throwable $e){return ['ready'=>false,'reason'=>$e->getMessage().' Verify the native hook; a libvirt restart may be required before arming recovery.'];}
 }

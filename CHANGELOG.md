@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0-beta5 — 2026-11-09
+
+- Fix growing online raw/qcow2 Warm Move seeds: verify the received length against rsync's single-file transfer statistics, not the source's later size. Keep destination-length checks and transfer-error handling strict. Force the final powered-off mutable-image delta even when size/timestamps match; verify stable source/destination lengths before proceeding.
+- Add a locally validated, pinned CPU default for new form-created VMs, with an Unraid CPU-dropdown entry, explicit clearing and unchanged existing definitions. Preserve custom CPU profiles, nested features, topology and pinning through native form edits; saved form templates retain private, fixed CPU profiles. Only reviewed native-editor source builds are adapted; originals are backed up and restored on removal.
+- Support UEFI live migration without TPM using matching SHA-256-verified OVMF firmware, UUID-scoped raw NVRAM reservations and QEMU's pflash migration. Preserve old/partial variables files and use `--keep-nvram` when unregistering definitions.
+- Add reviewed powered-off hand-back to Cold/Warm Move, clone, CPU edits and replication-only configuration. Retain non-owner UUID fences; ordinary cutovers durably retire their source before an authenticated callback can grant destination starts. Add explicit completion of interrupted guarded ordinary handovers. Recovery arming for these VMs remains blocked pending a separate authority-system handover.
+- Show active/next-boot CPU model evidence and local live-scope reasons without treating cached observations as permission. Report received transport bytes on the destination. Stop plugin requests after browser authentication/token expiry while server-side jobs continue.
+- Handle Unraid's relative metadata namespace without allowing failed XML canonicalization to collapse distinct definitions into an empty hash. Preserve existing hashes for supported canonical XML.
+- Preserve wire protocol 7 and CPU cache capability 2. Live migration uses optional capability 2 and matching Beta5 builds; ordinary hand-back transfers require capability `liveOrdinaryVersion: 1`. Publish as an opt-in prerelease on the beta feed; stable and the Community Apps installer remain on 0.4.9.
+
 ## 0.5.0-beta4 — 2026-11-09
 
 - Fix CPU-configuration verification when libvirt moves topology before features. Normalize only known direct CPU-child ordering; feature policies, topology values, duplicates and non-CPU XML remain verified. Reapplying a matching mode is idempotent.

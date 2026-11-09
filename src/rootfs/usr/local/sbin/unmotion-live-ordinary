@@ -1,0 +1,9 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{
+    if(count($argv)!==3||!in_array($argv[1],['check','prepare','accept','commit','rollback'],true))throw new RuntimeException('Invalid ordinary ownership operation.');
+    echo unmLiveOrdinaryWorker($argv[2],$argv[1])?"1\n":"0\n";
+}catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(1);}

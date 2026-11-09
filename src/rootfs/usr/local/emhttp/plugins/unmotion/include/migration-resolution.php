@@ -195,7 +195,7 @@ function unmResolveMigration(string $id,bool $commit=false): array {
         $policy=(string)($job['request']['SOURCE_CLEANUP_ACTION']??'');
         if(!in_array($policy,['retain','unregister','delete'],true))throw new RuntimeException('The original source policy is unavailable.');
         $vmLock=unmResolutionLock('/var/lock/unmotion-'.$uuid.'.lock');
-        unmRecoveryAssertLegacyVmAvailable($uuid,'Migration resolution');
+        unmRecoveryAssertLegacyVmAvailable($uuid,'Migration resolution',$id);
         foreach(['source.xml','destination.xml'] as $file)if(!is_file($dir.'/'.$file))throw new RuntimeException('Original migration XML is unavailable.');
         $expected=file_get_contents($dir.'/source.xml');$destination=file_get_contents($dir.'/destination.xml');
         $peer=unmPeer((string)$job['peerId']);$caps=unmLoadJson($dir.'/remote-capabilities.json');$recordedHost=(string)($caps['hostId']??'');

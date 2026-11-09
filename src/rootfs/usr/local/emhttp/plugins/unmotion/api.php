@@ -45,10 +45,16 @@ try {
             if($j['role']!=='source'||$j['bootId']!==unmNativeBoot()||!in_array($j['state'],['QUEUED','PREFLIGHT','SOURCE_MOVING','COPYING'],true))throw new RuntimeException('Cancellation is unavailable after handover or a host restart. Use Reconcile on the source.');
             unmLivePrivateDir($j['runtime']);file_put_contents($j['runtime'].'/cancel',gmdate('c'));reply(['success'=>true]);
         case 'liveReconcile': requirePostMutation();reply(unmLiveReconcile(unmLiveId((string)($_POST['id']??''))));
+        case 'liveHandbackPreview': requirePostMutation();reply(unmLiveHandbackReview(unmLiveId((string)($_POST['id']??''))));
+        case 'liveHandback': requirePostMutation();reply(unmLiveHandback(unmLiveId((string)($_POST['id']??'')),(string)($_POST['review']??'')));
+        case 'ordinaryHandoverResolve': requirePostMutation();reply(unmLiveOrdinaryResume((string)($_POST['id']??'')));
         case 'inventory': reply(['success'=>true]+unmInventoryView((string)($_POST['refresh']??'')==='1'));
         case 'localHealth': reply(['success'=>true,'health'=>unmHealth()]);
         case 'peerHealth': reply(['success'=>true,'health'=>unmPeerHealth((string)($_POST['peer_id']??''))]);
         case 'settings': reply(['success'=>true,'settings'=>unmLoadConfig(),'capabilities'=>unmCapabilities()]);
+        case 'cpuDefault': reply(['success'=>true,'default'=>unmCpuDefaultStatus()]);
+        case 'cpuDefaultSave':
+            requirePostMutation();reply(['success'=>true,'default'=>unmCpuDefaultSave((string)($_POST['clear']??'')==='1'?null:$_POST)]);
         case 'cpuCompatibilityMachines':
             requirePostMutation();
             reply(['success'=>true]+unmCpuCompatibilityMachines());
@@ -237,7 +243,7 @@ try {
                 'PARALLEL_WARM_CUTOVER'=>unmParallelWarmCutover($pre,$opts),
             ];
             unmWriteCfg($dir.'/request.cfg',$request);
-            $job=['id'=>$jobId,'vm'=>$vm,'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>'Starting worker','createdAt'=>date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM),'request'=>$request,'preflight'=>$pre];
+            $job=['id'=>$jobId,'vm'=>$vm,'vmUuid'=>$vmUuid,'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>'Starting worker','createdAt'=>date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM),'request'=>$request,'preflight'=>$pre];
             $job['migrationClaims']=$migrationClaims;
             unmAtomicJson($dir.'/job.json',$job); file_put_contents($dir.'/migration.log',''); chmod($dir.'/migration.log',0600);
             $pid=launchWorker($jobId,$dir);

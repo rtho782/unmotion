@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0-beta4';
+const UNM_VERSION = '0.5.0-beta5';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -19,8 +19,11 @@ require_once __DIR__.'/process-identity.php';
 require_once __DIR__.'/native-fence.php';
 require_once __DIR__.'/inventory-cache.php';
 require_once __DIR__.'/cpu-compatibility.php';
+require_once __DIR__.'/xml-canonical.php';
 require_once __DIR__.'/cpu-config.php';
+require_once __DIR__.'/cpu-default.php';
 require_once __DIR__.'/live-migration.php';
+require_once __DIR__.'/live-ordinary.php';
 // Protocol 7 deliberately rejects unrestricted legacy remote-shell transport.
 // Durable recovery schema-1 records retain their historical protocolVersion=6
 // identity; the SSH transport and all new recovery envelopes require 7.
@@ -841,7 +844,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>2,'liveOrdinaryVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -1012,8 +1015,13 @@ function unmParseVm(string $vmIdentifier,?array $displayObservation=null): array
         'disks'=>$disks,'isos'=>$isos,'usb'=>$usb,'pci'=>array_values($pciMap),
         'hasCpuPinning'=>(bool)$cpuPinning['present'],
         'liveXmlAvailable'=>$liveXml !== '',
+        'cpuReadiness'=>unmCpuConfigReadiness($inactiveXml,$liveXml),
         'guestAgent'=>unmGuestAgentStatus($ref,$state),
     ];
+    if($liveXml!==''){
+        try{unmLiveInspectXml($liveXml);$vm['liveEligibility']=['available'=>true,'reason'=>'Local XML fits the supported live scope. Fresh CPU, peer, disk and ownership checks are still required.','displayOnly'=>true];}
+        catch(Throwable $e){$vm['liveEligibility']=['available'=>false,'reason'=>$e->getMessage(),'displayOnly'=>true];}
+    }
     return unmClassifyVmStorage($vm,true,$displayObservation['xmlIndex']??null);
 }
 
@@ -2768,8 +2776,9 @@ function unmRecoveryAssertSoleDestinationPolicy(string $vmUuid,string $replicati
     $active=array_values(array_unique($active));if(!unmRecoveryPolicySetIsSole($active,$replicationId))throw new RuntimeException('Exactly one incoming recovery policy may hold or reconcile authority for a destination VM. Conflicting policy: '.implode(', ',$active));
 }
 
-function unmRecoveryAssertLegacyVmAvailable(string $vmUuid,string $operation): void {
-    unmLiveLegacyInterlock(strtolower(trim($vmUuid)));
+function unmRecoveryAssertLegacyVmAvailable(string $vmUuid,string $operation,string $ordinaryResolutionId=''): void {
+    $vmUuid=strtolower(trim($vmUuid));
+    if($ordinaryResolutionId===''||!unmLiveOrdinaryResolutionCheck($vmUuid,$ordinaryResolutionId))unmLiveLegacyInterlock($vmUuid);
     $vmUuid=strtolower(trim($vmUuid));if(!preg_match('/^[a-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM identity for recovery interlock.');foreach(glob(UNM_REPLICATIONS_DIR.'/*/policy.json')?:[] as $policyPath){$policy=unmLoadJson($policyPath);if(!$policy)throw new RuntimeException('A corrupt replication policy blocks '.$operation.'.');if(strcasecmp((string)($policy['vmUuid']??''),$vmUuid)!==0)continue;$recoveryPath=dirname($policyPath).'/recovery.json';if(!is_file($recoveryPath))continue;$record=unmLoadJson($recoveryPath);if(!$record||unmRecoverySourcePolicyActive($record))throw new RuntimeException($operation.' is blocked while this VM has armed or unreconciled recovery authority.');}
     $dump=unmRun(['virsh','dumpxml',$vmUuid,'--inactive'],null,15);if($dump['code']===0&&str_contains((string)$dump['stdout'],'urn:unmotion:recovery:1'))throw new RuntimeException($operation.' is blocked for an activation-owned recovered VM.');
 }
@@ -3137,6 +3146,7 @@ function unmRecoveryDispatchRpc(string $command,array $request): array {
 
 function unmRecoveryArmUnlocked(string $replicationId,bool $desiredAutostart,array $witnessPeerIds=[]): array {
     if($witnessPeerIds)throw new RuntimeException('Witness voting is not implemented; no witness may be selected implicitly.');$context=unmRecoveryIdentityFromSource($replicationId);$identity=(array)$context['identity'];$interlocks=unmRecoveryInterlockStatus();if(empty($interlocks['ready']))throw new RuntimeException(implode(' ',(array)$interlocks['reasons']));
+    if(unmLiveNativeRecord(UNM_BOOT_DIR,(string)$identity['vmUuid'])!==null)throw new RuntimeException('A formerly live-managed VM supports replication-only after hand-back. Recovery arming requires a separate ownership handover, which is not supported in Beta5.');
     $vm=unmParseVm((string)$identity['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))throw new RuntimeException('Recovery does not support PCI or USB host-device passthrough.');
     $lock=unmRecoveryAcquireLock($replicationId);$record=[];$native=false;
     try{

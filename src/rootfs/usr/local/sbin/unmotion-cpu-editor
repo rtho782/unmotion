@@ -1,0 +1,10 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{
+    if(count($argv)!==2||!in_array($argv[1],['install','restore','status'],true))throw new RuntimeException('Usage: unmotion-cpu-editor install|restore|status');
+    if($argv[1]==='status')echo json_encode(unmCpuEditorStatus(),JSON_PRETTY_PRINT)."\n";
+    else unmCpuEditorInstall($argv[1]==='restore');
+}catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(1);}

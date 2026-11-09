@@ -20,6 +20,9 @@ $rsh=$dir.'/rsh';file_put_contents($rsh,"#!/bin/sh\nexec /usr/bin/rsync --server
 $source=$dir.'/source.raw';$f=fopen($source,'w');fwrite($f,'begin');fseek($f,8388608);fwrite($f,'end');fclose($f);file_put_contents($target.'/do-not-touch','sentinel');
 $base=['rsync','-rtS','--protect-args','--numeric-ids','--partial','--inplace','--no-whole-file','-e',$rsh,'--'];
 [$code,$out,$err]=runTest(array_merge($base,[$source,'dummy::transfer/'.$name]));check($code===0,'Allowed rsync failed: '.$err.$out);check(hash_file('sha256',$source)===hash_file('sha256',$target.'/'.$name),'Rsync content mismatch');check(stat($target.'/'.$name)['blocks']*512<filesize($target.'/'.$name),'Sparse behavior lost');
+$f=fopen($target.'/'.$name,'r+');fwrite($f,'stale');fclose($f);touch($target.'/'.$name,filemtime($source));
+[$code]=runTest(array_merge($base,[$source,'dummy::transfer/'.$name]));check($code===0&&hash_file('sha256',$source)!==hash_file('sha256',$target.'/'.$name),'Same-size/mtime seed fixture must reproduce the quick-check skip');
+[$code,$out,$err]=runTest(array_merge(array_slice($base,0,-1),['--ignore-times','--',$source,'dummy::transfer/'.$name]));check($code===0,'Confined final forced delta failed: '.$err.$out);check(hash_file('sha256',$source)===hash_file('sha256',$target.'/'.$name),'Forced final delta did not repair stale same-size/mtime blocks');
 [$code]=runTest(array_merge($base,[$source,'dummy::transfer/do-not-touch']));check($code!==0&&file_get_contents($target.'/do-not-touch')==='sentinel','Rsync overwrote excluded sibling');
 [$code]=runTest(['rsync','-a','-e',$rsh,$source,'dummy::transfer/'.$name]);check($code!==0,'Rsync accepted unsafe archive options');
 [$code]=runTest(['rsync','-r','--temp-dir=/','-e',$rsh,$source,'dummy::transfer/'.$name]);check($code!==0,'Rsync accepted arbitrary temp directory');

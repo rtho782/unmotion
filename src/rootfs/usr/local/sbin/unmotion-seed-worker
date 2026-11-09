@@ -1,6 +1,7 @@
 #!/bin/bash
 set -Eeuo pipefail
 source /usr/local/emhttp/plugins/unmotion/include/numeric.sh
+source /usr/local/emhttp/plugins/unmotion/include/seed-rsync.sh
 SEED_ID="${1:-}"
 [[ "$SEED_ID" =~ ^[A-Za-z0-9_.-]+$ ]] || { echo 'Invalid seed id' >&2; exit 2; }
 # A duplicate worker must never mark the active worker's shared seed record failed.
@@ -412,10 +413,11 @@ for src in "${ZFS_SOURCES[@]}"; do
 done
 BW=(); if [[ "${WARM_BANDWIDTH_MIB:-0}" =~ ^[0-9]+$ ]] && ((WARM_BANDWIDTH_MIB>0));then BW=(--bwlimit="$((WARM_BANDWIDTH_MIB*1024))");fi
 rsync_seed_progress_parser(){
-  local base="$1" span="$2" label="$3" line pct last=-5 overall
+  local base="$1" span="$2" label="$3" report="$4" line pct last=-5 overall
   while IFS= read -r line; do
     [[ -n "$line" ]] || continue
     printf '%s %s\n' "$(date '+%F %T')" "$line" >>"$LOG"
+    if [[ "$line" == 'Number of files:'* || "$line" == 'Total file size:'* ]]; then printf '%s\n' "$line" >> "$report" || return 1; fi
     if [[ "$line" =~ ([0-9]{1,3})% ]]; then
       pct="$(unm_progress_percent "${BASH_REMATCH[1]}" 2>/dev/null)" || continue
       overall=$((base+span*pct/100))
@@ -433,11 +435,20 @@ for src in "${RSYNC_FILES[@]}"; do
   state TRANSFERRING "$obj_base" "Synchronising $(basename "$src")"
   printf 'image\t%s\t%s\t\t\t\n' "$src" "$dst" >> "$STORAGE_TSV"
   rsync_command="$(/usr/local/sbin/unmotion-transport rsync-command "$dst")" || fail 'Unable to encode restricted image transfer' 22
-  debug "CMD local: restricted rsync -rtS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 ${BW[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE::transfer/$(basename "$dst")")"
+  source_before="$(stat -c %s -- "$src")"
+  size_report="$(mktemp "$DIR/rsync-size.XXXXXX")"
+  debug "CMD local: restricted rsync -rtS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 --stats --no-human-readable ${BW[*]} -e <peer-ssh> -- $(printf '%q' "$src") $(printf '%q' "$REMOTE::transfer/$(basename "$dst")")"
   set +e
-  rsync -rtS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 "${BW[@]}" -e "$RSYNC_RSH" --rsync-path="$rsync_command" -- "$src" "$REMOTE::transfer/$(basename "$dst")" 2>&1 | tr '\r' '\n' | rsync_seed_progress_parser "$obj_base" "$obj_span" "$label"
-  rc="${PIPESTATUS[0]}"; set -e; ((rc==0)) || fail "rsync failed for $src" "$rc"
-  [[ "$(stat -c %s -- "$src")" == "$(remote "stat -c %s -- $(sq "$dst")")" ]] || fail "Size verification failed for $dst" 22
+  LC_ALL=C rsync -rtS --inplace --no-whole-file --protect-args --numeric-ids --partial --info=progress2 --stats --no-human-readable "${BW[@]}" -e "$RSYNC_RSH" --rsync-path="$rsync_command" -- "$src" "$REMOTE::transfer/$(basename "$dst")" 2>&1 | tr '\r' '\n' | rsync_seed_progress_parser "$obj_base" "$obj_span" "$label" "$size_report"
+  rsync_statuses=("${PIPESTATUS[@]}"); set -e
+  ((rsync_statuses[0]==0)) || fail "rsync failed for $src" "${rsync_statuses[0]}"
+  ((rsync_statuses[1]==0&&rsync_statuses[2]==0)) || fail 'Seed progress/statistics processing failed' 22
+  transferred_size="$(unm_seed_rsync_size "$size_report")" || fail "Invalid rsync size evidence for $dst" 22
+  source_after="$(stat -c %s -- "$src")"; destination_size="$(remote "stat -c %s -- $(sq "$dst")")"
+  verification_mode=online; [[ "$VM_STATE" != 'shut off' ]] || verification_mode=offline
+  unm_seed_rsync_verify "$transferred_size" "$destination_size" "$source_before" "$source_after" "$verification_mode" || fail "Size verification failed for $dst" 22
+  if [[ "$verification_mode" == online ]]; then log "Provisional online image seed verified: rsync length $transferred_size bytes; source now $source_after bytes. Final powered-off sync is required."; fi
+  rm -f -- "$size_report"
   remote "chmod 0400 $(sq "$dst")"
 done
 

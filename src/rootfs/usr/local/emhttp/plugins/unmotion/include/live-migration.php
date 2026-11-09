@@ -52,19 +52,28 @@ function unmLiveSshArgs(array $peer,array $request,string $operation): array {
 function unmLiveLog(string $id,string $message): void {
     $dir=dirname(unmLiveJobPath($id));if(is_dir($dir))file_put_contents($dir.'/live.log',gmdate('c').' '.$message."\n",FILE_APPEND|LOCK_EX);
 }
+/** Optional telemetry must never emit a warning into the binary data channel. */
+function unmLiveObserveReceived(string $runtime,string $channel,int $bytes): bool {
+    if(!in_array($channel,['memory','disk'],true)||$bytes<0)return false;
+    set_error_handler(static function(){throw new RuntimeException('Receive progress storage is unavailable.');});
+    try{unmNativeWrite($runtime.'/received-'.$channel.'.json',['bytes'=>$bytes,'observedAt'=>gmdate('c')]);return true;}
+    catch(Throwable){return false;}finally{restore_error_handler();}
+}
 
-function unmLiveRawPump($input,$output,$backend,callable $alive): void {
+function unmLiveRawPump($input,$output,$backend,callable $alive,?callable $progress=null): void {
     foreach([$input,$output,$backend] as $s)stream_set_blocking($s,false);$out='';$in='';$a=true;$b=true;$last=time();
-    $halfClosed=false;
+    $halfClosed=false;$received=0;$reported=0;
     while($a||$b||$out!==''||$in!==''){
         if(!$alive()||time()-$last>300)throw new RuntimeException('Live data lease expired.');
         $r=[];if($a&&strlen($out)<1048576)$r[]=$input;if($b&&strlen($in)<1048576)$r[]=$backend;$w=[];if($out!=='')$w[]=$backend;if($in!=='')$w[]=$output;$e=[];
         if(!$r&&!$w)break;if(@stream_select($r,$w,$e,1)===false)throw new RuntimeException('Live data stream failed.');
-        foreach($r as $s){$v=fread($s,262144);if($v===false)throw new RuntimeException('Live data read failed.');if($v===''){if(feof($s)){if($s===$input)$a=false;else$b=false;}}else{if($s===$input)$out.=$v;else$in.=$v;$last=time();}}
+        foreach($r as $s){$v=fread($s,262144);if($v===false)throw new RuntimeException('Live data read failed.');if($v===''){if(feof($s)){if($s===$input)$a=false;else$b=false;}}else{if($s===$input){$out.=$v;$received+=strlen($v);}else$in.=$v;$last=time();}}
+        if($progress&&time()>$reported){$reported=time();$progress($received);}
         foreach($w as $s){if($s===$backend){$n=fwrite($s,$out);if($n===false)throw new RuntimeException('Live data write failed.');$out=substr($out,$n);}else{$n=fwrite($s,$in);if($n===false)throw new RuntimeException('Live data write failed.');$in=substr($in,$n);}}
         if(!$a&&$out===''&&!$halfClosed){stream_socket_shutdown($backend,STREAM_SHUT_WR);$halfClosed=true;}
         if(!$b){if($out!=='')throw new RuntimeException('Live backend closed before input was delivered.');if($in==='')break;}
     }
+    if($progress)$progress($received);
 }
 
 /** Local listeners forward only the two predetermined per-job Unix sockets. */

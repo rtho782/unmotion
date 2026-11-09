@@ -18,6 +18,13 @@ $commit=substr($engine,strpos($engine,"if(\$action==='commit')"));
 check(strpos($commit,"\$j['state']='COMMITTING'")<strpos($commit,"unmLiveAuthority(\$j,'OWNER'"),'commit intent precedes its durable execution authority grant');
 check(strpos($commit,"sync','-f',unmLiveJobPath")<strpos($commit,"unmLiveAuthority(\$j,'OWNER'"),'commit intent is synced before granting ownership');
 if(PHP_OS_FAMILY==='Linux') {
+    $progress=sys_get_temp_dir().'/unmotion-progress-'.bin2hex(random_bytes(6));mkdir($progress,0700);
+    try{
+        check(unmLiveObserveReceived($progress,'memory',1234),'Receive counters are published separately from binary output');
+        check(json_decode(file_get_contents($progress.'/received-memory.json'),true)['bytes']===1234,'Exact transport count');
+        file_put_contents($progress.'/not-directory','x');ob_start();$written=unmLiveObserveReceived($progress.'/not-directory','disk',5678);$output=ob_get_clean();
+        check(!$written&&$output==='','Progress-storage failure emits no stdout warning or binary-channel text');
+    }finally{foreach(glob($progress.'/*')?:[] as $file)unlink($file);rmdir($progress);}
     $uuid='b3b3b3b3-1111-4111-8111-'.bin2hex(random_bytes(6));
     $path='/var/lock/unmotion-'.$uuid.'.lock';$lock=unmLiveVmLock($uuid);$process=null;
     try {

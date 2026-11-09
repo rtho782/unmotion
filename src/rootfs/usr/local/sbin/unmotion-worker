@@ -121,6 +121,7 @@ restore_source(){
   (( DEST_STARTED == 0 )) || return 0
   (( SOURCE_UNDEFINED == 0 )) || return 0
   if (( DEST_START_ATTEMPTED == 1 )); then log "Destination start was attempted but could not be verified; source will remain stopped to prevent split-brain."; return 0; fi
+  /usr/local/sbin/unmotion-live-ordinary rollback "$JOB_ID" >>"$LOG" 2>&1 || { log 'Ordinary ownership could not be safely restored; source stays fenced.'; return 0; }
   if virsh dominfo "$VM_REF" >/dev/null 2>&1; then
     if [[ "$SOURCE_AUTOSTART" == "enable" || "$SOURCE_AUTOSTART" == "yes" ]]; then virsh autostart "$VM_REF" >/dev/null 2>&1 || true; fi
     if (( SOURCE_WAS_RUNNING == 1 )) && [[ "$(virsh domstate "$VM_REF" 2>/dev/null | tr -d '\r')" == "shut off" ]]; then
@@ -436,11 +437,13 @@ RESERVATION_B64="$(php -r '
   echo base64_encode(json_encode(["id"=>$argv[2],"vmUuid"=>$argv[3],"vmName"=>$argv[4],"storage"=>$storage,"hostStatePaths"=>array_slice($argv,5)],JSON_THROW_ON_ERROR));
 ' "$RESERVATION_TSV" "$JOB_ID" "$UUID" "$VM_NAME" "${STATE_PATHS[@]}")"
 remote "/usr/local/sbin/unmotion-agent transport-reserve $(sq "$RESERVATION_B64")" >>"$LOG" 2>&1 || { log 'Restricted destination storage admission failed; the source has not been shut down.'; exit 24; }
+ORDINARY_LIVE_MANAGED="$(/usr/local/sbin/unmotion-live-ordinary check "$JOB_ID")" || { log 'The destination does not support this VM ownership workflow; source power state is unchanged.'; exit 24; }
 
 CURRENT_STATE="$(virsh domstate "$VM_REF"|tr -d '\r')";[[ "$CURRENT_STATE" == running||"$CURRENT_STATE" == idle||"$CURRENT_STATE" == paused ]]&&SOURCE_WAS_RUNNING=1
 SOURCE_AUTOSTART="$(virsh dominfo "$VM_REF"|awk -F: '/^Autostart/{gsub(/^[[:space:]]+/,"",$2);print $2}')";virsh autostart "$VM_REF" --disable >/dev/null 2>&1||true
 if [[ "$CURRENT_STATE" != 'shut off' ]];then state SHUTTING_DOWN 5 'Requesting graceful shutdown for Warm Move cutover';virsh shutdown "$VM_REF";waited=0;while ((waited<SHUTDOWN_TIMEOUT));do cancel_requested&&finish_cancel;[[ "$(virsh domstate "$VM_REF"|tr -d '\r')" == 'shut off' ]]&&break;sleep 2;((waited+=2));state SHUTTING_DOWN "$((5+waited*5/SHUTDOWN_TIMEOUT))" "Waiting for guest shutdown (${waited}s)";done;[[ "$(virsh domstate "$VM_REF"|tr -d '\r')" == 'shut off' ]]||{ log 'Graceful shutdown timed out; no force-stop attempted.';exit 31;};fi
 
+if [[ "$ORDINARY_LIVE_MANAGED" == 1 ]]; then /usr/local/sbin/unmotion-live-ordinary prepare "$JOB_ID" >>"$LOG" 2>&1; fi
 if ((WARM_MODE==0))&&((REMOTE_EXISTING_VM==1||${#OVERWRITE_PATHS[@]}>0));then state PREPARING_DESTINATION 10 'Removing authorised stale destination copy';OVERWRITE_TSV="$JOBDIR/overwrite.tsv";:>"$OVERWRITE_TSV";for i in "${!OVERWRITE_PATHS[@]}";do printf '%s\t%s\n' "${OVERWRITE_KINDS[$i]}" "${OVERWRITE_PATHS[$i]}" >>"$OVERWRITE_TSV";done;OVERWRITE_JSON="$JOBDIR/overwrite.json";php -r '$items=[];foreach(file($argv[1],FILE_IGNORE_NEW_LINES|FILE_SKIP_EMPTY_LINES)?:[] as $line){$p=explode("\t",$line,2);$items[]=["kind"=>$p[0],"path"=>$p[1]];}file_put_contents($argv[5],json_encode(["vmUuid"=>$argv[2],"vmName"=>$argv[3],"destinationHostId"=>$argv[4],"storage"=>$items],JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$OVERWRITE_TSV" "$UUID" "$VM_NAME" "$PEER_HOST_ID" "$OVERWRITE_JSON";remote "/usr/local/sbin/unmotion-agent prepare-overwrite $(sq "$(base64 -w0 "$OVERWRITE_JSON")")" >>"$LOG" 2>&1;check_capacity;fi
 virsh dumpxml "$VM_REF" --inactive >"$SOURCE_XML";/usr/local/sbin/unmotion-transform "$SOURCE_XML" "$DEST_XML" "$MAP_TSV" "$USB_ACTION" "$REMOVE_CPU_PINNING" "$USB_MANIFEST" "$TARGET_VCPUS" "$TARGET_MEMORY_KIB"
 
@@ -561,6 +564,9 @@ transfer_file(){
   # A confined per-file daemon preserves sparse data without granting device,
   # symlink, owner or permission writes through the generic rsync server.
   local -a args=(-rtS --protect-args --numeric-ids --partial --inplace --no-whole-file --info=progress2 --human-readable --stats)
+  # A hot seed can contain stale blocks even when length/mtime match. Force the
+  # final mutable-image delta after shutdown; keep ISO/cold-copy quick checks.
+  [[ "${6:-0}" != 1 ]] || args+=(--ignore-times)
   debug "CMD local: rsync ${args[*]} -e <peer-ssh> -- $(printf '%q' "$src") <reserved-destination>"
   set +e
   rsync "${args[@]}" -e "$RSYNC_RSH" --rsync-path="$rsync_command" -- "$src" "$REMOTE::transfer/$(basename "$dst")" 2>&1 | tr '\r' '\n' | stream_progress_parser TRANSFERRING "$base" "$span" "$label" rsync
@@ -568,7 +574,7 @@ transfer_file(){
   set -e
   ((rc==0)) || return "$rc"
   dst_size="$(remote "stat -c %s -- $(sq "$dst")")"
-  [[ "$src_size" == "$dst_size" ]] || return 44
+  [[ "$src_size" == "$dst_size" && "$src_size" == "$(stat -c %s -- "$src")" ]] || return 44
   progress_update TRANSFERRING "$base" "$span" "$label" 100 'size verified'
 }
 convert_zvol(){ local src="$1" stage="$2" base="$3" span="$4" label="$5" rc;state CONVERTING "$base" "$label";rm -f -- "$stage.tmp" "$stage";debug "CMD local: qemu-img convert -p -f raw -O raw $(printf '%q' "/dev/zvol/$src") $(printf '%q' "$stage.tmp")";set +e;qemu-img convert -p -f raw -O raw "/dev/zvol/$src" "$stage.tmp" 2>&1|tr '\r' '\n'|stream_progress_parser CONVERTING "$base" "$span" "$label" qemu;rc="${PIPESTATUS[0]}";set -e;((rc==0))||return "$rc";mv -f -- "$stage.tmp" "$stage"; }
@@ -583,7 +589,7 @@ next_span(){ local bytes="$1" span; span="$(php -r 'echo (int)floor((float)$argv
 for i in "${!ZVOL_DESTS[@]}";do b="${ZVOL_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_zfs_object "${ZVOLS[$i]}" "${ZVOL_DESTS[$i]}" zvol '' "$TRANSFER_CURSOR" "$span" "Zvol $(basename "${ZVOLS[$i]}")" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)";((TRANSFER_CURSOR+=span));done
 for i in "${!DATASET_DESTS[@]}";do b="${DATASET_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_zfs_object "${DATASET_SRCS[$i]}" "${DATASET_DESTS[$i]}" dataset "${DATASET_DEST_MOUNTS[$i]}" "$TRANSFER_CURSOR" "$span" "Dataset $(basename "${DATASET_SRCS[$i]}")" "$([[ $WARM_MODE == 1 ]]&&echo "$WARM_BASE_SNAPSHOT"||true)";((TRANSFER_CURSOR+=span));done
 for i in "${!CONVERT_ZVOLS[@]}";do src="${CONVERT_ZVOLS[$i]}";stage="${CONVERT_STAGES[$i]}";dst="${CONVERT_DESTS[$i]}";b="${CONVERT_BYTES[$i]:-1}";span="$(next_span "$b")";mkdir -p "${stage%/*}";convert_zvol "$src" "$stage" "$TRANSFER_CURSOR" "$((span/2))" "Converting $(basename "$src")";transfer_file "$stage" "$dst" "$((TRANSFER_CURSOR+span/2))" "$((span-span/2))" "Converted image $(basename "$stage")";((TRANSFER_CURSOR+=span));done
-for i in "${!RSYNC_FILE_DISKS[@]}";do b="${FILE_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_file "${RSYNC_FILE_DISKS[$i]}" "${FILE_DESTS[$i]}" "$TRANSFER_CURSOR" "$span" "Image $(basename "${RSYNC_FILE_DISKS[$i]}")";((TRANSFER_CURSOR+=span));done
+for i in "${!RSYNC_FILE_DISKS[@]}";do b="${FILE_BYTES[$i]:-1}";span="$(next_span "$b")";transfer_file "${RSYNC_FILE_DISKS[$i]}" "${FILE_DESTS[$i]}" "$TRANSFER_CURSOR" "$span" "Image $(basename "${RSYNC_FILE_DISKS[$i]}")" "$WARM_MODE";((TRANSFER_CURSOR+=span));done
 if [[ "$ISO_ACTION" == copy ]]; then
   for i in "${!ISOS[@]}"; do
     src="${ISOS[$i]}";dst="${ISO_DESTS[$i]}";b="${ISO_BYTES[$i]:-1}";span="$(next_span "$b")"
@@ -621,9 +627,6 @@ rsync -rtS --numeric-ids --protect-args -e "$RSYNC_RSH" --rsync-path="$(/usr/loc
 if [[ -f "$HOST_ARCHIVE" ]]; then rsync -rtS --numeric-ids --protect-args -e "$RSYNC_RSH" --rsync-path="$(/usr/local/sbin/unmotion-transport rsync-command "$REMOTE_STAGE/host-state.tar.gz")" -- "$HOST_ARCHIVE" "$REMOTE::transfer/host-state.tar.gz" >>"$LOG" 2>&1; remote "tar --xattrs --acls --numeric-owner -C / -xzf $(sq "$REMOTE_STAGE/host-state.tar.gz")"; fi
 
 cancel_requested && finish_cancel
-state DEFINING_DESTINATION 82 "Defining VM on destination"
-remote "virsh define $(sq "$REMOTE_STAGE/destination.xml")" >>"$LOG" 2>&1
-for dst in "${ZVOL_DESTS[@]}" "${DATASET_DESTS[@]}"; do [[ -n "$dst" ]] && remote "zfs list $(sq "$dst@pre-first-boot-$JOB_ID") >/dev/null 2>&1 || zfs snapshot $(sq "$dst@pre-first-boot-$JOB_ID")"; done
 
 rename_source_vm(){
   local suffix="$1" desired current fallback_xml
@@ -671,6 +674,16 @@ create_source_cleanup_manifest(){
 # Persist the exact source plan before a start attempt can leave an
 # attention-required job. Manual resolution must not reconstruct deletion scope.
 create_source_cleanup_manifest
+state DEFINING_DESTINATION 82 "Defining VM on destination"
+if [[ "$ORDINARY_LIVE_MANAGED" == 1 ]]; then
+  # Retirement is durable before the receiving definition may become startable.
+  # Any lost acknowledgement requires explicit paired resolution, never a source restart.
+  DEST_START_ATTEMPTED=1
+  /usr/local/sbin/unmotion-live-ordinary accept "$JOB_ID" >>"$LOG" 2>&1
+fi
+remote "virsh define $(sq "$REMOTE_STAGE/destination.xml")" >>"$LOG" 2>&1
+if [[ "$ORDINARY_LIVE_MANAGED" == 1 ]]; then /usr/local/sbin/unmotion-live-ordinary commit "$JOB_ID" >>"$LOG" 2>&1; fi
+for dst in "${ZVOL_DESTS[@]}" "${DATASET_DESTS[@]}"; do [[ -n "$dst" ]] && remote "zfs list $(sq "$dst@pre-first-boot-$JOB_ID") >/dev/null 2>&1 || zfs snapshot $(sq "$dst@pre-first-boot-$JOB_ID")"; done
 if [[ "$START_DESTINATION" == "1" ]]; then
   state STARTING_DESTINATION 88 "Starting VM on destination"
   DEST_START_ATTEMPTED=1

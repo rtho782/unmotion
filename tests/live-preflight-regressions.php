@@ -12,6 +12,14 @@ foreach([[$vmx,fn($f)=>false],[$svm,fn($f)=>true]] as [$cpu,$enabled]){try{unmLi
 unmLiveNestedCpu(str_replace('require','disable',$svm),fn($f)=>false);check(true,'disabled SVM is not an active nested guest');
 foreach(['<tpm/>','<hostdev/>','<filesystem/>','<shmem/>','<redirdev/>','<memory/>'] as $device)denied(str_replace('</devices>',$device.'</devices>',$xml),'excluded device '.$device);
 foreach(['<loader>/loader</loader>','<nvram>/vars</nvram>'] as $os)denied(str_replace('</os>',$os.'</os>',$xml),'UEFI not qualified');
+$uefi=str_replace('</os>','<loader readonly="yes" type="pflash" format="raw">/usr/share/qemu/ovmf-x64/OVMF_CODE-pure-efi.fd</loader><nvram format="raw">/etc/libvirt/qemu/nvram/11111111-1111-4111-8111-000000000001_VARS-pure-efi.fd</nvram></os>',$xml);
+$fw=unmLiveInspectXml($uefi)['firmware'];check($fw!==null&&str_ends_with($fw['nvramPath'],'_VARS-pure-efi.fd'),'reviewed explicit raw UEFI accepted');
+$target=unmLiveTargetXml($uefi,'/mnt/cache/domains/Squid Proxy/new.qcow2','/etc/libvirt/qemu/nvram/11111111-1111-4111-8111-000000000001_VARS-unmotion-live-aaaaaaaaaaaaaaaaaaaaaaaa.fd');
+check(str_contains($target,'_VARS-unmotion-live-aaaaaaaaaaaaaaaaaaaaaaaa.fd'),'target NVRAM remapped separately from the disk');
+foreach(['readonly="yes"'=>'readonly="no"','format="raw"'=>'format="qcow2"','OVMF_CODE-pure-efi.fd'=>'../../other.fd','11111111-1111-4111-8111-000000000001_VARS'=>'22222222-2222-4222-8222-222222222222_VARS','type="pflash"'=>'type="rom"'] as $from=>$to)denied(str_replace($from,$to,$uefi),'UEFI narrow validation '.$from);
+denied(str_replace('</devices>','<tpm model="tpm-tis"/></devices>',$uefi),'UEFI TPM still excluded');
+unmLiveFirmwareDestination(null,null);check(true,'BIOS requires no firmware metadata');
+try{unmLiveFirmwareDestination($fw,null);}catch(Throwable){check(true,'UEFI missing source evidence rejected');}
 denied(str_replace('</domain>','<memoryBacking><hugepages/></memoryBacking></domain>',$xml),'huge pages excluded');
 denied(str_replace('</domain>','<cputune/></domain>',$xml),'host pinning excluded');
 foreach(['<numa/>','<cache mode="passthrough"/>','<maxphysaddr mode="passthrough"/>','<feature policy="require" name="invtsc"/>'] as $extra)denied(str_replace('</cpu>',$extra.'</cpu>',$xml),'non-migratable CPU option');

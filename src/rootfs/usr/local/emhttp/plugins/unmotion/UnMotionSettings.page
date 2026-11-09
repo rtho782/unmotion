@@ -10,6 +10,7 @@ Tabs="false"
 require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 ?>
 <link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
+<script src="/plugins/unmotion/js/session.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/session.js'),0,12)?>"></script>
 <script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/unmotion.js'),0,12)?>"></script>
 <script src="/plugins/unmotion/js/cpu-compatibility.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/cpu-compatibility.js'),0,12)?>"></script>
 <script src="/plugins/unmotion/js/cpu-config.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/cpu-config.js'),0,12)?>"></script>
@@ -53,7 +54,9 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 <div class="unm-form-row"><label for="unm-cpu-level">_(Compatibility level)_</label><select id="unm-cpu-level" disabled></select></div>
 <div id="unm-cpu-result"></div>
 <input type="hidden" id="unm-cpu-selection" value="">
-<div class="unm-actions"><input type="button" id="unm-cpu-apply" value="_(Review and apply to all local VMs)_" disabled></div>
+<div class="unm-actions"><input type="button" id="unm-cpu-apply" value="_(Review and apply to all local VMs)_" disabled><input type="button" id="unm-cpu-default" value="_(Use for new VMs)_" disabled><input type="button" id="unm-cpu-default-clear" value="_(Clear default)_" disabled></div>
+<p id="unm-cpu-default-status" role="status" aria-live="polite"></p>
+<p class="unm-muted">_(The default is offered in Unraid's CPU mode dropdown and preselected for new form-created VMs unless their template specifies a CPU mode. It stores a fixed CPU definition before the first start. Changing or clearing the default never changes existing VMs. Existing custom CPUs remain pinned when edited; raw XML creation remains explicit. Native editor integration is enabled only for reviewed Unraid editor builds.)_</p>
 <p class="unm-muted">_(Applies the selected mode, including the suggestion when selected, to eligible persistent VM XMLs on this host only. Review affected and skipped VMs first. Original XMLs are backed up; topology, pinning, disks and other VM settings are preserved. No VM is stopped, started or rebooted. The new CPU takes effect on the next full stop/start, not a reboot inside the guest.)_</p>
 <p class="unm-muted">_(Nested virtualization already exposed through VMX/SVM is preserved, including host-passthrough exposure when KVM nesting is enabled. Explicit feature opt-outs remain disabled. The augmented CPU is freshly validated locally; unsupported requirements are skipped, not silently removed. Intel nested live migration also checks the full CPU contract and KVM nesting on both hosts. AMD SVM guests cannot use live migration in this beta.)_</p>
 <div id="unm-cpu-matrix" class="unm-table-wrap"></div>

@@ -182,7 +182,7 @@ function unmTransportOwned(array $peer,string $path,string $kind='file'): array 
 }
 
 function unmTransportVmOff(string $uuid): bool {
-    unmLiveLegacyInterlock($uuid);
+    unmLiveLegacyInterlock($uuid,true);
     $r=unmRun(['virsh','domstate',unmTransportUuid($uuid)],null,15);
     if($r['code']===0&&trim($r['stdout'])==='shut off')return true;
     if($r['code']===0)throw new RuntimeException('The destination VM must be shut off.');
@@ -565,7 +565,7 @@ function unmTransportCall(array $a,?array $peer,string $keyId): array {
     if($cmd==='virsh'){
         $verb=$a[1]??'';
         if(in_array($verb,['domname','domstate','domuuid','dumpxml'],true)&&($n===3||($n===4&&$verb==='dumpxml'&&$a[3]==='--inactive'))){if($a[2]===''||str_starts_with($a[2],'-')||preg_match('/[\x00-\x1f\x7f]/',$a[2]))throw new RuntimeException('Invalid VM query.');return unmTransportRun($a);}
-        if($verb==='define'&&$n===3){$r=unmTransportOwned($peer,$a[2]);$vmLock=unmTransportVmLock((string)$r['vmUuid']);if(basename($a[2])!=='destination.xml')throw new RuntimeException('Only the reserved VM definition can be defined.');unmTransportVmOff((string)$r['vmUuid']);unmTransportValidateDomainXml((string)file_get_contents($a[2]),(string)$r['vmUuid'],$peer);return unmTransportRun($a);}
+        if($verb==='define'&&$n===3){$r=unmTransportOwned($peer,$a[2]);$vmLock=unmTransportVmLock((string)$r['vmUuid']);if(basename($a[2])!=='destination.xml')throw new RuntimeException('Only the reserved VM definition can be defined.');unmTransportVmOff((string)$r['vmUuid']);$xml=(string)file_get_contents($a[2]);unmTransportValidateDomainXml($xml,(string)$r['vmUuid'],$peer);$ordinary=unmLiveOrdinaryDefine($peer,$r,$xml);return $ordinary??unmTransportRun($a);}
         if(in_array($verb,['start','autostart'],true)&&$n===3){$r=unmTransportFindVm($peer,$a[2]);$vmLock=unmTransportVmLock((string)$r['vmUuid']);if(!empty($r['replica']))throw new RuntimeException('Replicas may only be activated through coordinated recovery.');$xml=unmDomainXml($a[2],true);unmTransportValidateDomainXml($xml,$a[2],$peer);return unmTransportRun($a);}
     }
     if($cmd==='/usr/local/sbin/unmotion-start-destination'&&$n===3){$r=unmTransportFindVm($peer,$a[1]);$vmLock=unmTransportVmLock((string)$r['vmUuid']);if(!empty($r['replica'])||!preg_match('/\A[1-9][0-9]{0,12}\z/D',$a[2]))throw new RuntimeException('Invalid destination start.');unmTransportValidateDomainXml(unmDomainXml($a[1],true),$a[1],$peer);return unmTransportRun($a);}

@@ -22,4 +22,16 @@ $owner=array_replace($r,['state'=>'OWNER']);check($call('prepare',null,null,$own
 deny(fn()=>$call('prepare',null,null,$owner,unmNativeDomain(str_replace('vdisk.qcow2','foreign.qcow2',$xml))),'changed disk denied');
 deny(fn()=>$call('restore',null,null,$owner),'restore bypass denied');deny(fn()=>$call('attach',null,null,$owner),'attach bypass denied');
 check($call('release',$a)===null,'release clears runtime not durable authority');
+$efi=str_replace('<devices>','<os><loader readonly="yes" type="pflash">/usr/share/qemu/ovmf-x64/OVMF_CODE-pure-efi.fd</loader><nvram>/etc/libvirt/qemu/nvram/'.$uuid.'_VARS.fd</nvram></os><devices>',$xml);
+$ed=unmNativeDomain($efi);$er=$owner+['firmware'=>unmLiveFirmwareXml($ed['xpath'],$uuid)];
+check($call('prepare',null,null,$er,$ed)['phase']==='PREPARED','UEFI native start requires exact firmware binding');
+deny(fn()=>$call('prepare',null,null,$owner,$ed),'BIOS owner cannot acquire UEFI implicitly');
+deny(fn()=>$call('prepare',null,null,$er,unmNativeDomain(str_replace('_VARS.fd','_foreign.fd',$efi))),'changed NVRAM path remains fenced');
+$ordinary=$owner+['workflow'=>'ordinary'];
+$changed=unmNativeDomain(str_replace('Squid Proxy','Renamed Squid Proxy',str_replace('vdisk.qcow2','different.qcow2',$efi)));
+check($call('prepare',null,null,$ordinary,$changed)['phase']==='PREPARED','Reviewed ordinary owner permits native hardware/CPU/rename edits with the same UUID');
+foreach(['RETIRED','MOVING','ABORTED'] as $s)deny(fn()=>$call('prepare',null,null,array_replace($ordinary,['state'=>$s]),$changed),'Ordinary non-owner remains fenced despite changed disk/name/firmware: '.$s);
+deny(fn()=>$call('migrate',null,null,array_replace($ordinary,['state'=>'RECEIVING'])),'Ordinary receiver cannot consume a live incoming permit');
+deny(fn()=>$call('prepare',null,null,$owner+['workflow'=>'ordinary-pending']),'Pending reviewed hand-back fences native starts');
+deny(fn()=>$call('prepare',null,null,$ordinary,unmNativeDomain(str_replace($uuid,'22222222-2222-4222-8222-222222222222',$xml))),'Ordinary guard remains bound to exact UUID');
 echo "Live native fencing regressions passed: $checks checks.\n";

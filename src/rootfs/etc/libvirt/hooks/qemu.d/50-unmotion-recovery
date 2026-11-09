@@ -9,7 +9,7 @@ try {
     $operation=(string)($argv[2]??'');$phase=(string)($argv[3]??'');
     $xml=(string)file_get_contents('php://stdin');$domain=unmNativeDomain($xml);
     $daemon=unmNativeDaemon(posix_getppid());$run='/run/unmotion/lifecycle';
-    unmNativeWrite($run.'/native-hook-proof.json',['schemaVersion'=>1,'daemon'=>$daemon,'hookSha256'=>hash_file('sha256',__FILE__),'helperSha256'=>hash_file('sha256','/usr/local/emhttp/plugins/unmotion/include/native-fence.php'),'liveHelperSha256'=>hash_file('sha256','/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php'),'observedAt'=>gmdate('c')]);
+    unmNativeWrite($run.'/native-hook-proof.json',['schemaVersion'=>1,'daemon'=>$daemon,'hookSha256'=>hash_file('sha256',__FILE__),'helperSha256'=>hash_file('sha256','/usr/local/emhttp/plugins/unmotion/include/native-fence.php'),'liveHelperSha256'=>unmLiveNativeHelperHash(),'observedAt'=>gmdate('c')]);
     $probePath=$run.'/native-hook-probe.json';
     if(is_file($probePath)){$probe=unmNativeJson($probePath);if(($probe['uuid']??'')===$domain['uuid']&&($probe['name']??'')===$domain['name']&&(int)($probe['expiresAt']??0)>=time()){
         if($operation!=='prepare'||$phase!=='begin')exit(0);

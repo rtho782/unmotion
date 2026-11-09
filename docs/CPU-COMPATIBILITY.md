@@ -1,14 +1,24 @@
 # CPU compatibility checks
 
-0.5.0-beta4 provides CPU preparation, nested-virtualization preservation and [separate live-migration checks with a restricted initial workflow](LIVE-MIGRATION-BETA.md); a cached host match alone never approves a VM migration.
+0.5.0-beta5 provides CPU preparation, a pinned default for new VMs, nested-virtualization preservation and [separate live-migration checks with a restricted workflow](LIVE-MIGRATION-BETA.md); a cached host match alone never approves a VM migration.
 
 Author: Richard Skinner
 
-Available in **[0.5.0-beta4](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta4)** through the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable 0.4.9 does not include these controls. Update both paired hosts for live migration; older protocol-7 peers retain their existing workflows but may lack the optional CPU report or live-migration capability.
+Available in **[0.5.0-beta5](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta5)** through the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable 0.4.9 does not include these controls. Update both paired hosts for live migration; older protocol-7 peers retain their existing workflows but may lack the optional CPU report or live-migration capability.
 
 A shared active virtual CPU enables **live migration without powering the VM off**, apart from a brief handover pause. Fresh VM, machine, software, storage, device and ownership checks are also required. **Cold migration and Warm Move do not require a common CPU mode** because their handover occurs while powered off. They remain useful across generations and Intel/AMD hosts where the VM and guest are otherwise compatible; a vendor-specific custom CPU may need adjusting while the VM is off.
 
 Older modes hide newer CPU instructions and can reduce performance or fall below an OS/application's minimum requirements. For an essential, lightly loaded VM, choosing an older supported mode can be a reasonable trade-off for mobility between older hosts. A compatibility suggestion is not a workload benchmark or a guest boot guarantee.
+
+## Default CPU mode for new VMs
+
+Select a validated compatibility level and choose **Use for new VMs** beside the bulk-application button. This stores a fixed definition on this host. **Clear default** restores Unraid's ordinary new-VM selection; neither action edits existing VMs or their running CPUs.
+
+In Unraid's form editor, **unMotion default — model** appears in the CPU-mode dropdown and is preselected for new VMs unless a saved template specifies its own mode. The definition is validated against the actual machine before creation and is written before an optional first start. Existing custom CPUs use **Keep existing custom CPU (model)**; changing the default does not retarget them. Explicitly selecting the default for an existing VM changes its next-boot CPU, not its running CPU. Form-saved templates retain a private fixed CPU profile, independent of later default changes. Raw XML remains explicit.
+
+The adapter adds small hooks to two reviewed native-editor files, saves originals privately and restores them on plugin removal. It is qualified against the identical editor files on the lab's Unraid 7.3.2 and 7.3.4 builds. Unknown or externally changed sources are not overwritten; Settings reports unavailable integration. Check that status after an Unraid update. CPU/hypervisor changes invalidate the cached default and require review rather than a silent substitute. Existing live-managed VMs need powered-off hand-back before form-based CPU editing.
+
+Inventory badges show the observed active and next-boot CPU models. A different named mode needs a full stop/start. A matching name is not proof of full feature equivalence: live preflight still checks the complete running/pending CPU contract and destination freshly.
 
 ## Using the comparison
 

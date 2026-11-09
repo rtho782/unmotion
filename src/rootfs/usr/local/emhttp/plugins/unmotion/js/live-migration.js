@@ -2,13 +2,17 @@
 // Copyright (C) 2026 Richard Skinner
 (function($){
   'use strict';
-  var serial=0,request=null,selection=null,submitting=false,polling=false,logId='',logText='',logRequest=null;
+  var serial=0,request=null,selection=null,submitting=false,polling=false,logId='',logText='',logRequest=null,handback=null;
   var terminal=['COMPLETE','ABORTED','CANCELLED','FAILED','PROBE_FINISHED'];
   function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function post(action,data){return $.ajax({url:'/plugins/unmotion/api.php',method:'POST',data:$.extend({action:action},data||{}),dataType:'json',timeout:60000});}
   function error(xhr){return (xhr.responseJSON&&xhr.responseJSON.error)||'Request failed. Refresh status before retrying a mutation.';}
   function show(message){$('#unm-live-content').text(message);$('#unm-live-modal').addClass('open').attr('aria-hidden','false');}
-  function close(){if(submitting)return;serial++;if(request&&request.readyState!==4)request.abort();if(logRequest&&logRequest.readyState!==4)logRequest.abort();request=null;selection=null;logId='';$('#unm-live-modal').removeClass('open').attr('aria-hidden','true');$('#unm-live-start').prop('disabled',true).hide();}
+  function close(){if(submitting)return;serial++;if(request&&request.readyState!==4)request.abort();if(logRequest&&logRequest.readyState!==4)logRequest.abort();request=null;selection=null;handback=null;logId='';$('#unm-live-modal').removeClass('open').attr('aria-hidden','true');$('#unm-live-start').prop('disabled',true).val('Start live migration').hide();}
+  function reviewHandback(id){
+    if(submitting)return;close();var mine=++serial;$('#unm-live-title').text('Return to ordinary workflows');$('#unm-live-start').show().val('Confirm hand-back').prop('disabled',true);show('Proving the local owner is powered off and the peer retains its non-owner start fence…');
+    request=post('liveHandbackPreview',{id:id}).done(function(r){if(mine!==serial)return;if(!r.success){show(r.error);return;}handback={id:id,review:r.review};show('Return '+r.vmName+' to Cold/Warm Move, clone, CPU editing and replication-only configuration. Recovery arming remains unavailable. This host remains the owner. The peer’s old copy stays fenced. Hand-back does not start VMs or delete files/disks. Ordinary transfers of this VM require Beta5 or later on both hosts.');$('#unm-live-start').prop('disabled',false);}).fail(function(xhr,status){if(mine===serial&&status!=='abort')show(error(xhr));});
+  }
   function preview(button){
     if(submitting)return;close();var peer=$('#unm-peer-select').val();if(!peer){$('#unm-live-notice').text('Select a paired destination first.');return;}
     var mine=++serial;selection={vm_id:$(button).attr('data-vm-id'),peer_id:peer};$('#unm-live-title').text('Live migrate '+$(button).attr('data-vm-name'));$('#unm-live-start').show().prop('disabled',true);
@@ -33,8 +37,9 @@
     post('liveJobs').done(function(r){if(!r.success)return;var body=$('#unm-live-body'),seen={};
       (r.jobs||[]).forEach(function(j){seen[j.id]=true;var row=body.find('tr[data-live-id="'+j.id+'"]');if(!row.length){body.find('tr:not([data-live-id])').remove();row=$('<tr>').attr('data-live-id',j.id).append('<td></td><td></td><td></td><td></td><td></td>');body.append(row);}
         var stopped=j.role==='source'&&j.workerActive===false&&terminal.indexOf(j.state)<0&&j.state!=='QUEUED';
-        var cells=row.children('td'),text=[j.vmName,j.role,stopped?'ATTENTION':j.state,(stopped?'Worker stopped; use Reconcile. ':'')+(j.message||'')+(j.state==='COPYING'&&j.progress!=null?' ('+j.progress+'%)':'')];text.forEach(function(v,i){if(cells.eq(i).text()!==String(v||''))cells.eq(i).text(v||'');});
+        var cells=row.children('td'),text=[j.vmName,j.role,stopped?'ATTENTION':j.state,(stopped?'Worker stopped; use Reconcile. ':'')+(j.message||'')+(j.state==='COPYING'&&j.progress!=null?' ('+j.progress+'%)':'')+(j.receivedMiB>0?' · '+j.receivedMiB+' MiB received over transport':'')];text.forEach(function(v,i){if(cells.eq(i).text()!==String(v||''))cells.eq(i).text(v||'');});
         var actions='<input type="button" class="unm-live-log" data-id="'+esc(j.id)+'" value="Log">';
+        if(j.canHandback)actions+=' <input type="button" class="unm-live-handback" data-id="'+esc(j.id)+'" value="Return to ordinary workflows">';
         if(j.role==='source'&&terminal.indexOf(j.state)<0){actions+=' <input type="button" class="unm-live-reconcile" data-id="'+esc(j.id)+'" value="Reconcile" '+(j.workerActive?'disabled title="Wait for the active worker or request cancellation"':'')+'>';if(!stopped&&['QUEUED','PREFLIGHT','SOURCE_MOVING','COPYING'].indexOf(j.state)>=0)actions+=' <input type="button" class="unm-live-cancel" data-id="'+esc(j.id)+'" value="Request cancellation">';}
         if(cells.eq(4).data('actions')!==actions)cells.eq(4).html(actions).data('actions',actions);
       });
@@ -44,8 +49,11 @@
   $(function(){
     if(!$('#unm-live-body').length)return;
     $(document).on('click','.unm-live-migrate',function(){preview(this);}).on('click','.unm-live-log',function(){readLog($(this).attr('data-id'));});
+    $(document).on('click','.unm-live-handback',function(){reviewHandback($(this).attr('data-id'));});
     $('.unm-live-close').on('click',close);
-    $('#unm-live-start').on('click',function(){if(!selection||submitting||$(this).prop('disabled'))return;var data=$.extend({},selection),mine=serial;submitting=true;$(this).prop('disabled',true);$('.unm-live-close').prop('disabled',true);show('Starting the job. Fresh checks run again before any transfer.');
+    $('#unm-live-start').on('click',function(){
+      if(handback&&!submitting&&!$(this).prop('disabled')){var reviewed=handback,mine=serial;submitting=true;$(this).prop('disabled',true);$('.unm-live-close').prop('disabled',true);show('Rechecking both hosts and retaining the non-owner fence before returning ordinary controls…');post('liveHandback',reviewed).done(function(r){if(mine===serial)show(r.success?'Hand-back complete. Ordinary workflows are available on the owner; the non-owner remains fenced.':r.error);refresh();}).fail(function(xhr){if(mine===serial)show(error(xhr)+' Retry the reviewed hand-back; do not delete authority files.');}).always(function(){submitting=false;handback=null;$('.unm-live-close').prop('disabled',false);$('#unm-live-start').hide();});return;}
+      if(!selection||submitting||$(this).prop('disabled'))return;var data=$.extend({},selection),mine=serial;submitting=true;$(this).prop('disabled',true);$('.unm-live-close').prop('disabled',true);show('Starting the job. Fresh checks run again before any transfer.');
       post('liveStart',data).done(function(r){if(mine!==serial)return;show(r.success?'Job '+r.job.id+' started. You can close this dialog and follow Live migration below.':r.error);selection=null;$('#unm-live-start').hide();refresh();}).fail(function(xhr){if(mine===serial)show(error(xhr)+' Check Live migration before trying again.');selection=null;}).always(function(){submitting=false;$('.unm-live-close').prop('disabled',false);});
     });
     $(document).on('click','.unm-live-cancel,.unm-live-reconcile',function(){var button=$(this),id=button.attr('data-id'),action=button.hasClass('unm-live-cancel')?'liveCancel':'liveReconcile';button.prop('disabled',true);post(action,{id:id}).done(function(r){$('#unm-live-notice').text(r.success?'Request completed; refreshing live status.':r.error);refresh();}).fail(function(xhr){$('#unm-live-notice').text(error(xhr));}).always(function(){button.prop('disabled',false);});});

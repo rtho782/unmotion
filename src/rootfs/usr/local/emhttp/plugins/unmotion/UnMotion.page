@@ -11,6 +11,7 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 $config = unmLoadConfig();
 ?>
 <link rel="stylesheet" href="/plugins/unmotion/css/unmotion.css?v=<?=rawurlencode(UNM_VERSION)?>">
+<script src="/plugins/unmotion/js/session.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/session.js'),0,12)?>"></script>
 <script src="/plugins/unmotion/js/unmotion.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/unmotion.js'),0,12)?>"></script>
 <script src="/plugins/unmotion/js/report.js?v=<?=rawurlencode(UNM_VERSION)?>"></script>
 <script src="/plugins/unmotion/js/live-migration.js?v=<?=rawurlencode(UNM_VERSION)?>&amp;build=<?=substr(hash_file('sha256','/usr/local/emhttp/plugins/unmotion/js/live-migration.js'),0,12)?>"></script>
@@ -29,7 +30,7 @@ $config = unmLoadConfig();
 <div class="unm-section-heading"><h2>_(Migration and clone jobs)_</h2><input type="button" id="unm-clear-jobs" value="_(Clear completed/cancelled)_"></div>
 <div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table"><thead><tr><th>_(VM)_</th><th>_(Destination)_</th><th>_(State)_</th><th>_(Progress)_</th><th>_(Message)_</th><th>_(Actions)_</th></tr></thead><tbody id="unm-job-body"></tbody></table></div>
 <h2>_(Live migration — beta)_</h2>
-<p>_(A running VM can move without a shutdown. A brief pause is required for handover; its duration depends on the workload, link and ownership checks. This beta supports one independent raw/qcow2 disk, BIOS firmware and ordinary bridge NICs. Both peers need this beta. Cold and Warm Move remain available for other supported guests.)_</p>
+<p>_(A running VM can move without a shutdown. A brief pause is required for handover; its duration depends on the workload, link and ownership checks. This beta supports one independent raw/qcow2 disk, BIOS or reviewed UEFI firmware without TPM, and ordinary bridge NICs. Both peers need matching beta builds. Cold and Warm Move remain options for other supported guests; a live-managed owner must first complete powered-off hand-back to ordinary workflows.)_</p>
 <div id="unm-live-notice" role="status" aria-live="polite"></div>
 <div class="TableContainer--no-min-width"><table class="tablesorter shift unm-table"><thead><tr><th>_(VM)_</th><th>_(Role)_</th><th>_(State)_</th><th>_(Message)_</th><th>_(Actions)_</th></tr></thead><tbody id="unm-live-body"><tr><td colspan="5">_(Loading live jobs…)_</td></tr></tbody></table></div>
 <div id="unm-live-modal" class="unm-modal" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="unm-live-title"><div class="unm-modal-box"><h2 id="unm-live-title">_(Live migration)_</h2><div id="unm-live-content" aria-live="polite"></div><div class="unm-modal-actions"><input type="button" class="unm-live-close" value="_(Close)_"><input type="button" id="unm-live-start" value="_(Start live migration)_" disabled></div></div></div>

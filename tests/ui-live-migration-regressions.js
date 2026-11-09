@@ -22,7 +22,7 @@ $.ajax=function(options){const r={options,readyState:1,done(f){this.success=f;re
   abort(){this.aborted=true;this.readyState=4;if(this.failure)this.failure({},'abort');if(this.finished)this.finished();},
   resolve(v){this.readyState=4;if(this.success)this.success(v);if(this.finished)this.finished();},reject(v){this.readyState=4;if(this.failure)this.failure(v,'error');if(this.finished)this.finished();}};requests.push(r);return r;};
 const context={jQuery:$,document:{hidden:false},window:{getSelection(){return null;}}};vm.createContext(context);
-vm.runInContext(source.replace('  $(function(){','  globalThis.testLive={preview,close,readLog,refreshLog,esc};\n  $(function(){'),context);
+vm.runInContext(source.replace('  $(function(){','  globalThis.testLive={preview,close,readLog,refreshLog,reviewHandback,esc};\n  $(function(){'),context);
 const api=context.testLive,button={attrs:{'data-vm-id':'vm1','data-vm-name':'Squid Proxy'},attr(k){return this.attrs[k];}};
 $('#unm-peer-select').val('dev2');api.preview(button);
 assert.match($('#unm-live-content').content,/Checking the running CPU/);assert.equal($('#unm-live-start').props.disabled,true);assert.equal(requests.length,1);
@@ -34,4 +34,7 @@ api.preview(button);requests[2].reject({responseJSON:{error:'Destination CPU inc
 api.readLog('live-a');assert.equal($('#unm-live-start').hidden,true);api.close();requests[3].resolve({success:true,log:'late log'});assert.notEqual($('#unm-live-content').content,'late log');
 assert.equal(api.esc('"\'<>&'),'&quot;&#39;&lt;&gt;&amp;');
 assert.doesNotMatch(source,/\b(?:alert|confirm|prompt)\s*\(/);assert.match(source,/r\.log===logText/);assert.match(source,/workerActive\?'disabled/);assert.match(source,/selection\.toString\(\)/);
-console.log('Live UI immediate dialog, disabled submission, POST, errors, escaping, cancellation and late response isolation passed.');
+api.reviewHandback('live-b');assert.equal(requests.at(-1).options.data.action,'liveHandbackPreview');assert.equal(requests.at(-1).options.method,'POST');assert.equal($('#unm-live-start').props.disabled,true);
+api.close();requests.at(-1).resolve({success:true,review:'late',vmName:'Late VM'});assert.equal($('#unm-live-start').props.disabled,true,'A late hand-back review cannot re-enable a closed dialog.');
+api.reviewHandback('live-b');requests.at(-1).resolve({success:true,review:'a'.repeat(64),vmName:'Squid Proxy <script>'});assert.equal($('#unm-live-start').props.disabled,false);assert.match($('#unm-live-content').content,/replication-only/);assert.match($('#unm-live-content').content,/Recovery arming remains unavailable/);assert.match($('#unm-live-content').content,/old copy stays fenced/);
+console.log('Live/hand-back UI immediate review, disabled submission, POST, scope, errors, escaping, cancellation and late response isolation passed.');

@@ -37,6 +37,14 @@ The Unraid Plugins tab shows the longer installer version, including the familia
 
 At every authorized stable release, review the CA template `MinVer`, guide requirements and release availability after verifying the published assets. Keep its `PluginURL` exactly equal to the stable PLG's `pluginURL`; the raw stable branch URL is the catalogue identity, not a per-release commit pin. The 0.4.3 requirement is 7.3.2; documentation of future work must not advance installer feeds ahead of publication.
 
+## Live migration follow-up
+
+The published Beta5 includes a pinned new-VM CPU default/native editor integration, UEFI without TPM, powered-off ordinary hand-back, readiness/progress and browser-session handling. See the [qualification record](TESTING-LIVE-BETA5.md).
+
+Later work includes zvol/multiple-disk live storage and a reviewed ownership handover from formerly live-managed VMs to coordinated recovery. Replication-only configuration after hand-back does not yet allow recovery arming. TPM live migration, AMD nested live migration, passthrough and automatic failover are not implied by this backlog.
+
+Beta5 separates provisional online file-seed verification from the mandatory powered-off final transfer. It checks the received length against rsync's file list, tolerates subsequent guest disk growth, and forces the final mutable-image delta even when file size/timestamps match. A provisional copy is not a bootable recovery point.
+
 ## Expand the peer API and reduce SSH round trips
 
 Status: accepted for future work. Target release: unassigned.

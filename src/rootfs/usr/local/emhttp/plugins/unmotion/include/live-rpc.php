@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Richard Skinner
 declare(strict_types=1);
+require_once __DIR__.'/xml-canonical.php';
 
 /** A deliberately narrow migration-only adapter, NOT a general libvirt proxy.
  * ABI reviewed against libvirt v12.2.0 remote_protocol.x; unknown versions,
@@ -31,7 +32,7 @@ function unmLiveXmlHash(string $xml): string {
     if(strlen($xml)>2097152||preg_match('/<!DOCTYPE|<!ENTITY/i',$xml))throw new RuntimeException('Invalid migration XML.');
     $d=new DOMDocument();$old=libxml_use_internal_errors(true);try{$ok=$d->loadXML($xml,LIBXML_NONET|LIBXML_NOBLANKS);}finally{libxml_clear_errors();libxml_use_internal_errors($old);}
     if(!$ok||$d->documentElement?->tagName!=='domain')throw new RuntimeException('Invalid migration domain.');
-    $d->documentElement->removeAttribute('id');return hash('sha256',$d->C14N());
+    $d->documentElement->removeAttribute('id');return hash('sha256',unmXmlCanonical($d));
 }
 
 final class UnmLiveRpcGuard {
