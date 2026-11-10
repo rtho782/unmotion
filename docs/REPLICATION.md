@@ -85,3 +85,24 @@ A running pause is not treated as a safe TPM copy. The latest verified safe TPM 
 Recovery requires a Guest-Agent-eligible point, places source-side autostart under unMotion control, and requires an authenticated coordinated grant from the reachable, stopped and fenced source before manual activation. Retained recovery objects stay read-only and inert; activation uses exact, separately owned clones. Host shutdown/reboot prepares a durable destination hold before the local service stops, and startup remains fenced until the peer reconciles authority.
 
 These controls use recovery protocol 1 over protocol 7. Native pre-start fencing requires verified libvirt hook invocation and exact one-use source/recovered start permits. Automatic failover, network-silence claims and witnesses are not supported.
+
+## Ending replication (beta)
+
+This workflow is available in **0.5.0-beta6** on the opt-in beta feed, not stable 0.4.9. Both hosts need optional `retirementVersion: 1` on protocol 7. An older/offline peer blocks retirement without authorizing storage cleanup.
+
+Use **Disable** for a reversible pause. Use **End replication** when permanently ending the policy, then choose:
+
+- **Keep replicas read-only:** stop scheduling/pruning and retain destination points, state artifacts and ownership inventory. These are inert inventory, not ordinary VMs; they cannot be recovery-armed after retirement. **Delete retained replicas** can remove them later.
+- **Delete replica data:** remove only exact owned replica objects, their snapshots and verified state artifacts. Logs and receipts remain. An unfinished resumable receive is retained unless you explicitly select **Also discard any partial receive**. Keeping a partial receive retains its source bases as well.
+
+The source VM and its writable disks are never deleted by this workflow. New scheduler/manual/lifecycle runs stop when intent is saved; already admitted work must settle. Safe source-authoritative standby recovery is disarmed through the paired transaction. A recovered activation, unresolved grant, missing authority, foreign hold/clone/child/snapshot, another VM reference or uncertain storage identity blocks completion and preserves applicable fences/data. Resolve the reported blocker, then use **Retry retirement**; a blocked deletion can explicitly authorize partial discard before destination cleanup has begun. Do not remove records or holds by hand to bypass a blocker.
+
+`ENDING` means a worker is settling work or contacting the peer. `BLOCKED` means retirement is incomplete and scheduling remains stopped. `ENDED_KEEP` and `ENDED_DELETE` complete that cycle; they do not reactivate its old chain. After interruption/reboot, a stopped worker is shown with a retry action; reading inventory never resumes deletion. Destination receipts make retries safe after a lost reply or partial progress. Source snapshots are released only after the corresponding acknowledgement is saved locally.
+
+### Replicating again to the same destination
+
+After ending completes, select that destination and choose **Replicate** beside the VM to configure a **new cycle**. Both peers need `replicationIncarnationVersion: 1`; unsupported peers are rejected before creating the policy or a source snapshot. An unfinished/uncertain retirement cannot be bypassed, and only one current cycle may exist for a VM/destination pair. A paused current cycle should be configured/re-enabled, not duplicated.
+
+The new cycle starts a full copy with a fresh identity and separate destination objects, snapshot names and state directory. It does not reuse old recovery points or resumable receives. Old histories and kept replicas remain separately visible; **Delete retained replicas** acts only on the selected old cycle, even if a new one is running. Old partial receives retain their source bases until explicitly removed. Budget space for both retained data and the new full copy. Use **Disable** instead when you want to resume the same chain later.
+
+Retained or unfinished retirement/cleanup blocks plugin uninstall, because current uninstall would otherwise remove its ownership records. See [Beta6 qualification](TESTING-RETIREMENT-BETA6.md).

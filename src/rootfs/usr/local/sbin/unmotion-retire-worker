@@ -1,0 +1,19 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$id=(string)($argv[1]??'');$token=(string)($argv[2]??'');$dir=unmReplicationPath($id);
+if(!preg_match('/\A[a-f0-9]{32}\z/D',$token))exit(2);
+$workerLock=fopen('/var/lock/unmotion-retirement-'.$id.'.lock','c');
+if(!$workerLock||!flock($workerLock,LOCK_EX|LOCK_NB))exit(0);
+try{
+    unmProcessRegister($dir.'/retirement-process.json',getmypid(),__FILE__,[$id,$token]);
+    $r=unmRetirementSourceRun($id,$token);echo json_encode($r,JSON_UNESCAPED_SLASHES)."\n";
+}catch(Throwable $e){
+    $r=unmCleanupRead(unmRetirementPath($id));
+    if(($r['token']??'')===$token&&!in_array($r['state']??'',['ENDED_KEEP','ENDED_DELETE'],true)){
+        $r['state']='BLOCKED';$r['error']=$e->getMessage();$r['message']='Replication ending is blocked; scheduling remains stopped. Retry after resolving the reported blocker.';$r['updatedAt']=gmdate('c');unmCleanupStore(unmRetirementPath($id),$r);
+    }
+    fwrite(STDERR,$e->getMessage()."\n");exit(1);
+}

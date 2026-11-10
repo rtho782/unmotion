@@ -1,0 +1,8 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$id=(string)($argv[1]??'');
+try{echo json_encode(unmSeedCleanupSource($id))."\n";}
+catch(Throwable $e){$dir=unmSeedPath($id);$s=unmSeed($id);$s['state']='CLEANUP_BLOCKED';$s['message']=$e->getMessage();$s['cleanup']=['state'=>'BLOCKED','error'=>$e->getMessage(),'updatedAt'=>gmdate('c')];unmAtomicJson($dir.'/seed.json',$s);fwrite(STDERR,$e->getMessage()."\n");exit(1);}

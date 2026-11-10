@@ -1,14 +1,16 @@
 # unMotion
 
-Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Beta release: **[0.5.0-beta5](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta5)**, available by opting into the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Community Apps and the stable feed remain on 0.4.9.
+Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Beta release: **[0.5.0-beta6](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta6)**, available by opting into the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Community Apps and the stable feed remain on 0.4.9.
 
-**Experimental beta:** 0.5.0-beta5 provides live migration for running BIOS or supported UEFI/no-TPM guests with one independent raw/qcow2 file disk and an active compatible CPU mode. Both peers need matching Beta5 and the qualified matching virtualization stack. Intel nested live moves require nesting and CPU validation on both hosts; AMD SVM live moves remain blocked. After a settled move, powered-off hand-back enables ordinary workflows while retaining non-owner start fences. Start with disposable VMs. See [requirements](docs/LIVE-MIGRATION-BETA.md) and [Beta5 qualification](docs/TESTING-LIVE-BETA5.md).
+**Beta replication controls:** end scheduled replication while keeping inert replicas or deleting their owned data, retry blocked cleanup, and configure an independent new cycle for the same VM/destination. Both peers need Beta6's applicable optional capabilities. Warm Move removal also waits for destination acknowledgement before releasing source bases. See the [retirement workflow and limits](docs/REPLICATION.md#ending-replication-beta) and [qualification record](docs/TESTING-RETIREMENT-BETA6.md).
+
+**Experimental live migration:** Beta6 includes live migration for running BIOS or supported UEFI/no-TPM guests with one independent raw/qcow2 file disk and an active compatible CPU mode. Both peers need matching Beta6 and the qualified matching virtualization stack. Intel nested live moves require nesting and CPU validation on both hosts; AMD SVM live moves remain blocked. After a settled move, powered-off hand-back enables ordinary workflows while retaining non-owner start fences. Start with disposable VMs. See [requirements](docs/LIVE-MIGRATION-BETA.md) and the inherited [Beta5 live qualification](docs/TESTING-LIVE-BETA5.md).
 
 VMs using the numeric OVMF `X-PciMmio64Mb` firmware setting can be transferred without removing it. Both peers need 0.4.9 or later for this narrow exception; other custom QEMU arguments remain blocked. See [accepted syntax and peer requirements](docs/OVMF-FIRMWARE.md).
 
 **Beta CPU defaults:** select a validated mode in Settings and choose **Use for new VMs**. Unraid's form editor offers the pinned default without changing existing VMs; saved templates retain their own fixed profiles. Active/next-boot CPU information, destination receive progress and session-expiry guidance are also included. See the [CPU guide](docs/CPU-COMPATIBILITY.md). Recovery arming after live hand-back is not supported; replication-only configuration is available.
 
-Beta5 also handles file growth during online Warm Move preparation and Update. These copies are provisional, not bootable backups. Cutover still powers off the source and forces a final image delta, including when file size/timestamps match, before destination startup.
+The beta handles file growth during online Warm Move preparation and Update. These copies are provisional, not bootable backups. Cutover still powers off the source and forces a final image delta, including when file size/timestamps match, before destination startup.
 
 New pairings display the peer's Ed25519 SSH fingerprint with **Accept and pair / Cancel**. Manual verification is optional; both hosts require 0.4.7 or later. Dataset isolation checks and exact source cleanup protect unrelated storage; persistent web actions require CSRF-protected POST. See the [pairing guide](docs/PAIRING.md) and [storage safety and upgrade guidance](docs/SECURITY-047.md).
 
@@ -29,7 +31,7 @@ Licensed under **GPL-3.0-only**, not GPLv3-or-later. See [LICENSE](LICENSE). Sof
 
 ## Features
 
-**Beta only — 0.5.0-beta5:** **Settings → unMotion → CPU compatibility levels** provides cached local masks, newest recognised families first, an all-peers comparison and a suggested exact level shared by every selected host. Q35/i440fx references are combined automatically; **Show all revisions** exposes older definitions. **Review and apply to all local VMs** backs up and updates eligible persistent XMLs after fresh checks, preserving topology, pinning, nested virtualization and non-CPU settings. The change takes effect at the next full stop/start, not a guest reboot. A compatible active CPU enables the beta's restricted live-migration workflow, subject to fresh VM-specific checks. Cold/Warm Move still use a powered-off handover and do not require a shared CPU mode, including Intel/AMD where guest/VM settings are compatible. Older masks may reduce performance or omit guest-required instructions, but can suit lightly loaded essential VMs. These controls are not included in stable 0.4.9. See [CPU compatibility](docs/CPU-COMPATIBILITY.md).
+**Beta only — 0.5.0-beta6:** **Settings → unMotion → CPU compatibility levels** provides cached local masks, newest recognised families first, an all-peers comparison and a suggested exact level shared by every selected host. Q35/i440fx references are combined automatically; **Show all revisions** exposes older definitions. **Review and apply to all local VMs** backs up and updates eligible persistent XMLs after fresh checks, preserving topology, pinning, nested virtualization and non-CPU settings. The change takes effect at the next full stop/start, not a guest reboot. A compatible active CPU enables the beta's restricted live-migration workflow, subject to fresh VM-specific checks. Cold/Warm Move still use a powered-off handover and do not require a shared CPU mode, including Intel/AMD where guest/VM settings are compatible. Older masks may reduce performance or omit guest-required instructions, but can suit lightly loaded essential VMs. These controls are not included in stable 0.4.9. See [CPU compatibility](docs/CPU-COMPATIBILITY.md).
 
 - Reciprocal host discovery and restricted, peer-bound root SSH pairing.
 - Cold migration of powered-off VMs and prepared **Warm Move**, which seeds while running but requires a powered-off final cutover.
@@ -53,9 +55,9 @@ Recovery requires a verified libvirt hook. Use **Start source VM** or **Start re
 
 While recovery is armed or unreconciled, conflicting migration, clone and replication-policy changes are blocked. Retention can preserve an additional eligible point when the newest point is storage-only.
 
-A replication policy with stored replica state cannot currently be removed through the UI. **Replica removal deferred** means the removal workflow is unavailable, not queued deletion. Do not delete its records or replica storage manually.
+**Beta6:** use **End replication** to keep inert replicas or delete exact owned data. After ending, **Replicate** can start a separate full-copy cycle for the same destination; old retained copies remain separately inventoried. **Disable** is a reversible pause instead. Both peers must support the applicable optional operations. Stable 0.4.9 cannot remove stored replicas through the UI; **Replica removal deferred** is not queued deletion. Never delete ownership records manually.
 
-**Not supported:** automatic failover, unreachable-source recovery, quorum/witness voting, alternate TPM checkpoint selection or failback transfer. Cold failback is preflight-only. Stable has no live migration; Beta5 has the restricted scope described above, excluding recovery/replication-managed guests.
+**Not supported:** automatic failover, unreachable-source recovery, quorum/witness voting, alternate TPM checkpoint selection or failback transfer. Cold failback is preflight-only. Stable has no live migration; Beta6 has the restricted scope described above, excluding recovery/replication-managed guests.
 
 ### Firmware and manually repaired migrations
 
@@ -74,7 +76,7 @@ plugin install /tmp/unmotion.plg
 cat /usr/local/emhttp/plugins/unmotion/VERSION
 ```
 
-Stable reports **0.4.9** in the application and **2026.10.15.01-0.4.9** in the Plugins tab. Beta reports **0.5.0-beta5** and **2026.11.09.02-0.5.0-beta5** respectively. The fixed release date/sequence allows Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+Stable reports **0.4.9** in the application and **2026.10.15.01-0.4.9** in the Plugins tab. Beta reports **0.5.0-beta6** and **2026.11.09.03-0.5.0-beta6** respectively. The fixed release date/sequence allows Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
 
 To opt into beta updates, use **Plugins → Install Plugin** with `https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg`, then refresh unMotion. Update both hosts for cached CPU comparison. Ordinary protocol-7 pairing and existing migration workflows remain compatible with 0.4.2 or later; older peers simply cannot provide the optional CPU report. Follow the upgrade safety steps below. Stable installations are not switched automatically.
 
@@ -96,7 +98,7 @@ After a successful install/update is registered, unMotion removes recognized old
 
 Use **Plugins → Check for Updates → Update**, then refresh the unMotion page. Stable installations follow the **plugin-stable** feed; prerelease testing requires explicit opt-in. Updates preserve settings, pairings and job state.
 
-For Beta5, finish/reconcile live jobs and shut down live-managed guests before updating. Pending hand-back and unresolved handover authority block normal upgrade/removal; never delete authority records to bypass that protection. Update both hosts before live migration or an ordinary transfer of a formerly live-managed VM.
+For Beta6, finish/reconcile live jobs and shut down live-managed guests before updating. Pending hand-back and unresolved handover authority block normal upgrade/removal; never delete authority records to bypass that protection. Update both hosts before live migration or an ordinary transfer of a formerly live-managed VM.
 
 Before upgrading from 0.4.1 or earlier, finish or explicitly remove prepared/partial Warm Moves while both peers still run the old version. Pause replication, wait for active operations and cleanup to finish, and shut down recovery-managed sources and recovered activations. Upgrade both hosts in one maintenance window and retest pairing. Legacy partial storage without provable ownership is retained, not silently adopted or deleted.
 
@@ -110,7 +112,7 @@ See [plugin update documentation](docs/PLUGIN-UPDATES.md) for channel maintenanc
 plugin remove unmotion.plg
 ```
 
-Removal is refused while recovery authority is armed or unresolved. Reconcile recovery and disarm it first. The removal hook verifies owned processes before stopping unMotion, runs its cleanup helper, removes the package and deletes plugin settings. Retain necessary backups before uninstalling.
+Removal is refused while recovery authority is armed or unresolved. Reconcile recovery and disarm it first. The removal hook verifies owned processes before stopping unMotion, runs its cleanup helper, removes the package and deletes plugin settings. Retain necessary backups before uninstalling. Beta6 also refuses uninstall while replicas are retained or retirement/preparation cleanup is unfinished; finish paired cleanup first so ownership records are not orphaned.
 
 ## Documentation
 

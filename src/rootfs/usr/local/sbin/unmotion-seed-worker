@@ -103,74 +103,13 @@ MAP_TSV="$DIR/storage.tsv"
 : > "$MAP_TSV"
 
 if [[ "${ACTION:-prepare}" == remove ]]; then
-  state REMOVING 5 'Removing prepared copy and releasing replication holds'
-  : > "$MAP_TSV"
-  if [[ -f "$SEED_JSON" ]]; then
-    php -r '$d=json_decode(file_get_contents($argv[1]),true);foreach($d["storage"]??[] as $x)echo ($x["kind"]??""),"\t",($x["source"]??""),"\t",($x["destination"]??""),"\t",($x["snapshot"]??""),"\n";' "$SEED_JSON" > "$MAP_TSV"
+  state REMOVING 5 'Preflighting exact prepared-copy cleanup'
+  if ! /usr/local/sbin/unmotion-seed-cleanup "$SEED_ID" >>"$LOG" 2>&1; then
+    # The helper records CLEANUP_BLOCKED, separately from preparation success.
+    FAIL_RECORDED=1
+    exit 16
   fi
-  [[ -s "$DIR/storage-new.tsv" ]] && cat "$DIR/storage-new.tsv" >> "$MAP_TSV"
-  [[ -s "$DIR/held-snapshots.tsv" ]] && cat "$DIR/held-snapshots.tsv" >> "$MAP_TSV"
-
-  # Recover source snapshots from the VM's current ZFS storage when an earlier
-  # failure occurred before the bookkeeping files were committed. This is
-  # deliberately scoped to this VM, so identically named backup snapshots in
-  # other pools are never touched.
-  SOURCE_CANDIDATES="$DIR/remove-source-candidates.txt"; : > "$SOURCE_CANDIDATES"
-  awk -F '\t' '$2!=""{print $2}' "$MAP_TSV" >> "$SOURCE_CANDIDATES" 2>/dev/null || true
-  if virsh dominfo "$VM_UUID" >/dev/null 2>&1; then
-    php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";foreach(unmVmReplicationSources(unmParseVm($argv[1])) as $x)echo $x,"\n";' "$VM_UUID" >> "$SOURCE_CANDIDATES" 2>>"$LOG" || true
-  fi
-  sort -u "$SOURCE_CANDIDATES" -o "$SOURCE_CANDIDATES"
-  while IFS= read -r src; do
-    [[ -n "$src" ]] || continue
-    zfs list -H -o name "$src" >/dev/null 2>&1 || continue
-    while IFS= read -r full; do
-      [[ -n "$full" ]] || continue
-      snap="${full#*@}"
-      if zfs list -H -t filesystem "$src" >/dev/null 2>&1; then kind=dataset; else kind=zvol; fi
-      printf '%s\t%s\t\t%s\t\t\n' "$kind" "$src" "$snap" >> "$MAP_TSV"
-    done < <(zfs list -H -r -t snapshot -o name "$src" 2>/dev/null | grep -F "$src@unmotion-seed-${SEED_ID}-g" || true)
-  done < "$SOURCE_CANDIDATES"
-  sort -u "$MAP_TSV" -o "$MAP_TSV"
-
-  if [[ ! -s "$MAP_TSV" ]]; then
-    fail 'No prepared, partial or orphaned seed storage could be identified safely.' 15
-  fi
-
-  REMOVE_ERRORS=0
-  while IFS= read -r row; do
-    # Tabs are shell whitespace, so read with IFS=$'\t' collapses adjacent
-    # delimiters and can shift a snapshot name into the destination field.
-    # Translate to a non-whitespace separator to preserve intentional empties.
-    IFS=$'\034' read -r kind src dst snap _ <<< "${row//$'\t'/$'\034'}"
-    [[ -n "$kind" ]] || continue
-    if [[ "$kind" == zvol || "$kind" == dataset ]]; then
-      if [[ -n "$dst" ]]; then
-        if [[ -n "$snap" ]]; then remote "zfs release $(sq "unmotion:$SEED_ID") $(sq "$dst@$snap") >/dev/null 2>&1 || true" >>"$LOG" 2>&1 || true; fi
-        if ! remote "zfs receive -A $(sq "$dst") >/dev/null 2>&1 || true; if zfs list $(sq "$dst") >/dev/null 2>&1; then zfs destroy -r $(sq "$dst"); fi" >>"$LOG" 2>&1; then
-          log "ERROR: unable to remove destination ZFS object $dst."
-          REMOVE_ERRORS=1
-        fi
-      fi
-      if [[ -n "$snap" && -n "$src" ]] && zfs list -H -t snapshot "$src@$snap" >/dev/null 2>&1; then
-        zfs release "unmotion:$SEED_ID" "$src@$snap" >>"$LOG" 2>&1 || true
-        if zfs holds -H "$src@$snap" 2>/dev/null | awk -F '\t' -v t="unmotion:$SEED_ID" '$2==t{found=1}END{exit found?0:1}'; then
-          log "ERROR: unMotion hold remains on $src@$snap."
-          REMOVE_ERRORS=1
-        elif ! zfs destroy "$src@$snap" >>"$LOG" 2>&1; then
-          log "ERROR: unable to destroy $src@$snap; check for foreign holds or dependent clones."
-          REMOVE_ERRORS=1
-        fi
-      fi
-    elif [[ "$kind" == image && "$dst" == /mnt/* ]]; then
-      remote "rm -f -- $(sq "$dst")" >>"$LOG" 2>&1 || { log "ERROR: unable to remove destination image $dst."; REMOVE_ERRORS=1; }
-    fi
-  done < "$MAP_TSV"
-  remote "rm -f -- $(sq "$BASE/incoming/seeds/$SEED_ID.json")" >>"$LOG" 2>&1 || true
-  if ((REMOVE_ERRORS)); then fail 'Prepared-copy cleanup was incomplete; see the log. The seed record was retained.' 16; fi
-  state REMOVED 100 'Prepared copy removed'
   trap - EXIT
-  rm -rf -- "$DIR"
   exit 0
 fi
 state PREFLIGHT 2 'Inspecting VM storage and destination capabilities'

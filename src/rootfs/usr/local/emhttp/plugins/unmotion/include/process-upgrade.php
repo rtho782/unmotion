@@ -7,7 +7,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-client','unmotion-live-ordinary','unmotion-cpu-editor'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-client','unmotion-live-ordinary','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -25,6 +25,11 @@ function unmProcessUpgradeInventory(): array {
 function unmProcessPreinstall(): void {
     if(!function_exists('posix_kill'))throw new RuntimeException('PHP POSIX support is required for safe unMotion service upgrades.');
     $bootRestore=unmProcessEarlyBootRestore();
+    $installed=@file_get_contents('/usr/local/emhttp/plugins/unmotion/include/lib.php');
+    $installedProtocol=is_string($installed)&&preg_match('/const\s+UNM_PROTOCOL\s*=\s*(\d+)\s*;/',$installed,$match)?(int)$match[1]:0;
+    // Do not break fencing restoration at boot or prevent an already-protocol-7
+    // host from installing cleanup fixes. Legacy entries still cannot mutate.
+    if(!$bootRestore&&$installedProtocol!==7)unmProcessAssertPreparedCompatible('/boot/config/plugins/unmotion',7);
     unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore);
     if($bootRestore)echo "unMotion: restoring plugin during verified early boot, before VM Manager or QEMU. Durable recovery authority remains fenced.\n";
     $inventory=unmProcessUpgradeInventory();
@@ -39,6 +44,20 @@ function unmProcessPreinstall(): void {
     $remaining=unmProcessUpgradeInventory();
     if($remaining['workers']||$remaining['daemons'])throw new RuntimeException('An unMotion worker or daemon appeared while stopping scheduling. Upgrade refused; let active work finish and retry. Stopped runtime daemons restart on successful installation or host boot.');
     echo "unMotion upgrade guard: no active workers; verified scheduling/lifecycle daemons stopped. Do not start new operations until installation completes.\n";
+}
+
+/** Standalone: also embedded in the readable PLG before installed code changes. */
+function unmProcessAssertPreparedCompatible(string $base,int $targetProtocol): void {
+    foreach(glob($base.'/seeds/*/seed.json')?:[] as $path){
+        $seed=json_decode((string)file_get_contents($path),true);
+        if(!is_array($seed))throw new RuntimeException('A corrupt prepared-copy record prevents safe protocol upgrade.');
+        if(($seed['state']??'')==='REMOVED')continue;
+        $hasData=!empty($seed['storage'])||!empty($seed['storageStarted'])||!empty($seed['baseSnapshot'])||!empty($seed['pendingSnapshot'])||!empty($seed['generation']);
+        if(!$hasData)continue;
+        $capsPath=dirname($path).'/remote-capabilities.json';$caps=is_file($capsPath)?json_decode((string)file_get_contents($capsPath),true):[];
+        $protocol=(int)($seed['protocolVersion']??$caps['protocolVersion']??0);
+        if($protocol!==$targetProtocol)throw new RuntimeException('Prepared/partial Warm Move '.basename(dirname($path)).' has legacy or unproven protocol ownership. Finish/remove it on compatible old peers before upgrading; already-upgraded legacy copies need ownership review. No cleanup was attempted.');
+    }
 }
 
 // No adoption of an already-running managed QEMU into a new native start fence.

@@ -267,6 +267,7 @@ worker_running(){
 }
 launch_checkpoint(){
   local id="$1" state="$2" request slot now logfile
+  [[ ! -e "$POLICIES/$id/retirement.json" ]] || return 0
   request="$QUEUE/$id.request"
   [[ -f "$request" ]] || return 0; vm_is_off "$state" || return 0; worker_running "$id" && return 0
   now="$(date +%s)"; ((now>=${RETRY_AT[$id]:-0})) || return 0

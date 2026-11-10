@@ -17,9 +17,9 @@ This covers prepare, update and resume workers. With matching protocol-7 peers, 
 
 These reservations coordinate seeds admitted by the **same source host**, not independent administrators or unrelated source hosts. They do not create a distributed storage lock, expand support for shared writable guest disks, or make out-of-band XML/storage edits safe. Existing destination conflict checks, readonly prepared storage, UUID checks, shutdown/final-delta cutover and resumable-receive preservation remain in force.
 
-## File image verification in Beta5
+## File image verification (beta)
 
-0.5.0-beta5 permits raw/qcow2 images to grow during online Prepare and Update. The destination length must match rsync's single-file transfer statistics; malformed statistics, truncated destinations and transfer errors still fail. A powered-off seed also requires an unchanged source length.
+The beta permits raw/qcow2 images to grow during online Prepare and Update. The destination length must match rsync's single-file transfer statistics; malformed statistics, truncated destinations and transfer errors still fail. A powered-off seed also requires an unchanged source length.
 
 Online image seeds are provisional, not independently bootable backups. Cutover powers off the source and forces the final mutable-image delta even when size/timestamps match. It verifies the stable source and destination lengths before proceeding to VM definition/start. This can read the whole image even when few blocks changed; the delta transfer still avoids sending matching blocks. ZFS snapshots, holds and resume-token handling are unchanged.
 
@@ -34,3 +34,9 @@ Online image seeds are provisional, not independently bootable backups. Cutover 
 New preparations record a pre-storage flag and boot identity. Before taking a snapshot or beginning a copy, the worker must persist the storage-started flag. A pre-storage flag from another boot is not accepted as proof. Legacy lock-rejected records are recognised only by a restricted set of pre-transfer files, with no generation, pending snapshot, storage manifest contents or capability/inventory artifacts. Unexpected files, links, evidence of partial transfers, non-FAILED states and active worker/VM locks exclude record-only archival. Empty manifests alone do not authorise it; other cases retain normal cleanup safeguards.
 
 Archives are local recovery/audit evidence, not anonymised reports. They are kept outside the active seed listing and are not automatically pruned. Retrieve their logs manually if needed; do not restore a seed into the active directory without checking current VM/storage ownership first.
+
+## Prepared-storage cleanup (beta)
+
+0.5.0-beta6 requires protocol 7 and `seedCleanupVersion: 1` on both peers for normal prepared-copy removal. **Remove** explicitly removes that preparation, including its partial receive state, not the source VM or writable disks. The destination first verifies the original authenticated reservation, VM absence/references and all exact storage identities. Foreign snapshots/holds/clones/children or changed files block cleanup before deletion. Successful destination cleanup is journaled and acknowledged before any source seed base is released; lost replies and interrupted partial cleanup can be retried.
+
+An error becomes **CLEANUP_BLOCKED**, retaining the original preparation outcome (for example READY) separately from the failed cleanup. Fix the displayed blocker and retry Remove. Successful cleanup archives the source record/logs outside the active list. Legacy protocol-5 or unproven ownership is reported without contacting the peer for deletion; matching names/paths are not ownership and there is no automatic adoption tool. The verified never-started archive-only path above remains separate.

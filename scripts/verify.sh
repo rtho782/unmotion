@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.0-beta5}"
+EXPECTED_VERSION="${1:-0.5.0-beta6}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -65,6 +65,10 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/diagnostic-regressions.php"
   php "$ROOT/tests/seed-concurrency-regressions.php"
   php "$ROOT/tests/seed-archive-regressions.php"
+  php "$ROOT/tests/retirement-regressions.php"
+  php "$ROOT/tests/replication-incarnation-regressions.php"
+  php "$ROOT/tests/prepared-upgrade-regressions.php"
+  php "$ROOT/tests/retirement-removal-regressions.php"
   php "$ROOT/tests/preflight-policy-regressions.php"
   php "$ROOT/tests/cutover-control-regressions.php"
   php "$ROOT/tests/migration-concurrency-regressions.php"
@@ -90,6 +94,8 @@ if command -v node >/dev/null; then
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/cpu-config.js"
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/live-migration.js"
   node "$ROOT/tests/ui-live-migration-regressions.js"
+  node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/replication-retirement.js"
+  node "$ROOT/tests/ui-retirement-regressions.js"
   node "$ROOT/tests/ui-cpu-config-regressions.js"
   node --check "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/js/session.js"
   node "$ROOT/tests/ui-session-regressions.js"

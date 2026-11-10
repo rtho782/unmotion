@@ -60,6 +60,8 @@ function unmNativeRecordForVm(string $base,string $uuid): ?array {
 }
 function unmNativeAssertRemovable(string $base='/boot/config/plugins/unmotion'): void {
     unmLiveNativeAssertRemovable($base);
+    foreach(array_merge(glob($base.'/replications/*/retirement.json')?:[],glob($base.'/replicas/*/*/retirement.json')?:[]) as $path){$r=unmNativeJson($path);if(!in_array($r['state']??'',['ENDED_DELETE','DELETED'],true))throw new RuntimeException('Complete retirement and explicitly remove retained replicas before uninstalling; ownership inventory must not be orphaned.');}
+    foreach(array_merge(glob($base.'/seeds/*/cleanup.json')?:[],glob($base.'/cleanup-receipts/*/*.json')?:[]) as $path){$r=unmNativeJson($path);if(!in_array($r['state']??'',['COMPLETE','DELETED'],true))throw new RuntimeException('Finish or reconcile prepared-copy cleanup before uninstalling; cleanup receipts must be retained.');}
     foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=unmNativeJson($path);if(!in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)||!empty($r['armed'])||!empty($r['managedAutostart'])||!empty($r['activationId'])||!empty($r['activation'])||!empty($r['claim']))throw new RuntimeException('Disarm and reconcile every recovery policy before removing unMotion; native VM fencing must remain installed.');}
     foreach(glob($base.'/native-managed/*.json')?:[] as $path){$m=unmNativeJson($path);$uuid=(string)($m['vmUuid']??'');if(!preg_match('/^[a-f0-9-]{36}$/',$uuid)||unmNativeRecordForVm($base,$uuid)!==null)throw new RuntimeException('Native managed authority must be reconciled before removal.');}
 }

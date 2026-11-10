@@ -5,6 +5,10 @@ require_once '/usr/local/emhttp/plugins/unmotion/include/lib.php';
 $cmd=$argv[1]??'capabilities';
 try {
     switch($cmd){
+        case 'replication-retire':
+        case 'retirement-source-proof':
+        case 'seed-cleanup':
+            throw new RuntimeException('This cleanup operation must enter through the authenticated paired-host dispatcher.');
         case 'pairing-bootstrap':
             if (getenv('UNM_SSH_KEY_ID')) throw new RuntimeException('Bootstrap requires local/password-authorized administration.');
             $key = trim((string)stream_get_contents(STDIN, 4097));

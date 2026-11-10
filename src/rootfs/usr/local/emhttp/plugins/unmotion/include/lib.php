@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0-beta5';
+const UNM_VERSION = '0.5.0-beta6';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -24,6 +24,10 @@ require_once __DIR__.'/cpu-config.php';
 require_once __DIR__.'/cpu-default.php';
 require_once __DIR__.'/live-migration.php';
 require_once __DIR__.'/live-ordinary.php';
+require_once __DIR__.'/cleanup-plan.php';
+require_once __DIR__.'/replication-retirement.php';
+require_once __DIR__.'/replication-incarnation.php';
+require_once __DIR__.'/seed-cleanup.php';
 // Protocol 7 deliberately rejects unrestricted legacy remote-shell transport.
 // Durable recovery schema-1 records retain their historical protocolVersion=6
 // identity; the SSH transport and all new recovery envelopes require 7.
@@ -844,7 +848,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>2,'liveOrdinaryVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>2,'liveOrdinaryVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -1727,10 +1731,11 @@ function unmSelectReplicationRetentionPointsWithRecoverySafety(array $points,int
     $selected[]=$chosen;return $selected;
 }
 
-function unmReplicationId(string $vmUuid,string $destinationHostId): string {
+function unmReplicationId(string $vmUuid,string $destinationHostId,string $incarnation=''): string {
     if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid VM UUID.');
     $destinationHostId=unmReplicaIdentityPart($destinationHostId,'destination host identity');
-    return 'repl-'.substr(hash('sha256',strtolower($vmUuid).'|'.$destinationHostId),0,24);
+    if($incarnation!==''&&!preg_match('/\A[a-f0-9]{32}\z/D',$incarnation))throw new InvalidArgumentException('Invalid replication incarnation.');
+    return 'repl-'.substr(hash('sha256',strtolower($vmUuid).'|'.$destinationHostId.($incarnation!==''?'|'.$incarnation:'')),0,24);
 }
 
 function unmReplicationPath(string $id): string {
@@ -1770,7 +1775,7 @@ function unmReleaseReplicationPolicyLock($handle): void {
 function unmReplicationPolicy(string $id): array {
     $policy=unmLoadJson(unmReplicationPath($id).'/policy.json');
     if(!$policy)throw new RuntimeException('Replication policy not found.');
-    $expectedId=unmReplicationId((string)($policy['vmUuid']??''),(string)($policy['peerHostId']??''));if(!hash_equals($id,$expectedId))throw new RuntimeException('Replication policy identity does not match its VM and destination host.');
+    $expectedId=unmReplicationId((string)($policy['vmUuid']??''),(string)($policy['peerHostId']??''),unmReplicationCycleNonce($policy));if(($policy['id']??'')!==$id||!hash_equals($id,$expectedId))throw new RuntimeException('Replication policy identity does not match its VM, destination host and incarnation.');
     return $policy;
 }
 
@@ -1814,6 +1819,8 @@ function unmReplication(string $id): array {
     $record['nextDueEpoch']=$nextDueEpoch;
     $record['nextDueAt']=$nextDueEpoch===null?null:gmdate('c',$nextDueEpoch);
     $record['policy']=$policy;$record['durable']=$durable;$record['runtime']=$runtime;
+    $retirement=unmRetirementDisplay($id,unmCleanupRead(unmRetirementPath($id)));
+    if($retirement){$record['retirement']=$retirement;$record['state']=$record['status']=$retirement['state'];$record['message']=$retirement['message']??'';$record['enabled']=false;$record['nextDueAt']=null;$record['nextDueEpoch']=null;}
     $identity=['replicationId'=>$id,'vmUuid'=>(string)$policy['vmUuid'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
     $record['recovery']=unmRecoveryPublicRecord(unmRecoveryLoad(unmRecoverySourcePath($id),unmRecoveryDefaultRecord($identity,true)));
     return $record;
@@ -1863,13 +1870,17 @@ function unmReplicationZvolUsedByOtherVm(string $dataset,string $excludeUuid): b
     return false;
 }
 
-function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $options=[]): array {
+function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $options=[],?array $cycle=null): array {
     if($vmIdentifier==='')throw new InvalidArgumentException('Select a VM.');
     $rpo=unmValidateReplicationRpo((int)($options['rpoSeconds']??$options['rpo_seconds']??3600));
     $retention=unmValidateReplicationRetention($rpo,(int)($options['retentionCount']??$options['retention_count']??1));
     $tpmMode=unmReplicationTpmInitialMode((string)($options['tpmInitialMode']??$options['tpm_initial_mode']??'none'));
     $vm=unmParseVm($vmIdentifier);$peer=unmTestPeer($peerId);$caps=(array)($peer['lastCapabilities']??[]);
-    $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)($peer['hostId']??'')),0,16);
+    $cycle??=unmReplicationSelectCycle((string)$vm['uuid'],(string)$peer['hostId']);$incarnation=unmReplicationCycleNonce($cycle);
+    $replicationId=unmReplicationId((string)$vm['uuid'],(string)$peer['hostId'],$incarnation);
+    if(($cycle['id']??'')!==$replicationId)throw new RuntimeException('Replication preflight cycle changed VM/destination identity.');
+    $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)$peer['hostId'].($incarnation!==''?'|'.$replicationId:'')),0,16);
+    if($incarnation!==''&&($caps['replicationIncarnationVersion']??0)!==1)$errors[]='Creating another replication cycle requires incarnation support on both hosts. Upgrade the destination to the current Beta6 build; retained replicas were not changed.';
     try { unmTransportValidateDomainXml(unmDomainXml((string)$vm['uuid'],true),(string)$vm['uuid'],null,$caps); }
     catch (Throwable $e) { $errors[]='Restricted VM transport: '.$e->getMessage(); }
     try{
@@ -1924,24 +1935,27 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
         $sourceDatasets[$dataset]=true;
     }
     if(count($storage)===0)$errors[]='No scheduled-replication-compatible storage was found.';
-    $replicationId=empty($vm['uuid'])?'':unmReplicationId((string)$vm['uuid'],(string)($peer['hostId']??''));
     $proposal=['sourceHostId'=>unmHostId(),'destinationHostId'=>(string)($peer['hostId']??''),'replicationId'=>$replicationId,'vmUuid'=>(string)($vm['uuid']??''),'vmName'=>(string)($vm['name']??''),'storage'=>$storage,'reserve'=>false];
+    if($incarnation!=='')$proposal['incarnation']=$incarnation;
     $destination=[];
     if(!$errors){
         $encoded=base64_encode(json_encode($proposal,JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR));$remote=unmRemote($peer,'/usr/local/sbin/unmotion-agent replication-preflight '.escapeshellarg($encoded),45);
         if($remote['code']!==0)$errors[]='Destination replication preflight failed: '.(trim($remote['stderr'])?:'unknown error');
         else{$destination=json_decode($remote['stdout'],true);if(!is_array($destination)||empty($destination['accepted']))$errors[]='Destination returned an invalid replication preflight response.';}
     }
-    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'id'=>$replicationId,'vm'=>$vm,'peer'=>$peer,'rpoSeconds'=>$rpo,'retentionCount'=>$retention,'maxRetention'=>unmReplicationMaxRetention($rpo),'tpmInitialMode'=>$tpmMode,'storage'=>$storage,'destination'=>$destination];
+    return ['ready'=>empty($errors),'errors'=>array_values(array_unique($errors)),'warnings'=>array_values(array_unique($warnings)),'id'=>$replicationId,'vm'=>$vm,'peer'=>$peer,'rpoSeconds'=>$rpo,'retentionCount'=>$retention,'maxRetention'=>unmReplicationMaxRetention($rpo),'tpmInitialMode'=>$tpmMode,'storage'=>$storage,'destination'=>$destination]+($incarnation!==''?['incarnation'=>$incarnation]:[]);
 }
 
 function unmCreateReplication(array $input): array {
     $vmId=(string)($input['vm_id']??$input['vmUuid']??'');$peerId=(string)($input['peer_id']??$input['peerId']??'');
-    $pre=unmReplicationPreflight($vmId,$peerId,$input);if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
+    $vm=unmParseVm($vmId);$peer=unmPeer($peerId);$pairLock=unmReplicationPairLock((string)$vm['uuid'],(string)$peer['hostId']);
+    $cycle=unmReplicationSelectCycle((string)$vm['uuid'],(string)$peer['hostId'],true);
+    $pre=unmReplicationPreflight($vmId,$peerId,$input,$cycle);if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
     $id=(string)$pre['id'];$policyLock=unmAcquireReplicationPolicyLock($id,true);$dir=unmReplicationPath($id);if(is_file($dir.'/policy.json'))throw new RuntimeException('A replication policy already exists for this VM and destination.');
     if(!is_dir($dir)&&!mkdir($dir,0700,true)&&!is_dir($dir))throw new RuntimeException('Unable to create replication policy directory.');
     $enabled=filter_var($input['enabled']??true,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($enabled===null)throw new InvalidArgumentException('Invalid replication enabled state.');
     $now=date(DATE_ATOM);$policy=['id'=>$id,'enabled'=>$enabled,'vmUuid'=>(string)$pre['vm']['uuid'],'vmName'=>(string)$pre['vm']['name'],'peerId'=>$peerId,'peerName'=>(string)($pre['peer']['name']??$pre['peer']['host']??''),'peerHostId'=>(string)($pre['peer']['hostId']??''),'rpoSeconds'=>(int)$pre['rpoSeconds'],'retentionCount'=>(int)$pre['retentionCount'],'tpmInitialMode'=>(string)$pre['tpmInitialMode'],'storage'=>$pre['storage'],'createdAt'=>$now,'updatedAt'=>$now];
+    if(isset($pre['incarnation']))$policy['incarnation']=$pre['incarnation'];
     unmAtomicJson($dir.'/policy.json',$policy);unmAtomicJson($dir.'/state.json',['id'=>$id,'state'=>$policy['enabled']?'IDLE':'PAUSED','generation'=>0,'baseSnapshot'=>'','basePointId'=>'','pending'=>null,'lastSuccessAt'=>null,'nextDueAt'=>$policy['enabled']?$now:null,'updatedAt'=>$now]);
     unmWriteCfg($dir.'/request.cfg',['REPLICATION_ID'=>$id,'VM_UUID'=>$policy['vmUuid'],'VM_NAME'=>$policy['vmName'],'PEER_ID'=>$peerId]);
     return unmReplication($id);
@@ -1953,10 +1967,12 @@ function unmReplicationStorageFingerprint(array $storage): string {
 }
 
 function unmUpdateReplication(string $id,array $input): array {
+    $admissionLock=unmRetirementAdmissionLock($id);
+    unmRetirementAssertOpen($id);
     $policyLock=unmAcquireReplicationPolicyLock($id);$record=unmReplication($id);$existing=(array)$record['policy'];$durable=(array)$record['durable'];$vmId=(string)$existing['vmUuid'];$peerId=(string)$existing['peerId'];
     if(unmReplicationStateIsActive((string)($record['state']??''))||is_array($durable['pending']??null))throw new RuntimeException('Wait for the active or pending replication generation to finish before changing this policy.');
     $merged=['rpoSeconds'=>$input['rpo_seconds']??$input['rpoSeconds']??$existing['rpoSeconds'],'retentionCount'=>$input['retention_count']??$input['retentionCount']??$existing['retentionCount'],'tpmInitialMode'=>$input['tpm_initial_mode']??$input['tpmInitialMode']??$existing['tpmInitialMode']];
-    $pre=unmReplicationPreflight($vmId,$peerId,$merged);if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
+    $pre=unmReplicationPreflight($vmId,$peerId,$merged,['id'=>$id]+(isset($existing['incarnation'])?['incarnation'=>unmReplicationCycleNonce($existing)]:[]));if(empty($pre['ready']))throw new RuntimeException(implode('; ',$pre['errors']));
     $hasBase=(int)($durable['generation']??0)>0||(string)($durable['baseSnapshot']??'')!==''||(string)($durable['basePointId']??'')!=='';
     if($hasBase&&unmReplicationStorageFingerprint((array)($existing['storage']??[]))!==unmReplicationStorageFingerprint((array)$pre['storage']))throw new RuntimeException('The VM storage mapping changed after the incremental replication chain was established. This policy cannot be updated in place.');
     $existing['rpoSeconds']=(int)$pre['rpoSeconds'];$existing['retentionCount']=(int)$pre['retentionCount'];$existing['tpmInitialMode']=(string)$pre['tpmInitialMode'];$existing['storage']=$pre['storage'];$existing['vmName']=(string)$pre['vm']['name'];$existing['peerName']=(string)($pre['peer']['name']??$pre['peer']['host']??'');$existing['peerHostId']=(string)($pre['peer']['hostId']??'');$existing['updatedAt']=date(DATE_ATOM);
@@ -1964,12 +1980,16 @@ function unmUpdateReplication(string $id,array $input): array {
 }
 
 function unmSetReplicationEnabled(string $id,bool $enabled): array {
+    $admissionLock=unmRetirementAdmissionLock($id);
+    unmRetirementAssertOpen($id);
     $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);unmRecoveryAssertLegacyVmAvailable((string)$policy['vmUuid'],'Replication policy mutation');$policy['enabled']=$enabled;$policy['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/policy.json',$policy);
     $state=unmReplicationDurableState($id);$state['state']=$enabled?'IDLE':'PAUSED';$state['nextDueAt']=$enabled?date(DATE_ATOM):null;$state['updatedAt']=date(DATE_ATOM);unmAtomicJson(unmReplicationPath($id).'/state.json',$state);
     return unmReplication($id);
 }
 
 function unmLaunchReplicationWorker(string $id,string $reason='manual'): int {
+    $admissionLock=unmRetirementAdmissionLock($id);
+    unmRetirementAssertOpen($id);
     $policyLock=unmAcquireReplicationPolicyLock($id);$policy=unmReplicationPolicy($id);if(empty($policy['enabled']))throw new RuntimeException('Replication policy is paused.');
     $runtime=unmLoadJson(unmReplicationRuntimePath($id));if(unmReplicationStateIsActive((string)($runtime['state']??''))&&unmReplicationRuntimeWorkerAlive($id,$runtime))throw new RuntimeException('A replication run is already active.');
     $durable=unmReplicationDurableState($id);$durableState=(string)($durable['state']??'');$durableUpdated=strtotime((string)($durable['updatedAt']??''));$staleQueued=$durableState==='QUEUED'&&($durableUpdated===false||$durableUpdated<time()-120)&&!unmReplicationRuntimeWorkerAlive($id,$runtime);
@@ -1992,6 +2012,7 @@ function unmRunReplicationNow(string $id): array {
 }
 
 function unmRemoveReplication(string $id): void {
+    $admissionLock=unmRetirementAdmissionLock($id);unmRetirementAssertOpen($id);
     $policyLock=unmAcquireReplicationPolicyLock($id);$record=unmReplication($id);$durable=(array)($record['durable']??[]);$state=(string)($record['state']??'');
     if(unmReplicationStateIsActive($state))throw new RuntimeException('Pause and wait for the active replication run before removing this policy.');
     $recovery=(array)($record['recovery']??[]);if(!empty($recovery['armed'])||(string)($recovery['state']??'REPLICATION_ONLY')!=='REPLICATION_ONLY')throw new RuntimeException('Disarm and reconcile recovery on both hosts before removing this replication policy.');
@@ -2012,7 +2033,7 @@ function unmRemoveReplication(string $id): void {
 }
 
 function unmReplicationLog(string $id): string {
-    unmReplicationPath($id);$path='/var/log/unmotion/replication-'.$id.'.log';return is_file($path)?(string)file_get_contents($path):'';
+    unmReplicationPath($id);$path='/var/log/unmotion/replication-'.$id.'.log';$retire='/var/log/unmotion/replication-'.$id.'-retirement.log';return (is_file($path)?(string)file_get_contents($path):'').(is_file($retire)?"\nRetirement:\n".(string)file_get_contents($retire):'');
 }
 
 function unmReplicaManifest(string $sourceHostId,string $replicationId): array {
@@ -2047,9 +2068,12 @@ function unmValidateReplicaRequestIdentity(array $request,bool $requireVmName=tr
     $sourcePeer=unmFindPeerByHostId($sourceHostId);if((string)($sourcePeer['pairingState']??'paired')!=='paired')throw new RuntimeException('Replica requests require a completed reciprocal pairing.');
     $replicationId=(string)($request['replicationId']??$request['id']??'');unmReplicationPath($replicationId);
     $vmUuid=trim((string)($request['vmUuid']??''));if(!preg_match('/^[A-Fa-f0-9-]{32,36}$/',$vmUuid))throw new InvalidArgumentException('Invalid replica VM UUID.');
-    if(!hash_equals(unmReplicationId($vmUuid,$destinationHostId),$replicationId))throw new InvalidArgumentException('Replica id does not match the VM UUID and destination host identity.');
+    $manifest=unmCleanupRead(unmReplicaPath($sourceHostId,$replicationId).'/manifest.json');
+    $incarnation=array_key_exists('incarnation',$request)?unmReplicationCycleNonce($request):unmReplicationCycleNonce($manifest);
+    if($manifest&&unmReplicationCycleNonce($manifest)!==$incarnation)throw new InvalidArgumentException('Replica incarnation differs from its reserved identity.');
+    if(!hash_equals(unmReplicationId($vmUuid,$destinationHostId,$incarnation),$replicationId))throw new InvalidArgumentException('Replica id does not match the VM UUID, destination host and incarnation.');
     $vmName=trim((string)($request['vmName']??''));if(($requireVmName&&$vmName==='')||preg_match('~[/\r\n\t]~',$vmName))throw new InvalidArgumentException('Invalid replica VM name.');
-    return compact('sourceHostId','destinationHostId','replicationId','vmUuid','vmName');
+    return compact('sourceHostId','destinationHostId','replicationId','vmUuid','vmName')+($incarnation!==''?['incarnation'=>$incarnation]:[]);
 }
 
 function unmReplicaVmUuidUndefinedInInventory(string $inventory,string $vmUuid): bool {
@@ -2095,6 +2119,8 @@ function unmNormaliseReplicaStoragePlan(array $items): array {
 
 function unmReplicaPreflight(array $request): array {
     $identity=unmValidateReplicaRequestIdentity($request);$storage=unmNormaliseReplicaStoragePlan((array)($request['storage']??[]));$dir=unmReplicaPath($identity['sourceHostId'],$identity['replicationId']);$existing=unmLoadJson($dir.'/manifest.json');
+    if(file_exists($dir.'/retirement.json'))throw new RuntimeException('This replica reservation is retired or ending; it cannot receive a new generation.');
+    if(isset($identity['incarnation'])&&!$existing)unmReplicaAssertPriorCyclesEnded($identity,$dir);
     unmAssertReplicaVmUuidUndefined($identity['vmUuid']);
     if($existing&&(($existing['sourceHostId']??'')!==$identity['sourceHostId']||($existing['destinationHostId']??'')!==$identity['destinationHostId']||($existing['vmUuid']??'')!==$identity['vmUuid']))throw new RuntimeException('Existing replica reservation has a different identity.');
     if($existing&&!empty($existing['storage'])&&unmReplicationStorageFingerprint((array)$existing['storage'])!==unmReplicationStorageFingerprint($storage))throw new RuntimeException('Existing replica reservation has a different storage mapping. Explicit cleanup is required before remapping it.');
@@ -2111,12 +2137,13 @@ function unmReplicaPreflight(array $request): array {
         if($destinationExists&&!isset($owned[$destination]))throw new RuntimeException('Destination ZFS object already exists without matching replica ownership: '.$destination);
         if($destinationExists&&isset($owned[$destination]))unmVerifyReplicaDestinationInert($item);
     }
-    $cfg=unmLoadConfig();$stateDirectory=rtrim((string)$cfg['image_dir'],'/').'/.unmotion-replicas/'.substr(hash('sha256',$identity['sourceHostId']),0,16).'/'.$identity['vmUuid'];
+    $stateDirectory=unmReplicaStateDirectory($identity);
     $reserve=true;if(array_key_exists('reserve',$request)){$reserve=filter_var($request['reserve'],FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($reserve===null)throw new InvalidArgumentException('Invalid replica reservation mode.');}
     if($reserve){
         if(!is_dir($dir)&&!mkdir($dir,0700,true)&&!is_dir($dir))throw new RuntimeException('Unable to create replica reservation directory.');
         if(!is_dir($stateDirectory)&&!mkdir($stateDirectory,0700,true)&&!is_dir($stateDirectory))throw new RuntimeException('Unable to create replica state directory.');
         $now=date(DATE_ATOM);$manifest=array_replace($existing,['replicationId'=>$identity['replicationId'],'sourceHostId'=>$identity['sourceHostId'],'destinationHostId'=>$identity['destinationHostId'],'vmUuid'=>$identity['vmUuid'],'vmName'=>$identity['vmName'],'state'=>(string)($existing['state']??'RESERVED'),'storage'=>$storage,'stateDirectory'=>$stateDirectory,'points'=>(array)($existing['points']??[]),'currentPointId'=>$existing['currentPointId']??null,'createdAt'=>$existing['createdAt']??$now,'updatedAt'=>$now]);
+        if(isset($identity['incarnation']))$manifest['incarnation']=$identity['incarnation'];
         unmAtomicJson($dir.'/manifest.json',$manifest);$existing=$manifest;
     }
     return ['accepted'=>true,'hostId'=>unmHostId(),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'stateDirectory'=>$stateDirectory,'manifest'=>$existing?:null];
@@ -2794,6 +2821,7 @@ function unmRecoverySourceWorkerAuthority(string $replicationId,string $vmUuid):
 }
 
 function unmRecoveryAssertReplicaMutationAllowed(string $sourceHostId,string $replicationId): void {
+    if(file_exists(unmReplicaPath($sourceHostId,$replicationId).'/retirement.json'))throw new RuntimeException('Replica retirement blocks new publish, prune and recovery mutations.');
     $path=unmReplicaPath($sourceHostId,$replicationId).'/recovery.json';if(!is_file($path))return;$record=unmRecoveryLoad($path);
     if(empty($record['armed']))return;if((string)$record['authority']!=='SOURCE'||!in_array((string)$record['state'],['STANDBY','HOLDOFF'],true))throw new RuntimeException('Replica publish/prune is fenced while recovery authority or activation state is unresolved.');
 }
@@ -3008,6 +3036,7 @@ function unmRecoveryTransactionId(string $prefix,string $value): string {
 function unmRecoveryRemoteArm(array $request): array {
     $vmLock=unmRecoveryAcquireVmLock((string)($request['vmUuid']??''));try{return unmRecoveryApplyRemoteMutation($request,'recovery-arm',static function(array $record,array $context,array $payload,array $request):array{
         if(!empty($context['sourceSide']))throw new RuntimeException('Recovery arming must target the replica destination.');
+        if(file_exists($context['dir'].'/retirement.json'))throw new RuntimeException('Retired or ending replicas cannot arm recovery.');
         unmRecoveryRequireNativeFenceProof();
         unmRecoveryAssertSoleDestinationPolicy((string)$context['identity']['vmUuid'],(string)$context['identity']['replicationId']);
         $transactionId=unmRecoveryTransactionId('arm',(string)($payload['armTransactionId']??''));$desiredAutostart=!empty($payload['desiredAutostart']);
@@ -3150,6 +3179,7 @@ function unmRecoveryArmUnlocked(string $replicationId,bool $desiredAutostart,arr
     $vm=unmParseVm((string)$identity['vmUuid']);if(!empty($vm['pci'])||!empty($vm['usb']))throw new RuntimeException('Recovery does not support PCI or USB host-device passthrough.');
     $lock=unmRecoveryAcquireLock($replicationId);$record=[];$native=false;
     try{
+        unmRetirementAssertOpen($replicationId);
         $record=unmRecoveryLoad((string)$context['path'],unmRecoveryDefaultRecord($identity,true));unmRecoveryAssertSoleSourcePolicy((string)$identity['vmUuid'],$replicationId);$state=(string)$record['state'];$retry=in_array($state,['ARMING','FENCED'],true)&&!empty($record['armed'])&&preg_match('/^arm-[a-f0-9]{24}$/',(string)($record['armTransactionId']??''));if(!$retry&&($state!=='REPLICATION_ONLY'||!empty($record['armed'])))throw new RuntimeException('Recovery is already armed or requires reconciliation.');if($retry&&$desiredAutostart!==!empty($record['desiredAutostart']))throw new RuntimeException('Recovery arm retry must retain the original managed autostart intent.');
         if(unmRecoveryVmState((string)$identity['vmUuid'])!=='shut off')throw new RuntimeException('Power off the source VM before arming recovery. Running VMs cannot bypass the startup fence.');
         unmNativeMarkManaged((string)$identity['vmUuid'],$replicationId,'source');
@@ -3669,6 +3699,8 @@ function unmSeeds(): array {
         }
         $seed['estimatedChangedBytes']=$changed;$seed['estimateIncomplete']=$unknown;
         $seed['archiveOnlyAvailable']=unmSeedNeverStarted(dirname($file),$seed);
+        $cachedCaps=unmLoadJson(dirname($file).'/remote-capabilities.json');$recordedProtocol=(int)($seed['protocolVersion']??$cachedCaps['protocolVersion']??0);
+        if(!$seed['archiveOnlyAvailable']&&in_array($seed['state']??'',['READY','FAILED','INTERRUPTED','CLEANUP_BLOCKED'],true)&&$recordedProtocol!==UNM_PROTOCOL)$seed['ownershipWarning']='Legacy or unproven protocol ownership. Storage and source bases are retained; automatic adoption/cleanup is unavailable.';
         $seed['activeJob']=unmActiveVmJob((string)($seed['vmUuid']??''),$jobs);$out[]=$seed;
     }
     usort($out,static fn(array $a,array $b):int=>strcmp((string)($b['updatedAt']??''),(string)($a['updatedAt']??'')));
@@ -3702,8 +3734,11 @@ function unmStartSeedAdmitted(string $vmIdentifier,string $peerId,string $action
     if($action==='prepare'&&is_file($dir.'/seed.json'))throw new RuntimeException('A prepared-copy record already exists for this VM and peer. Update or remove it first.');
     if($action==='update'&&!is_file($dir.'/seed.json'))throw new RuntimeException('Prepare this VM before requesting an update.');
     unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$vm['uuid'],'VM_NAME'=>$vm['name'],'PEER_ID'=>$peerId,'ACTION'=>$action]);
-    $existing=unmLoadJson($dir.'/seed.json');$seed=array_replace($existing,['id'=>$id,'vmUuid'=>$vm['uuid'],'vmName'=>$vm['name'],'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>$action==='prepare'?'Preparing copy':'Updating prepared copy','createdAt'=>$existing['createdAt']??date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM)]);
+    $existing=unmLoadJson($dir.'/seed.json');
+    if($existing){$oldCaps=unmLoadJson($dir.'/remote-capabilities.json');if((int)($existing['protocolVersion']??$oldCaps['protocolVersion']??0)!==UNM_PROTOCOL)throw new RuntimeException('Legacy prepared-copy ownership must be reviewed before updating; a new request cannot adopt old storage.');}
+    $seed=array_replace($existing,['id'=>$id,'vmUuid'=>$vm['uuid'],'vmName'=>$vm['name'],'peerId'=>$peerId,'peerName'=>$peer['name']??$peer['host'],'state'=>'STARTING','progress'=>0,'message'=>$action==='prepare'?'Preparing copy':'Updating prepared copy','createdAt'=>$existing['createdAt']??date(DATE_ATOM),'updatedAt'=>date(DATE_ATOM)]);
     $seed['storageClaims']=$claims;$seed['peerHostId']=(string)($pre['destination']['hostId']??'');
+    $seed['protocolVersion']=UNM_PROTOCOL;
     if(!$existing){$seed['executionSchema']=1;$seed['storageStarted']=false;$seed['executionBootId']=unmSeedExecutionBootId();}
     unmAtomicJson($dir.'/seed.json',$seed);file_put_contents($dir.'/seed.log','',FILE_APPEND);chmod($dir.'/seed.log',0600);unmLaunchSeedWorker($id);return unmSeed($id);
 }
@@ -3720,9 +3755,10 @@ function unmResumeSeedAdmitted(string $id): array {
 
 function unmRemoveSeedAdmitted(string $id): array {
     $seed=unmSeed($id);$state=(string)($seed['state']??'');
-    if(!in_array($state,['READY','FAILED','INTERRUPTED'],true)) throw new RuntimeException('This prepared copy cannot be removed while another seed operation is active.');
+    $recorded=unmLoadJson(unmSeedPath($id).'/remote-capabilities.json');if((int)($seed['protocolVersion']??$recorded['protocolVersion']??0)!==UNM_PROTOCOL)throw new RuntimeException('Legacy or unproven prepared-copy ownership. No cleanup was attempted; retained storage requires ownership review.');
+    if(!in_array($state,['READY','FAILED','INTERRUPTED','CLEANUP_BLOCKED'],true)) throw new RuntimeException('This prepared copy cannot be removed while another seed operation is active.');
     $dir=unmSeedPath($id);unmWriteCfg($dir.'/request.cfg',['SEED_ID'=>$id,'VM_UUID'=>$seed['vmUuid']??'','VM_NAME'=>$seed['vmName']??'','PEER_ID'=>$seed['peerId']??'','ACTION'=>'remove']);
-    $seed['state']='REMOVING';$seed['message']='Removing prepared copy';$seed['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/seed.json',$seed);$seed['pid']=unmLaunchSeedWorker($id);return $seed;
+    $seed['preparationState']=$seed['preparationState']??$seed['state'];$seed['lastOperation']='cleanup';$seed['state']='REMOVING';$seed['message']='Removing prepared copy';$seed['updatedAt']=date(DATE_ATOM);unmAtomicJson($dir.'/seed.json',$seed);$seed['pid']=unmLaunchSeedWorker($id);return $seed;
 }
 
 function unmJobs(): array {

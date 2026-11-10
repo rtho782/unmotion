@@ -1,8 +1,8 @@
-# Live migration — 0.5.0-beta5
+# Live migration — 0.5.0-beta6
 
 Author: Richard Skinner
 
-[0.5.0-beta5](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta5) is an experimental prerelease on the [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable and Community Apps remain on 0.4.9. Use disposable VMs and verified backups for initial testing.
+[0.5.0-beta6](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta6) is an experimental prerelease on the [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Stable and Community Apps remain on 0.4.9. Use disposable VMs and verified backups for initial testing.
 
 Live migration copies a running VM's disk and RAM without a guest shutdown/reboot, preserving its UUID, MAC addresses, CPU profile and resources. A handover pause is unavoidable. A 500 ms stun is a target, not a guarantee: initial nested-lab tests observed approximately 1.85–2.13 second packet gaps, including ownership confirmation.
 
@@ -10,7 +10,7 @@ Cold migration and Warm Move retain their existing powered-off handover. They do
 
 ## UEFI and return to ordinary workflows
 
-For UEFI live moves, both hosts must run matching Beta5 builds and matching reviewed read-only Unraid OVMF firmware. Firmware size/SHA-256 are checked freshly. Variables must be a raw, regular, UUID-scoped file under `/etc/libvirt/qemu/nvram/`. The receiver reserves a unique variables file; QEMU transfers pflash state and persists it on resume. Old source and aborted variables files are retained, not overwritten or deleted. TPM, passthrough and the other disk/device exclusions remain. General pool-resident/custom NVRAM layouts remain Cold/Warm Move options, not live support.
+For UEFI live moves, both hosts must run matching Beta6 builds and matching reviewed read-only Unraid OVMF firmware. Firmware size/SHA-256 are checked freshly. Variables must be a raw, regular, UUID-scoped file under `/etc/libvirt/qemu/nvram/`. The receiver reserves a unique variables file; QEMU transfers pflash state and persists it on resume. Old source and aborted variables files are retained, not overwritten or deleted. TPM, passthrough and the other disk/device exclusions remain. General pool-resident/custom NVRAM layouts remain Cold/Warm Move options, not live support.
 
 After a settled live move, fully power off its owner. In that host's live-job row, choose **Return to ordinary workflows**, review the paired checks and confirm. Both hosts must be reachable, with the peer's copy absent/stopped and retired or aborted. The owner is fenced while the peer acknowledges its retained non-owner fence; an interrupted acknowledgement leaves a retryable pending hand-back, not permission to start either copy.
 
@@ -24,7 +24,7 @@ Wire protocol 7 is unchanged. Live capability 2 covers Beta5's extended live con
 
 ## Requirements
 
-- Matching Beta5 builds, reciprocal pairing and a proven native start fence on both hosts.
+- Matching Beta6 builds, reciprocal pairing and a proven native start fence on both hosts.
 - x86_64 KVM, a confirmed same/newer CPU generation from the same vendor and a compatible **active** custom CPU definition. Apply a shared mode and fully stop/start first; changing next-boot XML or rebooting inside the guest is not enough.
 - Exact versioned Q35/i440fx machine, matching QEMU/libvirt versions and unchanged resources. The migration-only control adapter is qualified for **libvirt 12.2.0**; other versions fail preflight without an unrestricted fallback.
 - One independent raw/qcow2 file on a direct pool/disk path with `cache="none"` or `directsync`. No user-share indirection, backing chain, internal image snapshot, encrypted image, hard link or disk used by another VM.

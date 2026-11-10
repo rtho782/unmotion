@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-beta6 — 2026-11-10
+
+- Add reviewed **End replication** with keep/delete choices, immediate schedule admission fencing, coordinated standby disarming and durable paired cleanup receipts. Keep retained replicas inert and inventoried; require a separate explicit choice to discard resumable receives. Never delete source VM disks or power off ordinary source guests for retirement.
+- Block cleanup on uncertain authority, defined/referenced destination VMs, foreign holds, clones, children, unrelated snapshots or unknown state artifacts. Retain bases until the exact destination acknowledgement is saved. Support blocked-operation retries and later deletion of kept replicas; detect stopped retirement workers without silently resuming cleanup.
+- Fix Warm Move cleanup ordering: exact destination ownership/preflight and acknowledged deletion precede source snapshot release. Preserve preparation status separately from cleanup failure and archive successful cleanup logs. Do not adopt legacy protocol-5 copies or fabricate reservations.
+- Check retained preparations before crossing an incompatible protocol boundary; preserve same-protocol updates and genuine early-boot fencing restoration. Refuse uninstall with retained replicas or unfinished cleanup so ownership metadata is not silently orphaned.
+- Allow replication to be configured again for the same VM/destination after completed keep/delete retirement. Give each new cycle an independently bound identity, ZFS objects, snapshot names and state directory; retain old inventories/receipts and permit later cleanup of old retained copies without touching a new cycle. Serialize same-pair creation and reject unfinished retirement, missing proof and duplicate active cycles.
+- Keep wire protocol 7, live capability 2 and ordinary hand-back capability 1. New optional `retirementVersion: 1`, `seedCleanupVersion: 1` and `replicationIncarnationVersion: 1` require supporting peers for their respective actions. Disable resumes an existing chain; a new cycle starts a full copy. Published as an opt-in prerelease; stable remains 0.4.9.
+
 ## 0.5.0-beta5 — 2026-11-09
 
 - Fix growing online raw/qcow2 Warm Move seeds: verify the received length against rsync's single-file transfer statistics, not the source's later size. Keep destination-length checks and transfer-error handling strict. Force the final powered-off mutable-image delta even when size/timestamps match; verify stable source/destination lengths before proceeding.

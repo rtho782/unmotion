@@ -45,7 +45,7 @@ function unmAssertVmJobIdle(string $uuid): void {
 }
 
 function unmSeedOperationActive(array $seed): bool {
-    return !in_array((string)($seed['state']??''),['READY','FAILED','INTERRUPTED','REMOVED'],true);
+    return !in_array((string)($seed['state']??''),['READY','FAILED','INTERRUPTED','CLEANUP_BLOCKED','REMOVED'],true);
 }
 
 function unmSeedAssertIdle(string $id, string $uuid): void {

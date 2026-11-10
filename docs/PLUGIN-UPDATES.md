@@ -2,6 +2,12 @@
 
 Author: Richard Skinner
 
+## Beta6 upgrade/removal checks
+
+0.5.0-beta6 keeps protocol 7. Both peers must support its optional retirement, prepared-cleanup and new-cycle operations before these new actions can complete; unrelated existing protocol-7 workflows retain their capability gates. The installer checks retained prepared/partial records before a future incompatible wire/ownership boundary, without blocking genuine early-boot hook restoration or same-protocol fixes. Already-upgraded legacy seeds are not adopted or relabelled as current ownership.
+
+Finish active operations and follow the existing managed-VM shutdown/reconciliation requirements before an update. Uninstall refuses retained replica ownership, unfinished retirement and unfinished seed-cleanup receipts, in addition to existing recovery/live fencing checks. Delete retained replicas through the paired workflow and finish cleanup first; do not delete ownership records to make uninstall pass. Separating uninstall from an explicit settings purge remains future work.
+
 ## Discovery advertisement permissions (0.4.4 onward)
 
 The startup script atomically publishes the complete public `/etc/avahi/services/unmotion.service` advertisement with mode `0644`, then uses Avahi's own reload command. This repairs an existing root-only advertisement and also covers fresh creation after a boot or package installation, without a window where Avahi reads an incomplete or unreadable file. The private startup umask remains `077`; pairing keys, configuration and runtime state are not made public. No host or VM reboot is needed to apply this update. Protocol 7 remains compatible with 0.4.2 and 0.4.3; normal upgrade safety checks still apply.
@@ -22,7 +28,7 @@ Validation on 2026-10-04: 62 cleanup assertions and the complete Linux `scripts/
 
 Stable releases use https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg. Public/application version 0.4.9 uses descriptor version `2026.10.15.01-0.4.9` and package token `0.4.9_stable`. Unraid compares PLG versions lexically, so a committed UTC date/sequence leads the semantic application version. `RELEASE_ID` binds that fixed identifier to the application version; rebuilds never read the clock. The Plugins tab shows the longer version; the application UI, Git tag and release title keep 0.4.9. Slackware package filenames retain their independent semantic version and stable token.
 
-Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. Both feeds currently offer `2026.10.15.01-0.4.9`. Its embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
+Publish the stable GitHub release and verify its assets before advancing either feed. For stable graduation, publish that same stable descriptor to both feeds. The stable feed currently offers `2026.10.15.01-0.4.9`; the beta feed offers `2026.11.09.03-0.5.0-beta6`. A stable descriptor's embedded pluginURL switches beta users to stable updates after installation; it does not silently opt stable users into future betas. Keep published descriptors byte-identical and never edit an installed version to simulate an upgrade.
 
 VMs using the supported numeric OVMF `X-PciMmio64Mb` setting require 0.4.9 or later on both peers. It is an optional protocol-7 capability; ordinary VM compatibility is unchanged. An unsupported destination is rejected during fresh preflight/worker validation before transfer. See [firmware syntax and limitations](OVMF-FIRMWARE.md).
 

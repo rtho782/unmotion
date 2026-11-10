@@ -9,7 +9,7 @@ $fixture=tempnam(sys_get_temp_dir(),'unmotion-api-');file_put_contents($fixture,
 $requestFile=tempnam(sys_get_temp_dir(),'unmotion-request-');
 $actions=['saveSettings','pairPeer','testPeer','removePeer','breakPairing','startClone','startMigration','resumeJob','cancelJob','removeJob','clearJobs','createReplication','updateReplication','setReplicationEnabled','runReplicationNow','removeReplication','prepareWarm','updateWarm','resumeWarm','removeWarm','recoveryArm','recoveryDisarm','recoveryStartSource','recoveryHold','recoveryHoldRelease','recoveryEvidence','recoveryRenewClaim','recoveryActivate','recoveryStartActivation','recoveryRetryCheckpoint','recoveryStopActivation','recoveryRemoveActivation','resolveMigration'];
 try {
-    $actions[]='pairingHostKey';
+    $actions[]='pairingHostKey';$actions[]='reviewRetirement';$actions[]='endReplication';
     $actions[]='cpuCompatibility';$actions[]='cpuCompatibilityPeer';$actions[]='cpuCompatibilityMachines';$actions[]='cpuCompatibilityScope';$actions[]='cpuConfigPreview';$actions[]='cpuConfigApply';
     foreach(['livePreview','liveStart','liveCancel','liveReconcile','cpuDefaultSave','liveHandbackPreview','liveHandback','ordinaryHandoverResolve'] as $action)$actions[]=$action;
     foreach($actions as $action)foreach(['GET','HEAD','OPTIONS',''] as $method){

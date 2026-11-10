@@ -24,7 +24,8 @@ grep -Fq 'zfs get -H -o value receive_resume_token $(sq "$dst")' "$SEED"
 grep -Fq 'remote(){ local encoded; encoded="$(/usr/local/sbin/unmotion-transport encode "$@")" || return; ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$encoded"; }' "$SEED"
 grep -Fq '/usr/local/sbin/unmotion-transport encode' "$WORKER"
 ! grep -Fq 'remote(){ ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$@"; }' "$WORKER"
-grep -Fq "awk -F '\\t' -v t=\"unmotion:\$SEED_ID\"" "$SEED"
+grep -Fq 'unmCleanupDeleteSourceSnapshots($journal[' "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/seed-cleanup.php"
+grep -Fq 'Source snapshot gained a hold.' "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/cleanup-plan.php"
 ! grep -F 'remote_resume_token(){' "$SEED" | grep -Fq '|| true'
 [[ "$(grep -Fc 'elif zfs list -H -o name $(sq "$parent")' "$SEED")" == 1 ]]
 [[ "$(grep -Fc 'elif zfs list -H -o name $(sq "$parent")' "$WORKER")" == 1 ]]

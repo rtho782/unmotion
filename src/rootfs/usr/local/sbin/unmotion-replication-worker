@@ -90,6 +90,8 @@ agent_call(){
 state LOCKING 0 'Acquiring replication locks'
 exec 8>"/var/lock/unmotion-replication-$POLICY_ID.lock"
 flock -n 8 || exit 0
+# A queued worker may have read enabled before retirement intent was saved.
+[[ ! -e "$DIR/retirement.json" ]] || exit 0
 /usr/local/sbin/unmotion-process register "/var/run/unmotion/replications/$POLICY_ID.process" "$$" /usr/local/sbin/unmotion-replication-worker "$@"
 exec 9>"/var/lock/unmotion-$VM_UUID.lock"
 flock -n 9 || { state WAITING 0 'Another unMotion operation is using this VM'; exit 75; }
@@ -201,9 +203,10 @@ REMOTE_CAPS="$RUN_DIR/remote-capabilities.json"
 remote '/usr/local/sbin/unmotion-agent capabilities' > "$REMOTE_CAPS" || interrupt 'Destination capabilities are unavailable' 2
 [[ "$(json_get "$REMOTE_CAPS" protocolVersion)" == 7 ]] || fail 'Peer protocol is incompatible; upgrade both hosts to 0.4.2 or later.' 12
 [[ "$(json_get "$REMOTE_CAPS" hostId)" == "$PEER_HOST_ID" ]] || fail 'Destination host identity changed; re-pair it' 12
+php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$p=unmReplicationPolicy($argv[1]);$c=unmLoadJson($argv[2]);if(unmReplicationCycleNonce($p)!==""&&($c["replicationIncarnationVersion"]??0)!==1)throw new RuntimeException("Destination lacks replication-incarnation support. Upgrade both hosts; no snapshot or transfer was started.");' "$POLICY_ID" "$REMOTE_CAPS" >>"$LOG" 2>&1 || fail 'Replication cycle identity or destination incarnation support is unavailable. See log.' 12
 php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";unmTransportValidateDomainXml(unmDomainXml($argv[1],true),$argv[1],null,unmLoadJson($argv[2]));' "$VM_UUID" "$REMOTE_CAPS" >>"$LOG" 2>&1 || fail 'VM XML or destination firmware support changed; no new snapshot or transfer was started. See the log.' 12
 PREFLIGHT_REQUEST="$RUN_DIR/preflight-request.json"
-php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get_contents($argv[2]),true);$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$p["id"]??$argv[5],"vmUuid"=>$p["vmUuid"]??"","vmName"=>$p["vmName"]??"","storage"=>$s,"reserve"=>true];file_put_contents($argv[6],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$POLICY_JSON" "$PLAN_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$PREFLIGHT_REQUEST"
+php -r '$p=json_decode(file_get_contents($argv[1]),true);$s=json_decode(file_get_contents($argv[2]),true);$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$p["id"]??$argv[5],"vmUuid"=>$p["vmUuid"]??"","vmName"=>$p["vmName"]??"","storage"=>$s,"reserve"=>true];if(isset($p["incarnation"]))$o["incarnation"]=$p["incarnation"];file_put_contents($argv[6],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$POLICY_JSON" "$PLAN_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$PREFLIGHT_REQUEST"
 REMOTE_PREFLIGHT="$RUN_DIR/remote-preflight.json"
 agent_call replication-preflight "$PREFLIGHT_REQUEST" "$REMOTE_PREFLIGHT" || interrupt 'Destination replication preflight is unavailable' 2
 [[ "$(json_get "$REMOTE_PREFLIGHT" accepted 2>/dev/null || echo 0)" == 1 ]] || fail "Destination rejected replication preflight: $(json_get "$REMOTE_PREFLIGHT" error 2>/dev/null || echo unknown)" 12

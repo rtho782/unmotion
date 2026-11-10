@@ -161,7 +161,7 @@ function unmTransportReservationPath(array $peer,string $id): string {
 function unmTransportReservations(array $peer): array {
     $all=[];foreach(glob(unmTransportReservationDir().'/'.unmTransportId((string)$peer['id']).'/*.json')?:[] as $path){$r=unmLoadJson($path);if(($r['peerId']??'')===($peer['id']??'')&&($r['sourceHostId']??'')===($peer['hostId']??''))$all[]=$r;}
     // Existing replica manifests already constitute an exact destination-owned plan.
-    foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $path){$m=unmLoadJson($path);if(($m['sourceHostId']??'')!==($peer['hostId']??''))continue;$m['id']=$m['replicationId']??'';$m['replica']=true;$m['peerId']=$peer['id'];$all[]=$m;}
+    foreach(glob(UNM_REPLICAS_DIR.'/*/*/manifest.json')?:[] as $path){$m=unmLoadJson($path);if(($m['sourceHostId']??'')!==($peer['hostId']??''))continue;$m['id']=$m['replicationId']??'';$m['replica']=true;$m['peerId']=$peer['id'];$m['retirementBlocked']=file_exists(dirname($path).'/retirement.json');$all[]=$m;}
     return $all;
 }
 
@@ -169,16 +169,21 @@ function unmTransportOwned(array $peer,string $path,string $kind='file'): array 
     if($kind==='dataset')unmTransportDataset($path);else unmTransportPath($path);
     foreach(unmTransportReservations($peer) as $r){
         foreach((array)($r['storage']??[]) as $s){
-            if(($s['destination']??'')===$path&&($kind==='dataset')===in_array($s['kind']??'',['dataset','zvol'],true))return $r;
+            if(($s['destination']??'')===$path&&($kind==='dataset')===in_array($s['kind']??'',['dataset','zvol'],true)){if(!empty($r['cleanupToken'])||!empty($r['retirementBlocked']))throw new RuntimeException('Retired/cleaning storage cannot accept ordinary transport operations.');return unmTransportActiveReservation($r);}
         }
         if($kind==='file'){
-            foreach((array)($r['hostStatePaths']??[]) as $p)if($p===$path)return $r;
-            if(in_array($path,(array)($r['files']??[]),true))return $r;
+            foreach((array)($r['hostStatePaths']??[]) as $p)if($p===$path)return unmTransportActiveReservation($r);
+            if(in_array($path,(array)($r['files']??[]),true))return unmTransportActiveReservation($r);
             $state=(string)($r['stateDirectory']??'');
-            if(!empty($r['replica'])&&$state!==''&&dirname($path)===$state&&preg_match('/\A(?:state-[a-f0-9]{24}\.tar\.gz|(?:unmotion-[A-Za-z0-9_.:-]+|[A-Za-z0-9_.-]+)\.xml)\z/D',basename($path)))return $r;
+            if(!empty($r['replica'])&&$state!==''&&dirname($path)===$state&&preg_match('/\A(?:state-[a-f0-9]{24}\.tar\.gz|(?:unmotion-[A-Za-z0-9_.:-]+|[A-Za-z0-9_.-]+)\.xml)\z/D',basename($path)))return unmTransportActiveReservation($r);
         }
     }
     throw new RuntimeException('No matching peer-owned transfer reservation; preserve existing data and prepare a new transfer: '.$path);
+}
+
+function unmTransportActiveReservation(array $r): array {
+    if(!empty($r['cleanupToken'])||!empty($r['retirementBlocked']))throw new RuntimeException('Retired/cleaning storage cannot accept ordinary transport operations.');
+    return $r;
 }
 
 function unmTransportVmOff(string $uuid): bool {
@@ -196,6 +201,7 @@ function unmTransportReserve(array $peer,array $request): array {
     $id=unmTransportId((string)($request['id']??''));$uuid=unmTransportUuid((string)($request['vmUuid']??''));$vmLock=unmTransportVmLock($uuid);$existsVm=unmTransportVmOff($uuid);
     if($existsVm&&!unmTransportHasVmOwnership($peer,$uuid))throw new RuntimeException('An existing destination VM is not owned by this authenticated peer.');
     $old=unmLoadJson(unmTransportReservationPath($peer,$id));
+    if(!empty($old['cleanupToken']))throw new RuntimeException('Complete the existing cleanup before reserving this transfer again.');
     if($old&&(($old['vmUuid']??'')!==$uuid||($old['sourceHostId']??'')!==$peer['hostId']))throw new RuntimeException('Transfer identity is already reserved.');
     $storage=[];
     foreach((array)($request['storage']??[]) as $s){
@@ -319,6 +325,18 @@ function unmTransportJsonArgument(array $a,int $index=2): array {
 }
 
 function unmTransportAgent(array $a,?array $peer,string $keyId): array {
+    if(in_array($a[1]??'',['replication-retire','retirement-source-proof','seed-cleanup'],true)){
+        if($peer===null||count($a)!==3)throw new RuntimeException('Cleanup requires an authenticated paired request.');
+        $q=unmTransportJsonArgument($a);$cmd=$a[1];
+        if($cmd==='retirement-source-proof'){
+            if(($q['destinationHostId']??'')!==$peer['hostId']||($q['sourceHostId']??'')!==unmHostId())throw new RuntimeException('Retirement proof peer mismatch.');
+            return unmTransportResult(0,json_encode(unmRetirementSourceProof($q),JSON_THROW_ON_ERROR)."\n");
+        }
+        if(($q['sourceHostId']??'')!==$peer['hostId']||($q['destinationHostId']??'')!==unmHostId())throw new RuntimeException('Cleanup peer identity mismatch.');
+        $transportLock=unmTransportVmLock(unmTransportUuid((string)($q['vmUuid']??'')));$vmLock=unmRecoveryAcquireVmLock($q['vmUuid']);
+        try{return unmTransportResult(0,json_encode($cmd==='seed-cleanup'?unmSeedCleanupRemote($peer,$q):unmReplicaRetirement($q),JSON_THROW_ON_ERROR)."\n");}
+        finally{unmRecoveryReleaseLock($vmLock);unmRecoveryReleaseLock($transportLock);}
+    }
     $cmd=$a[1]??'';$count=count($a);
     if($cmd==='capabilities'&&$count===2)return unmTransportRun(['/usr/local/sbin/unmotion-agent',$cmd]);
     if($cmd==='reciprocal-prepare'&&$count===3){

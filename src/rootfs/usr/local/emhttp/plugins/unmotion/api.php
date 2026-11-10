@@ -142,6 +142,11 @@ try {
             requirePostMutation();reply(['success'=>true,'replication'=>unmRunReplicationNow((string)($_POST['replication_id']??''))]);
         case 'removeReplication':
             requirePostMutation();unmRemoveReplication((string)($_POST['replication_id']??''));reply(['success'=>true,'destinationPreserved'=>true]);
+        case 'reviewRetirement':
+            requirePostMutation();reply(['success'=>true,'retirement'=>unmRetirementReview((string)($_POST['replication_id']??''))]);
+        case 'endReplication':
+            requirePostMutation();$discard=filter_var($_POST['discard_partial']??false,FILTER_VALIDATE_BOOLEAN,FILTER_NULL_ON_FAILURE);if($discard===null)throw new InvalidArgumentException('Invalid partial receive choice.');
+            reply(['success'=>true,'retirement'=>unmRetirementBegin((string)($_POST['replication_id']??''),(string)($_POST['mode']??''),$discard,(string)($_POST['review']??''))]);
         case 'replicationLog':
             reply(['success'=>true,'log'=>unmReplicationLog((string)($_REQUEST['replication_id']??''))]);
         case 'seeds': reply(['success'=>true,'seeds'=>unmSeeds()]);
