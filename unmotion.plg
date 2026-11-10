@@ -2,31 +2,22 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.11.09.03-0.5.0-beta6">
+<!ENTITY version "2026.11.10.01-0.5.0-beta7">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta6-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta7-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.5.0-beta6
-- Add explicit scheduled-replication retirement: keep inert inventoried replicas or delete exact policy-owned data, with durable paired receipts, fresh source callback proof, recovery disarming and retryable blocked states. Partial receives require explicit discard approval; kept partial receives retain source bases.
-- Retire new scheduler/manual/lifecycle admissions before cleanup. Do not power off ordinary sources or delete source disks. Retained replica inventories remain visible but cannot arm recovery or resume replication.
-- Preflight exact Warm Move cleanup and confirm destination deletion before releasing source snapshots. Keep preparation history separate from cleanup failure, preserve logs and support lost-ack retries. Legacy/unproven ownership remains blocked without fabricating reservations.
-- Check prepared/partial transfers before incompatible protocol upgrades, while preserving genuine boot-time fencing restoration and same-protocol cleanup upgrades. Wire protocol stays 7; retirement and seed-cleanup capability 1 require supporting peers.
-- Distinguish Disable (reversible pause) from End (terminal policy). Retained or unfinished cleanup blocks uninstall. A stopped retirement worker offers retry after interruption/reboot; inventory reads never resume deletion.
-- Configure replication again after completed retirement using an independent cycle, full copy and isolated destination/state paths. Preserve older kept replicas and receipts; old cleanup cannot target the new cycle. Optional replication-incarnation capability 1 is required on both peers, with same-pair creation admission and duplicate/unfinished-cycle rejection.
-- Preserve existing CPU defaults, ordinary Cold/Warm Move, clone and experimental BIOS/UEFI-no-TPM file-disk live migration. Recovery arming after live hand-back remains unsupported pending a separate authority-system handover.
-- Live migration remains experimental: one independent raw/qcow2 file disk on a direct pool path, an active compatible custom CPU, ordinary bridge NICs and matching qualified QEMU/libvirt. The migration-only control adapter supports libvirt 12.2.0. TPM, passthrough, ISOs, zvol/multiple disks and replication/recovery-managed guests remain excluded.
-- Preserve Intel nested CPU validation and existing VMX/SVM configuration. AMD SVM live migration remains blocked. Cached CPU matches are display evidence, not guest/workload approval; older masks can reduce performance.
-- Keep restricted job-bound SSH transport, paused receivers, source-absence proof, cancellation and paired reconciliation. No unrestricted shell, HTTPS peer API, automatic failover or source-disk deletion is introduced.
-- Wire protocol 7 and CPU cache capability 2 remain unchanged. Matching current-beta peers advertise live capability 2 and guarded ordinary capability 1; older peers retain existing unmanaged protocol-7 workflows.
-- Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.5.0-beta6; the Plugins tab shows fixed installer version 2026.11.09.03-0.5.0-beta6 for reliable upgrade ordering.
-- Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
-- Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
-- Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
-- Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.
+### unMotion 0.5.0-beta7
+- Experimental native software-TPM 2.0 live migration with fresh matching swtpm/libtpms checks, independent job/UUID-scoped destination state, exact native start fencing and retained source/partial state. No shared storage is required. Encrypted/custom-profile TPM backends remain excluded.
+- Live migration supports one to sixteen independent raw/qcow2 file disks and empty read-only file CD-ROM drives. Reserve every disk, validate aggregate capacity and require every exact target once in the restricted migration RPC; zvol/block disks and attached ISOs remain excluded from live moves.
+- Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
+- Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
+- Preserve protocol 7. Live capability 3 requires matching Beta7 peers; ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
+- Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
+- Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
 </CHANGES>
 <FILE Run="/usr/bin/php"><INLINE><![CDATA[<?php
 declare(strict_types=1);
@@ -315,8 +306,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta6/unmotion-0.5.0_beta6-noarch-1.txz</URL>
-<SHA256>b4b8be1653c769bf495d3047c3dc84d28720af4da04ca9ebc6ea0b9d47a0de65</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta7/unmotion-0.5.0_beta7-noarch-1.txz</URL>
+<SHA256>8eceb269e6fcef073a62d9b0b4f53f77b57078b2ec764b1423392d4bd83b2b85</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
