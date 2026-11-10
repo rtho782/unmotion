@@ -88,7 +88,7 @@ These controls use recovery protocol 1 over protocol 7. Native pre-start fencing
 
 ## Ending replication (beta)
 
-This workflow is available in **0.5.0-beta6** on the opt-in beta feed, not stable 0.4.9. Both hosts need optional `retirementVersion: 1` on protocol 7. An older/offline peer blocks retirement without authorizing storage cleanup.
+This workflow is available in **0.5.0-beta6 and later**, including the current Beta7, on the opt-in beta feed, not stable 0.4.9. Both hosts need optional `retirementVersion: 1` on protocol 7. An older/offline peer blocks retirement without authorizing storage cleanup.
 
 Use **Disable** for a reversible pause. Use **End replication** when permanently ending the policy, then choose:
 

@@ -82,6 +82,7 @@ $peerCaps['hostId']='local';cpuReject(fn()=>unmCpuCompatibilityPeer('peer','q35'
 function unmTransportRun(array $argv,bool $stream=false): array {return ['code'=>0,'stdout'=>json_encode($argv),'stderr'=>''];}
 $transport=file_get_contents(__DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/transport.php');
 $transport=str_replace('function unmTransportRun(','function unusedCpuCompatibilityTransportRun(',$transport);
+$transport=str_replace("__DIR__.'/zvol-path.php'",var_export(realpath(__DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/zvol-path.php'),true),$transport);
 $fixture=tempnam(sys_get_temp_dir(),'unmotion-cpu-transport-');file_put_contents($fixture,$transport);
 try {
     require $fixture;

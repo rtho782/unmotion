@@ -32,8 +32,7 @@ try {
     switch ($action) {
         case 'status': reply(['success'=>true,'version'=>UNM_VERSION,'protocol'=>UNM_PROTOCOL,'hostId'=>unmHostId(),'hostname'=>gethostname()]);
         case 'livePreview':
-            requirePostMutation();$pre=unmLivePreview((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''));
-            reply(['success'=>true,'preview'=>['vmUuid'=>$pre['vmUuid'],'vmName'=>$pre['vmName'],'peerId'=>$pre['peerId'],'machine'=>$pre['spec']['machine'],'memoryMiB'=>$pre['spec']['memoryKiB']/1024,'vcpus'=>$pre['spec']['vcpus'],'diskGiB'=>round($pre['spec']['diskBytes']/1073741824,2),'format'=>$pre['spec']['format'],'warnings'=>$pre['warnings']]]);
+            requirePostMutation();reply(unmLiveReadiness((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??'')));
         case 'liveStart':
             requirePostMutation();reply(['success'=>true,'job'=>unmLiveCreate((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''))]);
         case 'liveJobs': reply(['success'=>true,'jobs'=>unmLivePublicJobs()]);

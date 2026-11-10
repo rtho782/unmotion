@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0-beta7 — 2026-11-10
+
+- Keep an admitted disk's live-transfer channel available while other disks or RAM are copying. Bound its total lifetime to the 30-minute worker limit plus two minutes of completion/rollback grace, rather than disconnecting a legitimately idle small disk after five minutes. Fresh authority checks and cancellation remain mandatory.
+- Add a native software-TPM 2.0 live-migration path with matching emulator/library checks, independent destination state, exact native fencing and retained old/partial state. No shared storage or running-file copy is introduced; encrypted/custom-profile TPM backends remain excluded. Lab qualification covers both frontends, sealed-secret persistence, Windows Server 2025/active BitLocker in both live directions, protected cold boots and cancellation.
+- Extend the live contract to up to sixteen independent raw/qcow2 files and empty read-only CD-ROM drives, with per-disk ownership, aggregate capacity, exact repeated migration parameters and every-disk native bindings. Zvol/block disks and attached ISOs remain excluded.
+- Expose read-only live readiness for ineligible VMs and list independent structural blockers. Fresh operational preflight still gates submission and runs again on Start.
+- Record source-side point-count observations from verified destination inventory/retention replies. Display counts never grant recovery or storage mutation authority.
+- Resolve encoded Zvol device aliases against kernel identity and unique volume inventory. Preserve actual dataset names for ZFS operations and rewrite only the admitted disk sources for Warm/cold moves, image conversion and recovery; reject ambiguous plus/space names. Affected transfers require the optional encoded-path capability on both peers.
+- Keep wire protocol 7; live capability 3 and matching Beta7 builds gate the extended live contract. Published as an opt-in prerelease; stable remains 0.4.9.
+
 ## 0.5.0-beta6 — 2026-11-10
 
 - Add reviewed **End replication** with keep/delete choices, immediate schedule admission fencing, coordinated standby disarming and durable paired cleanup receipts. Keep retained replicas inert and inventoried; require a separate explicit choice to discard resumable receives. Never delete source VM disks or power off ordinary source guests for retirement.

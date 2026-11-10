@@ -75,7 +75,7 @@ function unmSeedStorageClaims(array $plan): array {
             if($side==='source' && !empty($item['sourceResolved']))$out[$side][]='path:'.(realpath($item['sourceResolved'])?:$item['sourceResolved']);
             $mount=(string)($item[$side.'Mountpoint']??'');
             if($mount!=='')$out[$side][]='path:'.rtrim($side==='source'?(realpath($mount)?:$mount):$mount,'/');
-            if($kind==='zvol'&&$side==='source')$out[$side][]='path:'.(realpath('/dev/zvol/'.$path)?:'/dev/zvol/'.$path);
+            if($kind==='zvol'&&$side==='source'){$device=unmZvolDevicePath($path);$out[$side][]='path:'.(realpath($device)?:$device);}
         }
     }
     foreach($out as &$paths){$paths=array_values(array_unique($paths));sort($paths);}unset($paths);
@@ -87,7 +87,7 @@ function unmSeedWorkerPlan(array $vm,array $caps): array {
     $storage=(array)($caps['storage']??[]);$plan=[];
     foreach((array)($vm['disks']??[]) as $disk) {
         $class=(string)($disk['transferClass']??'');$src=(string)($disk['source']??'');
-        if($class==='zvol'){$src=substr($src,strlen('/dev/zvol/'));$plan[]=['kind'=>'zvol','source'=>$src,'destination'=>rtrim((string)($storage['zvolDataset']??''),'/').'/'.basename($src)];}
+        if($class==='zvol'){if(unmZvolPathNeedsIdentity($src)&&empty($disk['zfsDataset']))throw new RuntimeException('Encoded zvol claims require a freshly proven dataset identity.');$src=(string)($disk['zfsDataset']??substr($src,strlen('/dev/zvol/')));$plan[]=['kind'=>'zvol','source'=>$src,'destination'=>rtrim((string)($storage['zvolDataset']??''),'/').'/'.basename($src)];}
         elseif($class==='zfs-dataset-image'){$src=(string)$disk['zfsDataset'];$mount=(string)$disk['zfsMountpoint'];$plan[]=['kind'=>'dataset','source'=>$src,'destination'=>rtrim((string)($storage['imageZfsDataset']??''),'/').'/'.basename($src),'sourceMountpoint'=>$mount,'destinationMountpoint'=>rtrim((string)($storage['imageDirectory']??''),'/').'/'.basename($mount)];}
         elseif(in_array($class,['shared-zfs-image','encrypted-zfs-image','non-zfs-image'],true))$plan[]=['kind'=>'image','source'=>$src,'sourceResolved'=>$disk['resolvedSource']??$src,'destination'=>rtrim((string)($storage['imageDirectory']??''),'/').'/'.$vm['name'].'/'.basename($src)];
     }

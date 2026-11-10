@@ -1,12 +1,14 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__.'/live-tpm.php';
 
 // Post-recovery beta4: shared discovery and exact ownership evidence.
 function unmTpmRoots(): array {
-    return ['/etc/libvirt/qemu/swtpm/tpm-states','/etc/libvirt/qemu/swtpm','/var/lib/libvirt/swtpm','/var/lib/libvirt/qemu/swtpm','/etc/libvirt/swtpm'];
+    return unmLiveTpmRoots();
 }
 function unmTpmPathAllowed(string $path,string $uuid): bool {
     if(!preg_match('/^[a-f0-9-]{36}$/i',$uuid)||basename($path)!==$uuid||preg_match('~[\x00-\x1f\x7f]|/(?:\.|\.\.)(?:/|$)~',$path))return false;
+    if(unmLiveTpmPathAllowed($path,$uuid,true))return true;
     foreach(unmTpmRoots() as $root) {
         if($path===$root.'/'.$uuid)return true;
         $real=realpath($root);
@@ -25,6 +27,12 @@ function unmTpmStatePath(string $uuid,string $xml,bool $required=true): string {
         $path=$node->value;
         if(!unmTpmPathAllowed($path,$uuid))throw new RuntimeException('Explicit TPM state path is outside verified UUID-scoped libvirt storage.');
         $candidates[]=$path;
+    }
+    // A live migration's explicit, independently reserved UUID path names the
+    // current emulator. Retained older cycles are not alternative candidates.
+    $explicit=$xp->evaluate('string(/domain/devices/tpm/backend/source/@path)');
+    if(unmLiveTpmPathAllowed($explicit,$uuid,true)){
+        $real=realpath($explicit);if($real===false||$real!==$explicit||!is_dir($real))throw new RuntimeException('Explicit live TPM state is unavailable or redirected.');return $real;
     }
     $found=[];
     foreach(array_unique($candidates) as $path) {

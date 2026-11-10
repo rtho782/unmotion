@@ -3,6 +3,7 @@
 // Copyright (C) 2026 Richard Skinner
 declare(strict_types=1);
 require_once __DIR__.'/xml-canonical.php';
+require_once __DIR__.'/live-storage.php';
 
 /** A deliberately narrow migration-only adapter, NOT a general libvirt proxy.
  * ABI reviewed against libvirt v12.2.0 remote_protocol.x; unknown versions,
@@ -60,20 +61,21 @@ final class UnmLiveRpcGuard {
             // before calling the destination. Exactly LIVE, PERSIST_DEST,
             // PAUSED and NON_SHARED_DISK may cross this boundary.
             if($flags!==105)throw new RuntimeException('Unsafe migration flags: '.$flags.'.');
-            $seen=[];
+            $seen=[];$migrated=[];$expectedTargets=isset($this->job['disks'])?array_column(unmLiveDisks($this->job),'target'):[$this->job['diskTarget']];
             foreach($params as $param){
                 $key=$param['name'];$value=$param['value'];$type=$param['type'];
-                if(isset($seen[$key]))throw new RuntimeException('Duplicate migration RPC option.');$seen[$key]=true;
+                if(isset($seen[$key])&&$key!=='migrate_disks')throw new RuntimeException('Duplicate migration RPC option.');$seen[$key]=true;
                 if(in_array($key,['destination_xml','persistent_xml'],true)){
                     $expected=$key==='destination_xml'?$this->job['destinationXml']:$this->job['persistentXml'];
                     if($type!==7||!hash_equals(unmLiveXmlHash($expected),unmLiveXmlHash($value)))throw new RuntimeException('Migration RPC XML changed after reservation.');
                 }elseif($key==='destination_name'){if($type!==7||$value!==$this->job['vmName'])throw new RuntimeException('Wrong migration VM name.');}
                 elseif($key==='migrate_uri'){if($type!==7||$value!=='unix://'.$this->job['runtime'].'/memory.sock')throw new RuntimeException('Wrong RAM channel.');}
                 elseif($key==='disks_uri'){if($type!==7||$value!=='unix://'.$this->job['runtime'].'/disk.sock')throw new RuntimeException('Wrong disk channel.');}
-                elseif($key==='migrate_disks'){if($type!==7||$value!==$this->job['diskTarget'])throw new RuntimeException('Wrong migration disk.');}
+                elseif($key==='migrate_disks'){if($type!==7||!in_array($value,$expectedTargets,true)||isset($migrated[$value]))throw new RuntimeException('Wrong or duplicated migration disk.');$migrated[$value]=true;}
                 elseif(in_array($key,['bandwidth','available_switchover_bandwidth'],true)){if($type!==4||$value<0||$value>1048576)throw new RuntimeException('Invalid migration bandwidth.');}
                 else throw new RuntimeException('Unsupported migration RPC option: '.$key);
             }
+            if(isset($seen['migrate_disks'])&&count($migrated)!==count($expectedTargets))throw new RuntimeException('Every admitted disk must be migrated exactly once.');
             if($method===303){if($this->prepared||$this->finished||!isset($seen['destination_xml'],$seen['migrate_uri'],$seen['disks_uri'],$seen['migrate_disks']))throw new RuntimeException('Invalid migration prepare sequence.');$this->prepared=true;}
             else{if(!$this->prepared||$this->finished||!isset($seen['destination_xml']))throw new RuntimeException('Invalid migration finish sequence.');$cancel=$x->uint();if($cancel>1)throw new RuntimeException('Invalid migration cancellation.');$this->finished=true;}
         }else throw new RuntimeException('Migration RPC method denied: '.$method);

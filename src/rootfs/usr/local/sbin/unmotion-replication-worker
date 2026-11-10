@@ -251,7 +251,7 @@ retry_destination_prune(){
 }
 reconcile_destination_retention(){
   [[ "$(json_get "$DURABLE_STATE" destinationInventoryPending 2>/dev/null || echo 0)" == 1 ]] || return 0
-  local inventory_request="$RUN_DIR/inventory-request.json" inventory_reply="$RUN_DIR/inventory-reply.json" prune_request="$RUN_DIR/prune-request.json" prune_reply="$RUN_DIR/prune-reply.json"
+  local inventory_request="$RUN_DIR/inventory-request.json" inventory_reply="$RUN_DIR/inventory-reply.json" prune_request="$RUN_DIR/prune-request.json" prune_reply="$RUN_DIR/prune-reply.json" observed_reply
   php -r '$o=["sourceHostId"=>$argv[1],"destinationHostId"=>$argv[2],"replicationId"=>$argv[3],"vmUuid"=>$argv[4]];file_put_contents($argv[5],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");' "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$inventory_request"
   rm -f -- "$inventory_reply" "$prune_request" "$prune_reply"
   agent_call replication-inventory "$inventory_request" "$inventory_reply" || interrupt 'Destination inventory reconciliation is pending; no newer generation will be created' 94
@@ -260,12 +260,15 @@ reconcile_destination_retention(){
   $armed=str_starts_with($argv[8],"armed:");$kept=unmSelectReplicationRetentionPointsWithRecoverySafety($points,(int)$policy["rpoSeconds"],(int)$policy["retentionCount"],$armed,$now);$selected=[];foreach($kept as $p){$id=(string)($p["id"]??"");if($id!=="")$selected[$id]=true;}
   $prune=[];foreach($points as $p){$id=(string)($p["id"]??"");if($id!==""&&isset($selected[$id]))continue;$snaps=[];foreach(($p["storage"]??[]) as $s){$dataset=(string)($s["destination"]??$s["dataset"]??"");$snapshot=(string)($s["snapshot"]??$p["snapshot"]??"");if($dataset!==""&&$snapshot!=="")$snaps[]=["dataset"=>$dataset,"snapshot"=>$snapshot];}if($id!==""&&$snaps)$prune[]=["id"=>$id,"snapshots"=>$snaps];}
   if($prune){$o=["sourceHostId"=>$argv[3],"destinationHostId"=>$argv[4],"replicationId"=>$argv[5],"vmUuid"=>$argv[6],"points"=>$prune];file_put_contents($argv[7],json_encode($o,JSON_PRETTY_PRINT|JSON_UNESCAPED_SLASHES)."\n");}' "$inventory_reply" "$POLICY_JSON" "$LOCAL_HOST_ID" "$PEER_HOST_ID" "$POLICY_ID" "$VM_UUID" "$prune_request" "$RECOVERY_AUTHORITY_TOKEN" || interrupt 'Destination inventory response is invalid; no recovery point was pruned' 94
+  observed_reply="$inventory_reply"
   if [[ -s "$prune_request" ]]; then
     atomic_state_update set-prune "$prune_request"
     state PRUNING 96 'Pruning exact destination recovery points'
     agent_call replication-prune "$prune_request" "$prune_reply" || interrupt 'Destination pruning is pending; the new recovery point remains valid' 96
+    observed_reply="$prune_reply"
     atomic_state_update clear-prune
   fi
+  php -r 'require "/usr/local/emhttp/plugins/unmotion/include/lib.php";$r=json_decode(file_get_contents($argv[2]),true,64,JSON_THROW_ON_ERROR);if(!is_array($r))exit(2);unmReplicationRememberPointInventory($argv[1],$r);' "$POLICY_ID" "$observed_reply" || interrupt 'Destination point count could not be recorded; the next run will reconcile inventory' 96
   atomic_state_update clear-inventory
 }
 recovery_authority_guard pre-cleanup || interrupt 'Recovery authority changed before pending cleanup; retained state was not advanced' 3

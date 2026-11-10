@@ -21,7 +21,7 @@ function unmLiveRpc(array $peer,string $action,array $args=[],int $seconds=30): 
 function unmLiveAuthority(array $j,string $state,string $disk,?array $qemu=null): void {
     $r=['schemaVersion'=>1,'vmUuid'=>$j['vmUuid'],'vmName'=>$j['vmName'],'jobId'=>$j['id'],'role'=>$j['role'],'state'=>$state,'diskPath'=>$disk,'sourceHostId'=>$j['sourceHostId'],'destinationHostId'=>$j['destinationHostId'],'bootId'=>unmNativeBoot(),'expiresAt'=>$j['expiresAt'],'updatedAt'=>gmdate('c')];
     $xml=$j['role']==='source'?($j['spec']['persistentXml']??null):($j['persistentXml']??null);
-    if($xml!==null)$r['firmware']=unmLiveFirmwareXml(new DOMXPath(unmCpuCompatibilityXml($xml)),$j['vmUuid']);
+    if($xml!==null){$xp=new DOMXPath(unmCpuCompatibilityXml($xml));$r['firmware']=unmLiveFirmwareXml($xp,$j['vmUuid']);$r['disks']=unmLiveDisksXml($xp);$r['tpm']=unmLiveTpmXml($xp,$j['vmUuid']);}
     $base=UNM_BOOT_DIR;unmLivePrivateDir($base.'/live-authority');unmLivePrivateDir($base.'/live-managed');
     $lock=unmNativeLock('live-'.$j['vmUuid']);
     try{
@@ -61,17 +61,16 @@ function unmLiveInspectXml(string $xml): array {
     foreach(['/domain/name','/domain/uuid','/domain/memory','/domain/vcpu','/domain/os/type','/domain/cpu'] as $required)if($xp->query($required)->length!==1)throw new RuntimeException('Duplicated or missing live VM identity/resources.');
     if($d->documentElement->getAttribute('type')!=='kvm'||$name===''||strlen($name)>128||str_contains($name,'/')||preg_match('/[\x00-\x1f]/',$name))throw new RuntimeException('Unsupported live migration domain identity.');
     $machine=$xp->evaluate('string(/domain/os/type/@machine)');if(!preg_match('/\A(?:pc-q35|pc-i440fx)-[0-9]+\.[0-9]+\z/D',$machine)||$xp->evaluate('string(/domain/os/type/@arch)')!=='x86_64')throw new RuntimeException('Live migration requires an exact versioned x86_64 Q35/i440fx machine.');
-    if($xp->query('/domain/devices/hostdev|/domain/devices/tpm|/domain/devices/filesystem|/domain/devices/shmem|/domain/devices/redirdev|/domain/devices/memory|/domain/memoryBacking/hugepages|/domain/launchSecurity|/domain/cpu/numa')->length)throw new RuntimeException('Live migration excludes TPM, passthrough, shared memory, huge pages, hotplug memory and NUMA. Use Cold/Warm Move for other supported guests.');
+    if($xp->query('/domain/devices/hostdev|/domain/devices/filesystem|/domain/devices/shmem|/domain/devices/redirdev|/domain/devices/memory|/domain/memoryBacking/hugepages|/domain/launchSecurity|/domain/cpu/numa')->length)throw new RuntimeException('Live migration excludes passthrough, shared memory, huge pages, hotplug memory and NUMA. Use Cold/Warm Move for other supported guests.');
     $firmware=unmLiveFirmwareXml($xp,$uuid);
+    $tpm=unmLiveTpmXml($xp,$uuid);
     if($xp->query('/domain/devices/graphics[@type!="vnc"]|/domain/devices/graphics/gl[@enable="yes"]|/domain/devices/video/model/acceleration[@accel3d="yes"]|/domain/devices/audio[@type!="none"]')->length)throw new RuntimeException('Beta3 supports VNC/headless display without host GPU acceleration or host audio.');
     foreach($xp->query('//*') as $node)if($node->namespaceURI&&$node->namespaceURI!=='http://unraid'&&$node->namespaceURI!=='unraid')throw new RuntimeException('Custom executable extensions or managed recovery metadata are not supported by live migration.');
     if($xp->query('/domain/cputune|/domain/numatune|/domain/cpu/cache|/domain/cpu/maxphysaddr')->length)throw new RuntimeException('Remove host CPU/NUMA pinning and host-specific CPU cache/address overrides before live migration in this beta.');
-    $disks=$xp->query('/domain/devices/disk');if($disks->length!==1)throw new RuntimeException('Beta3 requires exactly one file disk and no attached ISO/CD-ROM devices.');$disk=$disks->item(0);$format=$xp->evaluate('string(driver/@type)',$disk);$path=$xp->evaluate('string(source/@file)',$disk);$target=$xp->evaluate('string(target/@dev)',$disk);
-    if($disk->getAttribute('type')!=='file'||$disk->getAttribute('device')!=='disk'||!in_array($format,['raw','qcow2'],true)||!preg_match('/\A(?:vd|sd|hd)[a-z]\z/D',$target)||$xp->query('./backingStore/*|./readonly|./shareable|./mirror|./source/host',$disk)->length||!str_starts_with($path,'/mnt/')||str_starts_with($path,'/mnt/user/'))throw new RuntimeException('Live migration requires an independent raw/qcow2 disk on a direct pool path, without backing, sharing or mirroring.');
-    if(!in_array($xp->evaluate('string(driver/@cache)',$disk),['none','directsync'],true))throw new RuntimeException('Use disk cache="none" or "directsync" and fully stop/start before live migration.');
+    $disks=unmLiveDisksXml($xp);$first=$disks[0];
     foreach($xp->query('/domain/devices/interface') as $nic)if($nic->getAttribute('type')!=='bridge'||$xp->query('./virtualport|./bandwidth|./vlan|./filterref|./script',$nic)->length)throw new RuntimeException('Beta3 supports ordinary bridge NICs only, without host-specific scripts/VLAN/filter settings.');
     if($xp->evaluate('string(/domain/memory/@unit)')!=='KiB'||$xp->query('/domain/vcpu[@current and @current != text()]')->length||(int)$xp->evaluate('string(/domain/vcpu)')<1||(int)$xp->evaluate('string(/domain/memory)')<32768)throw new RuntimeException('Unsupported live memory/vCPU units or hotplug configuration.');
-    return ['vmUuid'=>$uuid,'vmName'=>$name,'machine'=>$machine,'firmware'=>$firmware,'cpuXml'=>unmLiveCpu($xml),'diskPath'=>$path,'format'=>$format,'diskTarget'=>$target,'bridges'=>array_map(fn($n)=>$n->getAttribute('bridge'),iterator_to_array($xp->query('/domain/devices/interface/source'))),'memoryKiB'=>(int)$xp->evaluate('string(/domain/memory)'),'vcpus'=>(int)$xp->evaluate('string(/domain/vcpu)')];
+    return ['vmUuid'=>$uuid,'vmName'=>$name,'machine'=>$machine,'firmware'=>$firmware,'tpm'=>$tpm,'cpuXml'=>unmLiveCpu($xml),'disks'=>$disks,'diskPath'=>$first['path'],'format'=>$first['format'],'diskTarget'=>$first['target'],'bridges'=>array_map(fn($n)=>$n->getAttribute('bridge'),iterator_to_array($xp->query('/domain/devices/interface/source'))),'memoryKiB'=>(int)$xp->evaluate('string(/domain/memory)'),'vcpus'=>(int)$xp->evaluate('string(/domain/vcpu)')];
 }
 function unmLiveFirmwareFile(string $path,bool $digest): array {
     clearstatcache(true,$path);$s=@lstat($path);
@@ -90,20 +89,20 @@ function unmLiveFirmwareDestination(?array $firmware,?array $evidence): void {
     $loader=unmLiveFirmwareFile($firmware['loaderPath'],true);
     if($loader['sha256']!==$evidence['loaderSha256']||$loader['bytes']!==$evidence['loaderBytes'])throw new RuntimeException('Source and destination OVMF firmware differ. Update both Unraid hosts before live migration.');
 }
-function unmLiveUndefine(string $uuid,?array $firmware): void {
-    $args=['virsh','undefine',$uuid];if($firmware!==null)$args[]='--keep-nvram';unmLiveCommand($args);
+function unmLiveUndefine(string $uuid,?array $firmware,?array $tpm=null): void {
+    $args=['virsh','undefine',$uuid];if($firmware!==null)$args[]='--keep-nvram';if($tpm!==null)$args[]='--keep-tpm';unmLiveCommand($args);
 }
 function unmLiveFenceProof(): void {
     $proof=unmNativeProofStatus();if(empty($proof['ready']))throw new RuntimeException((string)$proof['reason']);
     $observed=unmNativeJson('/run/unmotion/lifecycle/native-hook-proof.json');if(($observed['liveHelperSha256']??'')!==unmLiveNativeHelperHash())throw new RuntimeException('The installed live migration fence has not been proven active.');
 }
-function unmLivePlatform(): array {
+function unmLivePlatform(bool $needTpm=false): array {
     unmLiveFenceProof();
     $v=unmLiveCommand(['virsh','version','--daemon']);if(!preg_match('/Running against daemon: 12\.2\.0(?:\s|$)/',$v))throw new RuntimeException('This beta transport is qualified only for libvirt 12.2.0.');
     $caps=unmCpuCompatibilityXml(unmLiveCommand(['virsh','capabilities']));$xp=new DOMXPath($caps);$vendor=$xp->evaluate('string(/capabilities/host/cpu/vendor)');$model=$xp->evaluate('string(/capabilities/host/cpu/model)');
     $cpu=(string)file_get_contents('/proc/cpuinfo');preg_match('/^cpu family\s*:\s*(\d+)/m',$cpu,$family);preg_match('/^model\s*:\s*(\d+)/m',$cpu,$number);
     if(!in_array($vendor,['Intel','AMD'],true)||(int)($family[1]??0)<1||!isset($number[1]))throw new RuntimeException('A usable physical x86 CPU identity is unavailable.');
-    return ['version'=>UNM_VERSION,'liveMigrationVersion'=>2,'hostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'vendor'=>$vendor,'model'=>$model,'family'=>(int)($family[1]??0),'modelNumber'=>(int)($number[1]??0),'hypervisor'=>$v,'imageDirectory'=>(string)unmLoadConfig()['image_dir']];
+    return ['version'=>UNM_VERSION,'liveMigrationVersion'=>3,'hostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'vendor'=>$vendor,'model'=>$model,'family'=>(int)($family[1]??0),'modelNumber'=>(int)($number[1]??0),'hypervisor'=>$v,'imageDirectory'=>(string)unmLoadConfig()['image_dir'],'tpm'=>$needTpm?unmLiveTpmPlatform():null];
 }
 function unmLiveGeneration(array $source,array $destination): bool {
     if($source['vendor']!==$destination['vendor'])return false;
@@ -135,8 +134,9 @@ function unmLiveSource(string $uuid): array {
     // credentials and would otherwise create an unauthenticated target console.
     // These XMLs remain private and cross only the authenticated encrypted pair.
     $live=unmLiveCommand(['virsh','dumpxml',$uuid,'--migratable','--security-info']);$persistent=unmLiveCommand(['virsh','dumpxml',$uuid,'--inactive','--security-info']);$spec=unmLiveInspectXml($live);$pending=unmLiveInspectXml($persistent);
-    if($pending['machine']!==$spec['machine']||$pending['diskPath']!==$spec['diskPath']||$pending['vcpus']!==$spec['vcpus']||$pending['memoryKiB']!==$spec['memoryKiB']||$pending['firmware']!==$spec['firmware'])throw new RuntimeException('Pending machine/disk/resource/firmware changes require a full stop/start before live migration.');
+    if($pending['machine']!==$spec['machine']||$pending['disks']!==$spec['disks']||$pending['vcpus']!==$spec['vcpus']||$pending['memoryKiB']!==$spec['memoryKiB']||$pending['firmware']!==$spec['firmware']||$pending['tpm']!==$spec['tpm'])throw new RuntimeException('Pending machine/disk/resource/firmware/TPM changes require a full stop/start before live migration.');
     $spec['firmwareEvidence']=unmLiveFirmwareEvidence($spec['firmware']);
+    unmLiveTpmSourceEvidence($uuid,$live,$spec['tpm']);
     // Expand both active and pending CPU definitions on the source, not from a
     // cached host report. A next-boot CPU setting is not the running CPU ABI.
     // Do not strip nested virtualization from the contract while comparing it.
@@ -144,33 +144,42 @@ function unmLiveSource(string $uuid): array {
     $expanded=[];foreach([$spec['cpuXml'],$pending['cpuXml']] as $cpu)$expanded[]=unmCpuCompatibilityDefinition(unmLiveCommand(['virsh','hypervisor-cpu-baseline','/dev/stdin','--features','--virttype','kvm','--arch','x86_64','--machine',$spec['machine']],$cpu));
     if($expanded[0]!==$expanded[1])throw new RuntimeException('The selected CPU mode is not active yet. Fully stop/start the VM first.');
     $spec['cpuXml']=$expanded[0];unmLiveNestedCpu($spec['cpuXml']);
-    $path=$spec['diskPath'];unmTransportPath($path);if(is_link($path)||!is_file($path)||realpath($path)!==$path)throw new RuntimeException('Live disk path must be a real, independent file.');
-    unmLiveFileSystem($path);
-    $stat=stat($path);if(!$stat||$stat['nlink']!==1)throw new RuntimeException('Hard-linked disks are excluded from live migration.');
-    $all=trim(unmLiveCommand(['virsh','list','--all','--uuid']));foreach(preg_split('/\s+/',$all)?:[] as $other){if($other===''||$other===$uuid)continue;unmTransportUuid($other);foreach([true,false] as $inactive){$o=unmCpuCompatibilityXml(unmDomainXml($other,$inactive));foreach((new DOMXPath($o))->query('/domain/devices/disk/source/@file') as $file)if(unmLiveSameDisk($path,$stat,$file->nodeValue))throw new RuntimeException('Another VM live or saved definition references this writable disk, including a user-share alias.');}}
-    $info=json_decode(unmLiveCommand(['qemu-img','info','--force-share','--output=json',$path]),true,32,JSON_THROW_ON_ERROR);
-    if(($info['format']??'')!==$spec['format']||isset($info['backing-filename'])||!empty($info['encrypted'])||!empty($info['snapshots'])||($info['virtual-size']??0)<1)throw new RuntimeException('Backing chains, internal snapshots and encrypted disks are excluded from this beta.');
-    $spec['diskBytes']=(int)$info['virtual-size'];$spec['liveXml']=$live;$spec['persistentXml']=$persistent;$spec['qemu']=unmNativeQemu($uuid,$spec['vmName']);return $spec;
+    $references=[];$all=trim(unmLiveCommand(['virsh','list','--all','--uuid']));foreach(preg_split('/\s+/',$all)?:[] as $other){if($other===''||$other===$uuid)continue;unmTransportUuid($other);foreach([true,false] as $inactive){$o=unmCpuCompatibilityXml(unmDomainXml($other,$inactive));foreach((new DOMXPath($o))->query('/domain/devices/disk/source/@file') as $file)$references[]=$file->nodeValue;}}
+    $identities=[];foreach($spec['disks'] as &$disk){
+        $path=$disk['path'];unmTransportPath($path);if(is_link($path)||!is_file($path)||realpath($path)!==$path)throw new RuntimeException('Live disk path must be a real, independent file: '.$disk['target']);
+        unmLiveFileSystem($path);$stat=stat($path);if(!$stat||$stat['nlink']!==1)throw new RuntimeException('Hard-linked disks are excluded from live migration.');
+        $identity=$stat['dev'].':'.$stat['ino'];if(isset($identities[$identity]))throw new RuntimeException('Multiple disks resolve to the same file.');$identities[$identity]=true;
+        foreach($references as $reference)if(unmLiveSameDisk($path,$stat,$reference))throw new RuntimeException('Another VM live or saved definition references writable disk '.$disk['target'].', including a user-share alias.');
+        $info=json_decode(unmLiveCommand(['qemu-img','info','--force-share','--output=json',$path]),true,32,JSON_THROW_ON_ERROR);
+        if(($info['format']??'')!==$disk['format']||isset($info['backing-filename'])||!empty($info['encrypted'])||!empty($info['snapshots'])||!is_int($info['virtual-size']??null)||$info['virtual-size']<1)throw new RuntimeException('Backing chains, internal snapshots and encrypted disks are excluded from this beta.');
+        $disk['bytes']=$info['virtual-size'];
+    }unset($disk);
+    $spec['diskBytes']=$spec['disks'][0]['bytes'];$spec['totalDiskBytes']=unmLiveDiskTotal($spec['disks']);$spec['liveXml']=$live;$spec['persistentXml']=$persistent;$spec['qemu']=unmNativeQemu($uuid,$spec['vmName']);return $spec;
 }
 function unmLivePreview(string $uuid,string $peerId): array {
     $peer=unmPeer($peerId);if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');unmAssertRemotePeerHost($peer['host']);
-    $local=unmLivePlatform();$spec=unmLiveSource($uuid);
+    $spec=unmLiveSource($uuid);$local=unmLivePlatform($spec['tpm']!==null);
     $caps=unmRemote($peer,'/usr/local/sbin/unmotion-agent capabilities',20);$cap=$caps['code']===0?json_decode($caps['stdout'],true):null;
-    if(($cap['hostId']??'')!==$peer['hostId']||($cap['pluginVersion']??'')!==UNM_VERSION||($cap['liveMigrationVersion']??null)!==2)throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both peers. Update both hosts; Cold/Warm Move protocol-7 compatibility is unchanged.');
+    if(($cap['hostId']??'')!==$peer['hostId']||($cap['pluginVersion']??'')!==UNM_VERSION||($cap['liveMigrationVersion']??null)!==3)throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both peers. Update both hosts; Cold/Warm Move protocol-7 compatibility is unchanged.');
     try{$remote=unmLiveRpc($peer,'inspect',['xml'=>$spec['liveXml'],'firmware'=>$spec['firmwareEvidence']],45);}catch(Throwable $e){if(str_contains($e->getMessage(),'Unsupported unMotion RPC'))throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both peers. Cold/Warm Move protocol-7 compatibility is unchanged.');throw $e;}
     if(($remote['platform']['version']??'')!==UNM_VERSION)throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both hosts. Existing Cold/Warm Move compatibility is unchanged.');
+    unmLiveTpmCompatible($spec['tpm'],$local['tpm'],$remote['platform']['tpm']??null);
     if(!unmLiveGeneration($local,$remote['platform']))throw new RuntimeException('The destination must be a confirmed same/newer CPU generation from the same vendor.');
     if($local['hypervisor']!==$remote['platform']['hypervisor'])throw new RuntimeException('This first beta requires matching QEMU/libvirt versions.');
     return ['vmUuid'=>$uuid,'vmName'=>$spec['vmName'],'peerId'=>$peerId,'spec'=>$spec,'local'=>$local,'remote'=>$remote['platform'],'warnings'=>['The guest will briefly pause during handover; this is not a zero-latency guarantee.','Bridge names are checked, but equivalent physical networks and any in-guest VLAN configuration remain your responsibility.','The old source disk is retained; this beta never deletes it automatically.']];
 }
-function unmLiveTargetXml(string $xml,string $diskPath,?string $nvramPath=null): string {
+function unmLiveTargetXml(string $xml,string|array $diskPath,?string $nvramPath=null,?string $tpmPath=null): string {
     $d=unmCpuCompatibilityXml($xml);$xp=new DOMXPath($d);$d->documentElement->removeAttribute('id');
     foreach(iterator_to_array($xp->query('/domain/devices/interface/target|/domain/devices/serial[@type="pty"]/source|/domain/devices/console[@type="pty"]/source|/domain/devices/channel[@type="unix"]/source|/domain/seclabel[@type="dynamic"]/label|/domain/seclabel[@type="dynamic"]/imagelabel')) as $n)$n->parentNode->removeChild($n);
     foreach($xp->query('/domain/devices/console') as $n)$n->removeAttribute('tty');
     foreach($xp->query('/domain/devices/channel/target') as $n)$n->removeAttribute('state');
     foreach($xp->query('/domain/devices/graphics') as $n){if(!in_array($n->getAttribute('type'),['vnc','spice'],true))throw new RuntimeException('Unsupported graphics device.');$n->setAttribute('autoport','yes');$n->setAttribute('port','-1');if($n->hasAttribute('websocket'))$n->setAttribute('websocket','-1');}
-    $disk=$xp->query('/domain/devices/disk/source')->item(0);if(!$disk)throw new RuntimeException('Missing live disk.');$disk->setAttribute('file',$diskPath);$disk->removeAttribute('index');
+    $disks=unmLiveDisksXml($xp);if(is_string($diskPath)){if(count($disks)!==1)throw new RuntimeException('Every writable disk needs an exact destination mapping.');$diskPath=[$disks[0]['target']=>$diskPath];}
+    if(count($diskPath)!==count($disks)||array_diff(array_keys($diskPath),array_column($disks,'target')))throw new RuntimeException('Destination disk mappings differ from the admitted disks.');
+    foreach($xp->query('/domain/devices/disk[@device="disk"]') as $disk){$target=$xp->evaluate('string(target/@dev)',$disk);$source=$xp->query('./source',$disk)->item(0);if(!$source||!is_string($diskPath[$target]??null))throw new RuntimeException('Missing live disk mapping.');$source->setAttribute('file',$diskPath[$target]);$source->removeAttribute('index');}
     if($nvramPath!==null){$nv=$xp->query('/domain/os/nvram')->item(0);if(!$nv)throw new RuntimeException('Unexpected destination NVRAM.');$nv->nodeValue=$nvramPath;}
+    foreach(iterator_to_array($xp->query('/domain/devices/disk[@device="cdrom"]/source')) as $source)$source->parentNode->removeChild($source);
+    if($tpmPath!==null){$uuid=trim($xp->evaluate('string(/domain/uuid)'));if(!unmLiveTpmPathAllowed($tpmPath,$uuid,true))throw new RuntimeException('Destination TPM path is not independently job/UUID scoped.');$backend=$xp->query('/domain/devices/tpm/backend')->item(0);if(!$backend)throw new RuntimeException('Unexpected destination TPM.');foreach(iterator_to_array($xp->query('./source',$backend)) as $source)$backend->removeChild($source);$source=$d->createElement('source');$source->setAttribute('type','dir');$source->setAttribute('path',$tpmPath);$backend->insertBefore($source,$backend->firstChild);$backend->setAttribute('persistent_state','yes');}
     $result=$d->saveXML();$spec=unmLiveInspectXml($result);unmTransportValidateDomainXml($result,$spec['vmUuid'],null,[]);return $result;
 }
 function unmLivePeerJob(array $peer,string $id,?string $token=null): array {
@@ -188,29 +197,33 @@ function unmLiveRemote(array $peer,array $a): array {
     if(in_array($action,['ordinary-accept','ordinary-proof','ordinary-commit'],true))return unmLiveOrdinaryRemote($peer,$a);
     $keys=match($action){'inspect'=>['action','xml','firmware'],'reserve'=>['action','jobId','token','liveXml','persistentXml','sourcePlatform'],'status'=>['action','jobId'],'source-proof','reconcile-proof'=>['action','jobId','nonce'],'reauthorize'=>['action','jobId','token','nonce'],'commit'=>['action','jobId','token'],'abort'=>['action','jobId','token','vmUuid'],default=>throw new RuntimeException('Unknown live operation.')};
     if(array_diff(array_keys($a),$keys)||array_diff($keys,array_keys($a)))throw new RuntimeException('Invalid live operation fields.');
-    if($action==='inspect'){$s=unmLiveInspectXml((string)$a['xml']);unmLiveFirmwareDestination($s['firmware'],$a['firmware']);unmLiveTargetXml((string)$a['xml'],$s['diskPath']);unmLiveValidateDestination($s);return ['success'=>true,'platform'=>unmLivePlatform()];}
+    if($action==='inspect'){$s=unmLiveInspectXml((string)$a['xml']);unmLiveFirmwareDestination($s['firmware'],$a['firmware']);unmLiveTargetXml((string)$a['xml'],array_column($s['disks'],'path','target'));unmLiveValidateDestination($s);return ['success'=>true,'platform'=>unmLivePlatform($s['tpm']!==null)];}
     if($action==='reserve'){
         $admission=unmTransportAdmissionLock();
         try{
             $id=unmLiveId((string)$a['jobId']);if(file_exists(unmLiveJobPath($id)))throw new RuntimeException('Live job is already reserved.');
             $token=(string)$a['token'];if(!preg_match('/\A[a-f0-9]{64}\z/D',$token))throw new RuntimeException('Invalid job token.');
             $s=unmLiveInspectXml((string)$a['liveXml']);$p=unmLiveInspectXml((string)$a['persistentXml']);$vmLock=unmLiveVmLock($s['vmUuid']);
-            unmLiveValidateDestination($s);$platform=unmLivePlatform();if(!is_array($a['sourcePlatform'])||($a['sourcePlatform']['hostId']??'')!==$peer['hostId']||$a['sourcePlatform']['version']!==UNM_VERSION||$a['sourcePlatform']['hypervisor']!==$platform['hypervisor']||!unmLiveGeneration($a['sourcePlatform'],$platform))throw new RuntimeException('Source/destination CPU or software compatibility changed.');
-            if($s['vmUuid']!==$p['vmUuid']||$s['vmName']!==$p['vmName']||$s['diskTarget']!==$p['diskTarget']||$s['format']!==$p['format']||$s['firmware']!==$p['firmware'])throw new RuntimeException('Running and persistent destination identities disagree.');
+            unmLiveValidateDestination($s);$platform=unmLivePlatform($s['tpm']!==null);if(!is_array($a['sourcePlatform'])||($a['sourcePlatform']['hostId']??'')!==$peer['hostId']||$a['sourcePlatform']['version']!==UNM_VERSION||$a['sourcePlatform']['hypervisor']!==$platform['hypervisor']||!unmLiveGeneration($a['sourcePlatform'],$platform))throw new RuntimeException('Source/destination CPU or software compatibility changed.');
+            unmLiveTpmCompatible($s['tpm'],$a['sourcePlatform']['tpm']??null,$platform['tpm']);
+            if($s['vmUuid']!==$p['vmUuid']||$s['vmName']!==$p['vmName']||$s['disks']!==$p['disks']||$s['firmware']!==$p['firmware']||$s['tpm']!==$p['tpm'])throw new RuntimeException('Running and persistent destination identities disagree.');
             foreach(glob(unmLiveRoot().'/jobs/*/job.json')?:[] as $path){$old=unmLoadJson($path);if(!in_array($old['state']??'', ['COMPLETE','ABORTED','CANCELLED','FAILED','PROBE_FINISHED'],true))throw new RuntimeException('Another live migration needs to finish or be reconciled on this host.');}
             $root=rtrim($platform['imageDirectory'],'/');unmTransportPath($root);if(!str_starts_with($root,'/mnt/')||str_starts_with($root,'/mnt/user/')||realpath($root)!==$root||!is_dir($root))throw new RuntimeException('Configure a direct pool-backed image directory for live migration.');
             unmLiveFileSystem($root);
-            $dir=$root.'/unmotion-'.$id;$disk=$dir.'/vdisk1.'.$s['format'];if(file_exists($dir)||is_link($dir))throw new RuntimeException('Destination storage path already exists.');
+            $dir=$root.'/unmotion-'.$id;if(file_exists($dir)||is_link($dir))throw new RuntimeException('Destination storage path already exists.');
+            $disks=[];foreach($s['disks'] as $i=>$sourceDisk)$disks[]=['path'=>$dir.'/vdisk'.($i+1).'.'.$sourceDisk['format'],'target'=>$sourceDisk['target'],'format'=>$sourceDisk['format']];$disk=$disks[0]['path'];
             $nvram=$s['firmware']===null?null:'/etc/libvirt/qemu/nvram/'.$s['vmUuid'].'_VARS-unmotion-'.$id.'.fd';
-            $live=unmLiveTargetXml((string)$a['liveXml'],$disk,$nvram);$persistent=unmLiveTargetXml((string)$a['persistentXml'],$disk,$nvram);
+            $tpmPath=$s['tpm']===null?null:unmLiveTpmDestination($s['vmUuid'],$id);
+            $maps=array_column($disks,'path','target');$live=unmLiveTargetXml((string)$a['liveXml'],$maps,$nvram,$tpmPath);$persistent=unmLiveTargetXml((string)$a['persistentXml'],$maps,$nvram,$tpmPath);
             // Source virtual size is re-derived from the validated image XML's
             // capacity metadata by a separate fresh source-owned RPC below.
             $reply=unmLiveRpc($peer,'source-proof',['jobId'=>$id,'nonce'=>bin2hex(random_bytes(16))]);
-            if(($reply['authority']??'')!=='MOVING'||($reply['spec']['vmUuid']??'')!==$s['vmUuid']||($reply['spec']['diskTarget']??'')!==$s['diskTarget']||($reply['spec']['format']??'')!==$s['format']||($reply['spec']['liveHash']??'')!==unmLiveXmlHash((string)$a['liveXml']))throw new RuntimeException('Fresh source ownership/VM proof failed.');
+            if(($reply['authority']??'')!=='MOVING'||($reply['spec']['vmUuid']??'')!==$s['vmUuid']||array_map('unmLiveDiskIdentity',unmLiveDisks($reply['spec']??[]))!==$s['disks']||($reply['spec']['liveHash']??'')!==unmLiveXmlHash((string)$a['liveXml']))throw new RuntimeException('Fresh source ownership/VM proof failed.');
             unmLiveFirmwareDestination($s['firmware'],$reply['spec']['firmware']??null);
-            $bytes=(int)$reply['spec']['diskBytes'];if($bytes<1||$bytes>disk_free_space($root)*0.8)throw new RuntimeException('Not enough destination free space for the full virtual disk plus headroom.');
+            $sourceDisks=unmLiveDisks($reply['spec']);$bytes=unmLiveDiskTotal($sourceDisks);if($bytes>disk_free_space($root)*0.8)throw new RuntimeException('Not enough destination free space for all full virtual disks plus headroom.');
             preg_match('/^MemAvailable:\s+(\d+) kB/m',(string)file_get_contents('/proc/meminfo'),$available);if($s['memoryKiB']>(int)($available[1]??0)*0.8)throw new RuntimeException('Insufficient destination memory headroom.');
-            unmLivePrivateDir($dir);unmLiveCommand(['qemu-img','create','-f',$s['format'],$disk,(string)$bytes]);
+            unmLivePrivateDir($dir);foreach($disks as $i=>&$destinationDisk){$destinationDisk['bytes']=$sourceDisks[$i]['bytes'];unmLiveCommand(['qemu-img','create','-f',$destinationDisk['format'],$destinationDisk['path'],(string)$destinationDisk['bytes']]);}unset($destinationDisk);
+            if($tpmPath!==null)unmLiveTpmReserve($tpmPath,$s['vmUuid']);
             if($nvram!==null){
                 $nvdir=dirname($nvram);if(!is_dir($nvdir)||realpath($nvdir)!==$nvdir||is_link($nvram)||file_exists($nvram))throw new RuntimeException('Destination NVRAM storage is unavailable or already exists.');
                 $fp=fopen($nvram,'x+b');if(!$fp)throw new RuntimeException('Cannot reserve destination NVRAM.');
@@ -218,9 +231,9 @@ function unmLiveRemote(array $peer,array $a): array {
                 // QEMU migrates pflash RAM and writes it into this backing file
                 // on resume. Never replace a file behind an open QEMU fd.
             }
-            $j=['schemaVersion'=>1,'id'=>$id,'vmUuid'=>$s['vmUuid'],'vmName'=>$s['vmName'],'role'=>'destination','peerId'=>$peer['id'],'sourceHostId'=>$peer['hostId'],'destinationHostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'expiresAt'=>time()+21600,'state'=>'DESTINATION_READY','tokenHash'=>hash('sha256',$token),'runtime'=>unmLiveRuntime($id),'destinationXml'=>$live,'persistentXml'=>$persistent,'diskPath'=>$disk,'diskTarget'=>$s['diskTarget'],'createdAt'=>gmdate('c'),'message'=>'Reserved; waiting for encrypted disk/RAM transfer'];
+            $j=['schemaVersion'=>1,'id'=>$id,'vmUuid'=>$s['vmUuid'],'vmName'=>$s['vmName'],'role'=>'destination','peerId'=>$peer['id'],'sourceHostId'=>$peer['hostId'],'destinationHostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'expiresAt'=>time()+21600,'state'=>'DESTINATION_READY','tokenHash'=>hash('sha256',$token),'runtime'=>unmLiveRuntime($id),'destinationXml'=>$live,'persistentXml'=>$persistent,'diskPath'=>$disk,'diskTarget'=>$s['diskTarget'],'disks'=>$disks,'createdAt'=>gmdate('c'),'message'=>'Reserved; waiting for encrypted disk/RAM transfer'];
             unmLivePrivateDir($j['runtime']);unmLiveStoreJob($j);unmLiveAuthority($j,'RECEIVING',$disk);
-            return ['success'=>true,'destinationXml'=>$live,'persistentXml'=>$persistent,'diskPath'=>$disk];
+            return ['success'=>true,'destinationXml'=>$live,'persistentXml'=>$persistent,'diskPath'=>$disk,'disks'=>$disks];
         }finally{flock($admission,LOCK_UN);fclose($admission);}
     }
     if($action==='abort'&&!file_exists(unmLiveJobPath((string)$a['jobId']))){
@@ -250,7 +263,7 @@ function unmLiveRemote(array $peer,array $a): array {
         if($status['authority']==='MOVING'){
             if(!in_array($status['vm']['state'],['running','idle'],true)||unmNativeQemu($j['vmUuid'],$j['vmName'])!==$spec['qemu']||unmLiveXmlHash(unmLiveCommand(['virsh','dumpxml',$j['vmUuid'],'--migratable','--security-info']))!==unmLiveXmlHash($spec['liveXml']))throw new RuntimeException('Source VM changed after live migration admission.');
         }
-        $status['nonce']=$a['nonce'];$status['spec']=['vmUuid'=>$j['vmUuid'],'diskTarget'=>$spec['diskTarget'],'format'=>$spec['format'],'diskBytes'=>$spec['diskBytes'],'liveHash'=>unmLiveXmlHash($spec['liveXml']),'firmware'=>unmLiveFirmwareEvidence($spec['firmware']??null)];return $status;
+        $status['nonce']=$a['nonce'];$status['spec']=['vmUuid'=>$j['vmUuid'],'diskTarget'=>$spec['diskTarget'],'format'=>$spec['format'],'diskBytes'=>$spec['diskBytes'],'disks'=>unmLiveDisks($spec),'liveHash'=>unmLiveXmlHash($spec['liveXml']),'firmware'=>unmLiveFirmwareEvidence($spec['firmware']??null)];return $status;
     }
     if($j['role']!=='destination')throw new RuntimeException('Destination mutation required.');$lock=unmLiveVmLock($j['vmUuid']);$status=unmLiveStatus($j);
     if($action==='commit'){
@@ -277,7 +290,7 @@ function unmLiveRemote(array $peer,array $a): array {
         unmLiveCommand(['virsh','destroy',$j['vmUuid']]);
     }
     $status=unmLiveVmState($j['vmUuid']);if(!$status['qemuAbsent'])throw new RuntimeException('Destination QEMU is still present.');
-    if($status['state']!=='undefined'){$binding=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);unmLiveNativeBinding(unmNativeDomain(unmDomainXml($j['vmUuid'])),$binding);unmLiveUndefine($j['vmUuid'],$binding['firmware']??null);}
+    if($status['state']!=='undefined'){$binding=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);unmLiveNativeBinding(unmNativeDomain(unmDomainXml($j['vmUuid'])),$binding);unmLiveUndefine($j['vmUuid'],$binding['firmware']??null,$binding['tpm']??null);}
     unmLiveAuthority($j,'ABORTED',$j['diskPath']);$j['state']='ABORTED';$j['message']='Incoming VM stopped and unregistered; partial disk retained';unmLiveStoreJob($j);return unmLiveStatus($j);
 }
 function unmLiveUpdate(array &$j,string $state,string $message): void {$j['state']=$state;$j['message']=$message;$j['updatedAt']=gmdate('c');unmLiveStoreJob($j);unmLiveLog($j['id'],$state.' '.$message);}
@@ -304,7 +317,7 @@ function unmLivePublicJobs(): array {
         try{$r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);$p['canHandback']=($r['jobId']??'')===$j['id']&&in_array($j['state'],['COMPLETE','FAILED','CANCELLED'],true)&&($r['state']??'')==='OWNER'&&!unmLiveOrdinaryOwner($r);}catch(Throwable){$p['canHandback']=false;}
         if(($j['role']??'')==='source')$p['workerActive']=unmProcessRecordedWorker(dirname($path).'/process.json','/usr/local/sbin/unmotion-live-worker',[$j['id']])!==null;
         elseif($j['bootId']===unmNativeBoot()){
-            $bytes=0;foreach(['memory','disk'] as $channel){$value=unmLoadJson(unmLiveRuntime($j['id']).'/received-'.$channel.'.json');if(is_int($value['bytes']??null)&&$value['bytes']>=0)$bytes+=$value['bytes'];}
+            $bytes=unmLiveReceivedBytes($j);
             $p['receivedMiB']=round($bytes/1048576,1);
             if($bytes>0&&$j['state']==='DESTINATION_READY'){$p['state']='RECEIVING';$p['message']='Receiving encrypted disk/RAM streams; destination execution remains fenced';}
         }
@@ -344,7 +357,7 @@ function unmLiveReconcile(string $id): array {
     $state=unmLiveVmState($j['vmUuid']);unmLiveNoJob($j['vmUuid'],$state);$remote=unmLiveRpc($peer,'status',['jobId'=>$id]);unmLiveFenceProof();
     if($r['state']==='OWNER'&&($remote['authority']??'')==='ABORTED'&&!empty($remote['vm']['qemuAbsent'])){unmLiveUpdate($j,'CANCELLED','Confirmed the previous rollback: source owns the VM and destination is absent');return ['success'=>true];}
     if($r['state']==='RETIRED'&&$state['qemuAbsent']&&($remote['authority']??'')==='OWNER'&&($remote['jobState']??'')==='COMPLETE'){
-        if($state['state']==='shut off')unmLiveUndefine($j['vmUuid'],$r['firmware']??null);unmLiveUpdate($j,'COMPLETE','Destination ownership confirmed; its current power state was preserved');return ['success'=>true];
+        if($state['state']==='shut off')unmLiveUndefine($j['vmUuid'],$r['firmware']??null,$r['tpm']??null);unmLiveUpdate($j,'COMPLETE','Destination ownership confirmed; its current power state was preserved');return ['success'=>true];
     }
     $token=bin2hex(random_bytes(32));$nonce=bin2hex(random_bytes(16));unmLivePrivateDir(unmLiveRuntime($id));
     unmNativeWrite(unmLiveRuntime($id).'/reconcile-permit.json',['nonce'=>$nonce,'bootId'=>unmNativeBoot(),'tokenHash'=>hash('sha256',$token),'expiresAt'=>time()+30]);
@@ -353,7 +366,7 @@ function unmLiveReconcile(string $id): array {
     if($state['qemuAbsent']&&in_array($remote['vm']['state']??'',['paused','running','idle'],true)&&(($remote['authority']??'')==='RECEIVING'||(($remote['authority']??'')==='OWNER'&&($remote['jobState']??'')==='COMMITTING'))){
         unmLiveAuthority($j,'RETIRED',$j['spec']['diskPath']);unmLiveUpdate($j,'SOURCE_RETIRED','Source absence proven during reconciliation; committing the paused receiver');
         $remote=unmLiveRpc($peer,'commit',['jobId'=>$id,'token'=>$token],45);if(($remote['authority']??'')!=='OWNER')throw new RuntimeException('Destination ownership is not confirmed.');
-        if($state['state']==='shut off')unmLiveUndefine($j['vmUuid'],$r['firmware']??null);unmLiveUpdate($j,'COMPLETE','Live handover reconciled; old source disk and NVRAM retained');return ['success'=>true];
+        if($state['state']==='shut off')unmLiveUndefine($j['vmUuid'],$r['firmware']??null,$r['tpm']??null);unmLiveUpdate($j,'COMPLETE','Live handover reconciled; old source disk and NVRAM retained');return ['success'=>true];
     }
     if(in_array($state['state'],['running','idle','paused','shut off'],true)&&in_array($remote['authority']??'',['RECEIVING','ABORTED'],true)){
         $q=$state['qemuAbsent']?null:unmNativeQemu($j['vmUuid'],$j['vmName']);if($q!==null&&$q!==$j['spec']['qemu'])throw new RuntimeException('The source QEMU is not the original admitted process.');
@@ -374,7 +387,7 @@ function unmLiveRunWorker(string $id): void {
         unmLiveCommand(['virsh','autostart',$j['vmUuid'],'--disable']);unmLiveStoreJob($j);$armed=true;unmLiveAuthority($j,'MOVING',$j['spec']['diskPath'],$j['spec']['qemu']);
         unmLiveUpdate($j,'SOURCE_MOVING','Source native starts fenced; reserving an independent destination disk');
         $reserved=true;$r=unmLiveRpc($peer,'reserve',['jobId'=>$id,'token'=>$token,'liveXml'=>$j['spec']['liveXml'],'persistentXml'=>$j['spec']['persistentXml'],'sourcePlatform'=>$j['sourcePlatform']],60);
-        foreach(['destinationXml','persistentXml','diskPath'] as $key)$j[$key]=$r[$key];$j['diskTarget']=$j['spec']['diskTarget'];unmLiveStoreJob($j);
+        foreach(['destinationXml','persistentXml','diskPath','disks'] as $key)$j[$key]=$r[$key];$j['diskTarget']=$j['spec']['diskTarget'];unmLiveStoreJob($j);
         unmLiveUpdate($j,'SOURCE_MOVING','Measuring the encrypted link and guest RAM dirty rate');$j['bandwidthMiB']=round(unmLiveBandwidth($j,$peer,$token),2);$j['dirtyRateMiB']=unmLiveDirtyRate($j['vmUuid']);
         unmLiveLog($id,'Measured encrypted throughput '.$j['bandwidthMiB'].' MiB/s; RAM dirty rate '.($j['dirtyRateMiB']??'unknown').' MiB/s. Fourfold headroom is recommended; concurrent disk/network load also matters.');
         if($j['dirtyRateMiB']!==null&&$j['dirtyRateMiB']>=$j['bandwidthMiB']*0.8)throw new RuntimeException('Insufficient measured bandwidth headroom to converge safely. Reduce guest activity and retry.');unmLiveStoreJob($j);
@@ -385,13 +398,13 @@ function unmLiveRunWorker(string $id): void {
         if(is_file($j['runtime'].'/cancel'))throw new RuntimeException('Cancelled before native migration.');
         file_put_contents($j['runtime'].'/destination.xml',$j['destinationXml']);file_put_contents($j['runtime'].'/persistent.xml',$j['persistentXml']);
         unmLiveUpdate($j,'COPYING','Copying disk and RAM while the source VM continues running');
-        $args=['virsh','migrate',$j['vmUuid'],'--live','--persistent','--suspend','--copy-storage-all','--change-protection','--abort-on-error','--verbose','--desturi','qemu+ext:///system?command=/usr/local/sbin/unmotion-live-client','--migrateuri','unix://'.$j['runtime'].'/memory.sock','--disks-uri','unix://'.$j['runtime'].'/disk.sock','--migrate-disks',$j['diskTarget'],'--xml',$j['runtime'].'/destination.xml','--persistent-xml',$j['runtime'].'/persistent.xml'];
+        $args=['virsh','migrate',$j['vmUuid'],'--live','--persistent','--suspend','--copy-storage-all','--change-protection','--abort-on-error','--verbose','--desturi','qemu+ext:///system?command=/usr/local/sbin/unmotion-live-client','--migrateuri','unix://'.$j['runtime'].'/memory.sock','--disks-uri','unix://'.$j['runtime'].'/disk.sock','--migrate-disks',implode(',',array_column(unmLiveDisks($j['spec']),'target')),'--xml',$j['runtime'].'/destination.xml','--persistent-xml',$j['runtime'].'/persistent.xml'];
         $migration=proc_open($args,[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);if(!$migration)throw new RuntimeException('Cannot launch native live migration.');foreach($pipes as $p)stream_set_blocking($p,false);
         $exit=null;$start=time();$cancelSent=false;$lastProgress=0;
         while(true){
             foreach($pipes as $p){$text=stream_get_contents($p);if($text!==''){unmLiveLog($id,trim(str_replace("\r","\n",$text)));if(time()>$lastProgress&&preg_match_all('/Migration:\s*\[\s*([0-9.]+)\s*%\]/',$text,$matches)){$lastProgress=time();unmNativeWrite($j['runtime'].'/progress.json',['percent'=>min(99,max(0,(float)end($matches[1]))),'observedAt'=>gmdate('c')]);}}}
             $process=proc_get_status($migration);if(!$process['running']){$exit=$process['exitcode'];break;}
-            if((is_file($j['runtime'].'/cancel')||time()-$start>1800)&&!$cancelSent){
+            if((is_file($j['runtime'].'/cancel')||time()-$start>UNM_LIVE_TRANSFER_SECONDS)&&!$cancelSent){
                 if(unmNativeQemu($j['vmUuid'],$j['vmName'])!==$j['spec']['qemu'])throw new RuntimeException('Source QEMU changed while cancelling.');
                 unmLiveCommand(['virsh','domjobabort',$j['vmUuid']]);$cancelSent=true;unmLiveLog($id,'Cancellation requested through libvirt; waiting for rollback.');
             }
@@ -402,7 +415,7 @@ function unmLiveRunWorker(string $id): void {
         $state=unmLiveVmState($j['vmUuid']);if(!$state['qemuAbsent']||$state['state']!=='shut off')throw new RuntimeException('Source QEMU has not provably stopped after migration.');
         unmLiveAuthority($j,'RETIRED',$j['spec']['diskPath']);$retired=true;unmLiveUpdate($j,'SOURCE_RETIRED','Source stopped and durably fenced; authorizing the paused destination');
         $r=unmLiveRpc($peer,'commit',['jobId'=>$id,'token'=>$token],45);if(($r['authority']??'')!=='OWNER'||!in_array($r['vm']['state']??'', ['running','idle'],true))throw new RuntimeException('Destination running ownership is not confirmed.');
-        unmLiveUndefine($j['vmUuid'],$j['spec']['firmware']??null);unmLiveUpdate($j,'COMPLETE','Live migration complete; old source disk and NVRAM retained, source definition unregistered');
+        unmLiveUndefine($j['vmUuid'],$j['spec']['firmware']??null,$j['spec']['tpm']??null);unmLiveUpdate($j,'COMPLETE','Live migration complete; old source disk and NVRAM retained, source definition unregistered');
     }catch(Throwable $e){
         unmLiveLog($id,'Failure: '.$e->getMessage());$rolledBack=false;
         if($armed&&!$retired&&$migration===null){

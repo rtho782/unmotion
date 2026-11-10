@@ -27,4 +27,8 @@ bad(fn()=>openGuard()->response(frame(303,777,'',1)),'unsolicited response denie
 bad(fn()=>unmLiveXmlHash('<!DOCTYPE domain [<!ENTITY x SYSTEM "file:///etc/passwd">]><domain/>'),'entities denied');
 $heartbeat=pack('N7',28,0x6b656570,1,1,2,0,0);$g=openGuard();$g->request($heartbeat);$g->response(pack('N7',28,0x6b656570,1,2,2,0,0));ok(true,'exact payload-free ping/pong allowed');
 bad(fn()=>$g->response($heartbeat.'payload'),'heartbeat payload denied');bad(fn()=>$g->response(pack('N7',28,0x6b656570,1,3,2,0,0)),'unknown heartbeat denied');bad(fn()=>$g->request(pack('N7',28,0x6b656570,1,1,2,1,0)),'heartbeat serial denied');
+$job['disks']=[['path'=>'/mnt/cache/Squid Proxy/a.raw','format'=>'raw','target'=>'vda'],['path'=>'/mnt/cache/Squid Proxy/b.qcow2','format'=>'qcow2','target'=>'vdb']];
+function multiParams(array $disks): string {global $values;$base=$values;unset($base['migrate_disks']);$out=substr(params($base),4);foreach($disks as $target)$out.=xs('migrate_disks').pack('N',7).xs($target);return pack('N',count($base)+count($disks)).$out;}
+$g=openGuard();$g->request(frame(303,3,multiParams(['vda','vdb']).xs('').pack('N',105)));ok(true,'every admitted disk may occur once in repeated typed parameters');
+foreach([['vda'],['vdb'],['vda','vda'],['vda','vdc'],['vda','vdb','vdc']] as $targets)bad(fn()=>openGuard()->request(frame(303,3,multiParams($targets).xs('').pack('N',105))),'missing/duplicated/foreign disk cannot cross RPC boundary');
 echo "Live RPC regressions passed: $checks checks.\n";

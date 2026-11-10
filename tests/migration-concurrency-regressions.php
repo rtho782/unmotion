@@ -5,7 +5,7 @@ declare(strict_types=1);
 require __DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/lib.php';
 function parallelCheck(bool $ok,string $why):void {if(!$ok)throw new RuntimeException($why);}
 function parallelReject(callable $fn,string $why):void {try{$fn();}catch(RuntimeException $e){return;}throw new RuntimeException('Accepted '.$why);}
-$vm=['uuid'=>'74100000-1111-4111-8111-000000000090','name'=>'Squid Proxy','memoryKiB'=>524288,'isos'=>[],'disks'=>[['transferClass'=>'zvol','source'=>'/dev/zvol/source/Squid Proxy']]];
+$vm=['uuid'=>'74100000-1111-4111-8111-000000000090','name'=>'Squid Proxy','memoryKiB'=>524288,'isos'=>[],'disks'=>[['transferClass'=>'zvol','source'=>'/dev/zvol/source/Squid+Proxy','zfsDataset'=>'source/Squid Proxy']]];
 $pre=['vm'=>$vm,'peer'=>['id'=>'peer-1'],'destination'=>['hostId'=>'host-1','features'=>['parallelWarmCutover'=>true],'storage'=>['zvolDataset'=>'dest/vms'],'resources'=>['availableBytes'=>1024*1024*1024]],'resourcePlan'=>['requested'=>['memoryKiB'=>524288]],'plan'=>[]];
 $opts=['warm_seed_id'=>'seed-'.str_repeat('a',24),'iso_action'=>'remove','destination_conflict_action'=>'cancel'];
 parallelCheck(unmParallelWarmCutover($pre,$opts),'modern independent warm cutover');

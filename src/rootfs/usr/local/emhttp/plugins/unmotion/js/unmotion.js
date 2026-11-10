@@ -377,7 +377,7 @@ function renderInventory() {
           actions+='<input type="button" value="Warm Move blocked" disabled title="'+esc(warmBlockedReason(vm))+'">';
         }
       }
-      if(!blocked&&!vm.tpm&&!poweredOff&&peerId){var liveReason=(vm.liveEligibility||{}).reason||'';actions+='<input type="button" class="unm-live-migrate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="Live migrate (beta)" '+((vm.liveEligibility||{}).available===false?'disabled title="'+esc(liveReason)+'"':'')+'>';}
+      if(peerId){var liveReason=(vm.liveEligibility||{}).reason||'',liveLabel=blocked||poweredOff||(vm.liveEligibility||{}).available===false?'Live readiness':'Live migrate (beta)';actions+='<input type="button" class="unm-live-migrate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" value="'+liveLabel+'" title="'+esc(liveReason)+'">';}
       var replication=replicationFor(vm.uuid,peerId);
       if(peerId)actions+='<input type="button" class="unm-replicate" data-vm-id="'+esc(vm.uuid)+'" data-vm-name="'+esc(vm.name)+'" data-replication-id="'+esc(replication?replication.id:'')+'" value="'+(replication?'Configure replication':'Replicate')+'">';
       else actions+='<input type="button" value="Replicate" disabled title="Select a paired destination first">';

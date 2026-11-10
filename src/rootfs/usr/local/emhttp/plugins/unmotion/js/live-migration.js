@@ -17,8 +17,9 @@
     if(submitting)return;close();var peer=$('#unm-peer-select').val();if(!peer){$('#unm-live-notice').text('Select a paired destination first.');return;}
     var mine=++serial;selection={vm_id:$(button).attr('data-vm-id'),peer_id:peer};$('#unm-live-title').text('Live migrate '+$(button).attr('data-vm-name'));$('#unm-live-start').show().prop('disabled',true);
     show('Checking the running CPU mode, exact machine, guest devices, storage and destination… No VM changes have been made.');
-    request=post('livePreview',selection).done(function(r){if(mine!==serial)return;if(!r.success){show(r.error||'Preflight failed.');return;}var p=r.preview;
-      $('#unm-live-content').html('<p>'+esc(p.vcpus)+' vCPUs · '+esc(p.memoryMiB)+' MiB RAM · '+esc(p.diskGiB)+' GiB '+esc(p.format)+' · '+esc(p.machine)+'</p><p>Disk and RAM copy while the guest runs. The source then stops executing; only after its durable start fence is confirmed may the destination resume. The guest UUID, MAC addresses, CPU profile and resources are retained.</p><p>The encrypted link and guest RAM dirty rate are measured before copying. At least 4× bandwidth headroom is recommended; guest disk writes and other traffic also matter.</p><ul>'+p.warnings.map(function(w){return '<li>'+esc(w)+'</li>';}).join('')+'</ul><p>Native autostart is disabled on the source. Unresolved/retired source starts remain fenced across reboot. This beta retains old/partial disks and supports one live migration at a time per host.</p>');$('#unm-live-start').prop('disabled',false);
+    request=post('livePreview',selection).done(function(r){if(mine!==serial)return;if(!r.success){show(r.error||'Preflight failed.');return;}
+      if(r.ready===false){$('#unm-live-content').html('<p>Not ready for live migration. No VM changes have been made.</p><ul>'+(r.blockers||[]).map(function(b){return '<li>'+esc(b.message)+'</li>';}).join('')+'</ul><p>'+esc(r.alternative)+'</p><p>Observed: '+esc(r.observedAt)+'</p><input type="button" class="unm-live-recheck" data-vm-id="'+esc(selection.vm_id)+'" data-vm-name="'+esc($(button).attr('data-vm-name'))+'" value="Recheck readiness">');return;}var p=r.preview;
+      $('#unm-live-content').html('<p>'+esc(p.vcpus)+' vCPUs · '+esc(p.memoryMiB)+' MiB RAM · '+esc(p.diskCount||1)+' disk(s), '+esc(p.diskGiB)+' GiB '+esc(p.format)+' · '+esc(p.machine)+' · TPM: '+esc(p.tpm||'none')+'</p><p>All writable disks, RAM and supported software TPM state transfer while the guest runs. The source then stops executing; only after its durable start fence is confirmed may the destination resume. The guest UUID, MAC addresses, CPU profile and resources are retained.</p><p>The encrypted link and guest RAM dirty rate are measured before copying. At least 4× bandwidth headroom is recommended; guest disk writes and other traffic also matter.</p><ul>'+p.warnings.map(function(w){return '<li>'+esc(w)+'</li>';}).join('')+'</ul><p>Native autostart is disabled on the source. Unresolved/retired source starts remain fenced across reboot. This beta retains old/partial disks and TPM state and supports one live migration at a time per host.</p>');$('#unm-live-start').prop('disabled',false);
     }).fail(function(xhr,status){if(mine===serial&&status!=='abort')show(error(xhr));});
   }
   function readLog(id){if(submitting)return;close();var mine=++serial;logId=id;logText='';$('#unm-live-title').text('Live migration log');$('#unm-live-start').hide();show('Reading log…');
@@ -48,7 +49,7 @@
   }
   $(function(){
     if(!$('#unm-live-body').length)return;
-    $(document).on('click','.unm-live-migrate',function(){preview(this);}).on('click','.unm-live-log',function(){readLog($(this).attr('data-id'));});
+    $(document).on('click','.unm-live-migrate,.unm-live-recheck',function(){preview(this);}).on('click','.unm-live-log',function(){readLog($(this).attr('data-id'));});
     $(document).on('click','.unm-live-handback',function(){reviewHandback($(this).attr('data-id'));});
     $('.unm-live-close').on('click',close);
     $('#unm-live-start').on('click',function(){

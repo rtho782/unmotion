@@ -1,5 +1,6 @@
 <?php
 declare(strict_types=1);
+require_once __DIR__.'/zvol-path.php';
 
 /** Protocol 7 transport. No request string is ever handed to a shell. */
 const UNM_TRANSPORT_PROTOCOL = 7;
@@ -150,7 +151,7 @@ function unmTransportStoragePath(string $path,string $kind='image',bool $rootAll
 }
 
 function unmTransportDataset(string $dataset): string {
-    if(strlen($dataset)>1024||!preg_match('~\A[A-Za-z][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.: -]*)+(?:@[A-Za-z0-9_][A-Za-z0-9_.:-]*)?\z~D',$dataset)||str_contains($dataset,'..'))throw new InvalidArgumentException('Invalid ZFS object.');return $dataset;
+    if(strlen($dataset)>1024||!preg_match('~\A[A-Za-z][A-Za-z0-9_.:-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.: +\-]*)+(?:@[A-Za-z0-9_][A-Za-z0-9_.:-]*)?\z~D',$dataset)||str_contains($dataset,'..'))throw new InvalidArgumentException('Invalid ZFS object.');return $dataset;
 }
 
 function unmTransportReservationDir(): string {return UNM_BOOT_DIR.'/transport';}
@@ -262,7 +263,7 @@ function unmTransportAdoptStoppedDisk(array $peer,string $uuid,string $path,stri
     unmTransportVmOff($uuid);$vm=unmParseVm($uuid);
     foreach((array)($vm['disks']??[]) as $disk){
         $source=(string)($disk['resolvedSource']??$disk['source']??'');
-        if($kind==='zvol'&&$source==='/dev/zvol/'.$path)return;
+        if($kind==='zvol'&&($disk['type']??'')==='zvol'&&unmZvolSourceDataset($source)===$path)return;
         if($kind==='dataset'&&($disk['zfsDataset']??'')===$path&&($disk['transferClass']??'')==='zfs-dataset-image')return;
         if($kind==='image'&&$source===$path)return;
     }
@@ -408,7 +409,7 @@ function unmTransportOverwritePlan(array $peer,array $request): array {
     $vm=$exists?unmParseVm($uuid):null;
     if($vm!==null)foreach((array)($vm['disks']??[]) as $disk){
         $src=(string)($disk['source']??'');
-        if(($disk['type']??'')==='zvol'&&str_starts_with($src,'/dev/zvol/'))$items[]=['kind'=>'zvol','path'=>substr($src,10)];
+        if(($disk['type']??'')==='zvol'&&str_starts_with($src,'/dev/zvol/'))$items[]=['kind'=>'zvol','path'=>unmZvolSourceDataset($src)];
         elseif(($disk['type']??'')==='file')$items[]=['kind'=>($disk['transferClass']??'')==='zfs-dataset-image'?'dataset':'image','path'=>($disk['transferClass']??'')==='zfs-dataset-image'?(string)$disk['zfsDataset']:$src];
     }
     $unique=[];foreach($items as $s)$unique[$s['kind']."\0".$s['path']]=$s;
@@ -671,6 +672,16 @@ function unmTransportValidateOvmfPciMmio64(DOMElement $commandline): void {
 }
 
 /** Reject libvirt features that can turn a VM definition into host code/file access. */
+function unmTransportDomainZvol(array $peer,string $path,string $uuid): string {
+    $candidates=[];
+    foreach(unmTransportReservations($peer) as $r){if(($r['vmUuid']??'')!==$uuid)continue;foreach((array)($r['storage']??[]) as $s){$dataset=(string)($s['destination']??'');if(($s['kind']??'')==='zvol'&&in_array($path,unmZvolPathAliases($dataset),true))$candidates[$dataset]=true;}}
+    if(count($candidates)!==1)throw new RuntimeException('Zvol device is not a unique reserved volume of this VM.');
+    $dataset=(string)array_key_first($candidates);unmTransportDataset($dataset);
+    // XML may be uploaded before receive. If a device is already present, it
+    // must actually resolve to this reservation, not a colliding udev alias.
+    if(unmZvolPathNeedsIdentity($path)&&file_exists($path)&&unmZvolSourceDataset($path)!==$dataset)throw new RuntimeException('Zvol device resolves outside this VM reservation.');
+    $r=unmTransportOwned($peer,$dataset,'dataset');if(($r['vmUuid']??'')!==$uuid)throw new RuntimeException('Disk reservation belongs to another VM.');return $dataset;
+}
 function unmTransportValidateDomainXml(string $xml,string $uuid,?array $peer,?array $destinationCapabilities=null): void {
     unmTransportUuid($uuid);if(strlen($xml)>2097152)throw new RuntimeException('VM XML is too large.');
     $doc=new DOMDocument();if(!@$doc->loadXML($xml,LIBXML_NONET)||$doc->doctype||$doc->documentElement->nodeName!=='domain')throw new RuntimeException('Invalid VM XML.');
@@ -703,7 +714,9 @@ function unmTransportValidateDomainXml(string $xml,string $uuid,?array $peer,?ar
         if($disk->getAttribute('device')==='cdrom'){if(!in_array($format,['','raw'],true))throw new RuntimeException('CD-ROM images must use raw format.');}
         elseif(!in_array($format,['raw','qcow2'],true))throw new RuntimeException('Only explicit raw or qcow2 disk formats are accepted.');
         if($type==='block'){
-            if(!str_starts_with($path,'/dev/zvol/'))throw new RuntimeException('Only reserved ZFS volumes may be attached as block devices.');unmTransportDataset(substr($path,10));if($peer!==null){$r=unmTransportOwned($peer,substr($path,10),'dataset');if($r['vmUuid']!==$uuid)throw new RuntimeException('Disk reservation belongs to another VM.');}
+            if(!str_starts_with($path,'/dev/zvol/'))throw new RuntimeException('Only reserved ZFS volumes may be attached as block devices.');
+            if($peer!==null)unmTransportDomainZvol($peer,$path,$uuid);else unmTransportDataset(substr($path,10));
+            if($destinationCapabilities!==null&&unmZvolPathNeedsIdentity($path)&&($destinationCapabilities['zvolPathVersion']??0)!==1)throw new RuntimeException('Encoded Zvol paths require Beta7 or later support on both peers.');
         }else{
             if($path===''||!str_starts_with($path,'/mnt/')||preg_match('~[\x00-\x1f\x7f]|//|/(?:\.|\.\.)(?:/|$)~',$path))throw new RuntimeException('Invalid VM disk path.');
             if($peer!==null){

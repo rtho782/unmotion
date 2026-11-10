@@ -140,10 +140,10 @@ function unmResolutionDeleteManifest(string $dir,array $job,string $expected,str
     foreach($xp->query('/domain/devices/disk[@device="disk"]') as $disk){
         $type=$disk->getAttribute('type');$path=$xp->evaluate('string(./source/@'.($type==='file'?'file':'dev').')',$disk);
         if($type==='file')$files[]=$path;
-        elseif($type==='block'&&str_starts_with($path,'/dev/zvol/'))$zvols[]=substr($path,10);
+        elseif($type==='block'&&str_starts_with($path,'/dev/zvol/'))$zvols[]=unmZvolSourceDataset($path);
         else throw new RuntimeException('Cleanup disk is not a supported owned image or zvol.');
     }
-    $ownedPaths=array_map(static fn($p)=>realpath($p)?:$p,array_merge($files,array_map(static fn($p)=>'/dev/zvol/'.$p,$zvols)));
+    $ownedPaths=array_map(static fn($p)=>realpath($p)?:$p,array_merge($files,array_map(static fn($p)=>unmZvolDevicePath($p),$zvols)));
     $inventory=unmRun(['virsh','list','--all','--uuid'],null,30);
     if($inventory['code']!==0)throw new RuntimeException('VM inventory is unavailable for cleanup ownership checks.');
     foreach(preg_split('/\R/',trim($inventory['stdout'])) as $otherUuid){

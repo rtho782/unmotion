@@ -3,7 +3,9 @@
 // Copyright (C) 2026 Richard Skinner
 declare(strict_types=1);
 require_once __DIR__.'/live-firmware.php';
-function unmLiveNativeHelperHash(): string {return hash('sha256',hash_file('sha256',__FILE__).hash_file('sha256',__DIR__.'/live-firmware.php').hash_file('sha256',__DIR__.'/xml-canonical.php'));}
+require_once __DIR__.'/live-storage.php';
+require_once __DIR__.'/live-tpm.php';
+function unmLiveNativeHelperHash(): string {return hash('sha256',hash_file('sha256',__FILE__).hash_file('sha256',__DIR__.'/live-firmware.php').hash_file('sha256',__DIR__.'/live-storage.php').hash_file('sha256',__DIR__.'/live-tpm.php').hash_file('sha256',__DIR__.'/xml-canonical.php'));}
 // Standalone synchronous hook helper. Never invoke libvirt, SSH or a peer here.
 function unmLiveNativeRecord(string $base,string $uuid): ?array {
     $path=$base.'/live-authority/'.$uuid.'.json';$marker=$base.'/live-managed/'.$uuid.'.json';
@@ -23,11 +25,18 @@ function unmLiveNativeBinding(array $d,array $r): void {
         if($d['uuid']!==$r['vmUuid'])throw new RuntimeException('Ordinary ownership UUID changed.');
         return; // Non-owner states still reject every start, regardless of hardware or a renamed retained copy.
     }
-    if($d['name']!==($r['vmName']??'')||$d['uuid']!==$r['vmUuid']||$xp->query('/domain/devices/disk')->length!==1||$xp->query('/domain/devices/hostdev|/domain/devices/tpm|/domain/devices/filesystem')->length)throw new RuntimeException('Live-managed VM hardware binding changed.');
+    if($d['name']!==($r['vmName']??'')||$d['uuid']!==$r['vmUuid']||$xp->query('/domain/devices/hostdev|/domain/devices/filesystem')->length)throw new RuntimeException('Live-managed VM hardware binding changed.');
     $firmware=unmLiveFirmwareXml($xp,$d['uuid']);
     if(($r['firmware']??null)!==$firmware)throw new RuntimeException('Live-managed VM firmware binding changed.');
-    $disk=$xp->query('/domain/devices/disk')->item(0);
-    if($disk->getAttribute('type')!=='file'||$disk->getAttribute('device')!=='disk'||$xp->evaluate('string(source/@file)',$disk)!==$r['diskPath'])throw new RuntimeException('Live-managed VM disk binding changed.');
+    if(($r['tpm']??null)!==unmLiveTpmXml($xp,$d['uuid']))throw new RuntimeException('Live-managed VM TPM binding changed.');
+    if(isset($r['disks'])){
+        $actual=unmLiveDisksXml($xp);$expected=array_map('unmLiveDiskIdentity',unmLiveDisks($r));
+        if($actual!==$expected)throw new RuntimeException('Live-managed VM disk bindings changed.');
+    }else{
+        // Released one-disk authorities did not record format/target fields.
+        $disk=$xp->query('/domain/devices/disk')->item(0);
+        if($xp->query('/domain/devices/disk')->length!==1||!$disk||$disk->getAttribute('type')!=='file'||$disk->getAttribute('device')!=='disk'||$xp->evaluate('string(source/@file)',$disk)!==$r['diskPath'])throw new RuntimeException('Live-managed VM disk binding changed.');
+    }
 }
 function unmLiveNativeDecision(array $r,array $d,string $op,string $phase,?array $a,string $boot,int $now,?array $qemu=null): ?array {
     unmLiveNativeBinding($d,$r);

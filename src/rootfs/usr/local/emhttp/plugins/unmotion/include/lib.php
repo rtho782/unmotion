@@ -1,10 +1,11 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0-beta6';
+const UNM_VERSION = '0.5.0-beta7';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
+require_once __DIR__.'/zvol-path.php';
 require_once __DIR__.'/transport.php';
 require_once __DIR__.'/preflight-policy.php';
 require_once __DIR__.'/migration-concurrency.php';
@@ -23,6 +24,7 @@ require_once __DIR__.'/xml-canonical.php';
 require_once __DIR__.'/cpu-config.php';
 require_once __DIR__.'/cpu-default.php';
 require_once __DIR__.'/live-migration.php';
+require_once __DIR__.'/live-readiness.php';
 require_once __DIR__.'/live-ordinary.php';
 require_once __DIR__.'/cleanup-plan.php';
 require_once __DIR__.'/replication-retirement.php';
@@ -163,7 +165,7 @@ function unmInferStorageLocations(): array {
             foreach (($vm['disks'] ?? []) as $disk) {
                 $source = (string)($disk['source'] ?? '');
                 if (($disk['type'] ?? '') === 'zvol' && str_starts_with($source, '/dev/zvol/')) {
-                    $zvols[] = dirname(substr($source, strlen('/dev/zvol/')));
+                    $zvols[] = dirname(unmZvolSourceDataset($source));
                 } elseif (($disk['type'] ?? '') === 'file' && str_starts_with($source, '/mnt/')) {
                     $images[] = dirname($source);
                 }
@@ -603,8 +605,8 @@ function unmClassifyVmStorage(array $vm,bool $checkOtherVms=true,?array $display
     }
     foreach(($vm['disks']??[]) as $i=>$disk){
         if(($disk['type']??'')==='zvol'){
-            $dataset=substr((string)$disk['source'],strlen('/dev/zvol/'));
-            $vm['disks'][$i]+=['transferClass'=>'zvol','warmMove'=>'supported','readiness'=>'green','zfsDataset'=>$dataset,'dedicatedDataset'=>true,'storageReason'=>'ZFS volume; native replication available.'];
+            try{$dataset=unmZvolSourceDataset((string)$disk['source']);$vm['disks'][$i]+=['transferClass'=>'zvol','warmMove'=>'supported','readiness'=>'green','zfsDataset'=>$dataset,'dedicatedDataset'=>true,'storageReason'=>'ZFS volume; native replication available.'];}
+            catch(Throwable $e){$vm['disks'][$i]+=['transferClass'=>'unsupported-zvol','warmMove'=>'blocked','readiness'=>'red','dedicatedDataset'=>false,'storageReason'=>$e->getMessage()];}
         }elseif(($disk['type']??'')==='file'&&empty($disk['zfsDataset'])&&empty($disk['transferClass'])){
             $fuseUnresolved=!empty($disk['sourceViaFuse'])&&empty($disk['fuseResolution']['physicalPath']);
             $reason=$fuseUnresolved
@@ -848,7 +850,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>2,'liveOrdinaryVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>3,'liveOrdinaryVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -1023,8 +1025,7 @@ function unmParseVm(string $vmIdentifier,?array $displayObservation=null): array
         'guestAgent'=>unmGuestAgentStatus($ref,$state),
     ];
     if($liveXml!==''){
-        try{unmLiveInspectXml($liveXml);$vm['liveEligibility']=['available'=>true,'reason'=>'Local XML fits the supported live scope. Fresh CPU, peer, disk and ownership checks are still required.','displayOnly'=>true];}
-        catch(Throwable $e){$vm['liveEligibility']=['available'=>false,'reason'=>$e->getMessage(),'displayOnly'=>true];}
+        $blockers=unmLiveXmlBlockers($liveXml);$vm['liveEligibility']=['available'=>!$blockers,'reason'=>$blockers[0]['message']??'Local XML fits the live scope; fresh CPU, peer, disk and ownership checks are still required.','blockers'=>$blockers,'displayOnly'=>true];
     }
     return unmClassifyVmStorage($vm,true,$displayObservation['xmlIndex']??null);
 }
@@ -1144,10 +1145,10 @@ function unmClonePreflight(string $vmIdentifier,string $cloneName,array $options
         if($source===''||preg_match('/[\x00-\x1f\x7f]/',$source)){$errors[]='A disk has an unsafe or empty source path.';continue;}
         if($kind==='zvol'){
             $bytes=0;
-            $src=(string)($disk['zfsDataset']??substr($source,strlen('/dev/zvol/')));
+            $src=unmZvolSourceDataset($source);
             $base=rtrim((string)$cfg['zvol_dataset'],'/');if($base==='')$base=dirname($src);
             if(unmRun(['zfs','list','-H','-o','name',$base],null,10)['code']!==0)$errors[]='Clone zvol parent dataset is unavailable: '.$base;
-            $dst=$base.'/'.$stem.'-disk'.($i+1);$dstPath='/dev/zvol/'.$dst;
+            $dst=$base.'/'.$stem.'-disk'.($i+1);$dstPath=unmZvolDevicePath($dst);
             if(isset($usedDest[$dst])||unmRun(['zfs','list','-H','-o','name',$dst],null,10)['code']===0)$errors[]='Clone zvol destination already exists: '.$dst;
             $usedDest[$dst]=true;$referenced=unmRun(['zfs','get','-pH','-o','value','referenced',$src],null,10);
             if($referenced['code']!==0)$errors[]='Unable to inspect source zvol: '.$src;else{$bytes=(int)trim($referenced['stdout']);$required['zfs']+=$bytes;$pool=explode('/',$dst,2)[0];$poolRequired[$pool]=($poolRequired[$pool]??0)+$bytes;}
@@ -1783,6 +1784,19 @@ function unmReplicationDurableState(string $id): array {
     return unmLoadJson(unmReplicationPath($id).'/state.json');
 }
 
+/** Last authenticated destination observation, for display only. */
+function unmReplicationPointInventoryEvidence(array $reply): array {
+    $points=$reply['points']??$reply['manifest']['points']??null;
+    if(!is_array($points)||count($points)>10000)throw new RuntimeException('Missing destination point inventory.');$ids=[];
+    foreach($points as $point){$id=is_array($point)?($point['id']??null):null;if(!is_string($id)||$id===''||strlen($id)>128||isset($ids[$id]))throw new RuntimeException('Invalid destination point identity.');$ids[$id]=true;}
+    if(isset($reply['pointCount'])&&$reply['pointCount']!==count($points))throw new RuntimeException('Destination point count disagrees with its inventory.');
+    return ['pointCount'=>count($points),'observedAt'=>gmdate('c')];
+}
+/** The replication worker holds its policy lock while recording this reply. */
+function unmReplicationRememberPointInventory(string $id,array $reply): void {
+    unmReplicationPolicy($id);$state=unmReplicationDurableState($id);$state['pointInventory']=unmReplicationPointInventoryEvidence($reply);unmAtomicJson(unmReplicationPath($id).'/state.json',$state);
+}
+
 function unmReplicationActiveStates(): array {
     return ['QUEUED','STARTING','LOCKING','PREFLIGHT','PROBING_GUEST','QUIESCING','SNAPSHOTTING','THAWING','CAPTURING_HOST_STATE','TRANSFERRING','VERIFYING','PUBLISHING','COMMITTING','PRUNING'];
 }
@@ -1808,7 +1822,8 @@ function unmReplication(string $id): array {
     if($runtime&&unmReplicationStateIsActive($record['state'])&&!unmReplicationRuntimeWorkerAlive($id,$runtime))$record['state']=is_array($durable['pending']??null)?'INTERRUPTED':'FAILED';
     if(empty($policy['enabled'])&&!unmReplicationStateIsActive($record['state']))$record['state']='PAUSED';
     $record['status']=$record['state'];
-    $record['pointCount']=(int)($record['pointCount']??count((array)($record['recoveryPoints']??[])));
+    $record['pointCount']=(int)($durable['pointInventory']['pointCount']??$record['pointCount']??count((array)($record['recoveryPoints']??[])));
+    $record['pointCountObservedAt']=$durable['pointInventory']['observedAt']??null;
     $pending=is_array($durable['pending']??null);
     $generation=(int)($durable['generation']??0);
     $lastScheduledSlot=(int)($durable['lastScheduledSlot']??$durable['lastSuccessfulSlot']??0);
@@ -1820,7 +1835,7 @@ function unmReplication(string $id): array {
     $record['nextDueAt']=$nextDueEpoch===null?null:gmdate('c',$nextDueEpoch);
     $record['policy']=$policy;$record['durable']=$durable;$record['runtime']=$runtime;
     $retirement=unmRetirementDisplay($id,unmCleanupRead(unmRetirementPath($id)));
-    if($retirement){$record['retirement']=$retirement;$record['state']=$record['status']=$retirement['state'];$record['message']=$retirement['message']??'';$record['enabled']=false;$record['nextDueAt']=null;$record['nextDueEpoch']=null;}
+    if($retirement){$record['retirement']=$retirement;$record['state']=$record['status']=$retirement['state'];$record['message']=$retirement['message']??'';$record['enabled']=false;$record['nextDueAt']=null;$record['nextDueEpoch']=null;if($retirement['state']==='ENDED_DELETE'){$record['pointCount']=0;$record['pointCountObservedAt']=$retirement['updatedAt']??null;}}
     $identity=['replicationId'=>$id,'vmUuid'=>(string)$policy['vmUuid'],'sourceHostId'=>unmHostId(),'destinationHostId'=>(string)$policy['peerHostId']];
     $record['recovery']=unmRecoveryPublicRecord(unmRecoveryLoad(unmRecoverySourcePath($id),unmRecoveryDefaultRecord($identity,true)));
     return $record;
@@ -1865,7 +1880,8 @@ function unmReplicationZvolUsedByOtherVm(string $dataset,string $excludeUuid): b
     foreach(preg_split('/\R/',trim($r['stdout']))?:[] as $uuid){
         $uuid=trim($uuid);if($uuid===''||strcasecmp($uuid,$excludeUuid)===0)continue;
         try{$xml=unmDomainXml($uuid,true);}catch(Throwable $ignored){return true;}
-        if(preg_match('~<source\b[^>]*\bdev=(["\'])'.preg_quote('/dev/zvol/'.$dataset,'~').'\1~s',$xml))return true;
+        $doc=new DOMDocument();if(!@$doc->loadXML($xml,LIBXML_NONET)||$doc->doctype)return true;
+        foreach((new DOMXPath($doc))->query('/domain/devices/disk/source/@dev') as $node){$path=$node->value;if(in_array($path,unmZvolPathAliases($dataset),true))return true;$real=realpath(unmZvolDevicePath($dataset));if($real!==false&&realpath($path)===$real)return true;}
     }
     return false;
 }
@@ -1880,6 +1896,7 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
     $replicationId=unmReplicationId((string)$vm['uuid'],(string)$peer['hostId'],$incarnation);
     if(($cycle['id']??'')!==$replicationId)throw new RuntimeException('Replication preflight cycle changed VM/destination identity.');
     $errors=[];$warnings=[];$storage=[];$sourceDatasets=[];$short=substr(hash('sha256',unmHostId().'|'.(string)$vm['uuid'].'|'.(string)$peer['hostId'].($incarnation!==''?'|'.$replicationId:'')),0,16);
+    try{unmZvolAssertPeer($vm,$caps);}catch(Throwable $e){$errors[]=$e->getMessage();}
     if($incarnation!==''&&($caps['replicationIncarnationVersion']??0)!==1)$errors[]='Creating another replication cycle requires incarnation support on both hosts. Upgrade the destination to the current Beta6 build; retained replicas were not changed.';
     try { unmTransportValidateDomainXml(unmDomainXml((string)$vm['uuid'],true),(string)$vm['uuid'],null,$caps); }
     catch (Throwable $e) { $errors[]='Restricted VM transport: '.$e->getMessage(); }
@@ -1901,7 +1918,7 @@ function unmReplicationPreflight(string $vmIdentifier,string $peerId,array $opti
         $diskNumber++;
         $class=(string)($disk['transferClass']??'');
         if($class==='zvol'){
-            $source=substr((string)$disk['source'],strlen('/dev/zvol/'));
+            $source=unmZvolSourceDataset((string)$disk['source']);
             if(isset($sourceDatasets[$source])){$errors[]='The same source zvol is attached more than once and cannot form an unambiguous replication plan: '.$source.'.';continue;}
             if(!unmZfsObjectNameSafe($source)||unmRun(['zfs','list','-H','-t','volume',$source],null,15)['code']!==0){$errors[]='Source zvol is missing or unsafe: '.$source;continue;}
             if(unmReplicationZvolUsedByOtherVm($source,(string)($vm['uuid']??''))){$errors[]='Source zvol is referenced by another VM or its ownership could not be proven: '.$source.'.';continue;}
@@ -3391,7 +3408,7 @@ function unmRecoveryActivationPlan(array $manifest,array $point,string $activati
     $root=unmRecoveryExpectedActivationRoot($uuid,$activationId);$objects=[];$maps=[];$seen=[];
     foreach((array)($point['storage']??[]) as $index=>$pointItem){if(!is_array($pointItem))throw new RuntimeException('Recovery point storage metadata is invalid.');$destination=(string)($pointItem['destination']??'');$sourceSnapshot=$destination.'@'.(string)($pointItem['snapshot']??'');$kind=(string)($pointItem['kind']??'');$reservation=$byDestination[$destination]??null;
         if(!is_array($reservation)||!in_array($kind,['zvol','dataset'],true)||$kind!==(string)($reservation['kind']??'')||isset($seen[$destination])||!unmZfsObjectNameSafe($destination))throw new RuntimeException('Recovery point storage does not match its exact replica reservation.');$seen[$destination]=true;$target=unmRecoveryActivationObjectName($destination,$activationId,(int)$index);$mountpoint='';$objectMaps=[];
-        if($kind==='zvol'){$sourcePath='/dev/zvol/'.(string)$reservation['source'];$targetPath='/dev/zvol/'.$target;$maps[$sourcePath]=$targetPath;$objectMaps[$sourcePath]=$targetPath;}
+        if($kind==='zvol'){$sourcePath='/dev/zvol/'.(string)$reservation['source'];$targetPath=unmZvolDevicePath($target);$maps[$sourcePath]=$targetPath;$objectMaps[$sourcePath]=$targetPath;}
         else{$mountpoint=$root.'/disk'.($index+1);foreach((array)($reservation['files']??[]) as $file){if(!is_array($file))continue;$source=(string)($file['source']??'');$relative=ltrim((string)($file['relativePath']??''),'/');if($source===''||$relative===''||str_contains($relative,'..')||str_contains($relative,"\0"))throw new RuntimeException('Recovery dataset file mapping is unsafe.');$targetPath=$mountpoint.'/'.$relative;if(isset($maps[$source]))throw new RuntimeException('Recovery XML source path is mapped more than once.');$maps[$source]=$targetPath;$objectMaps[$source]=$targetPath;}}
         $objects[]=['kind'=>$kind,'replicaDataset'=>$destination,'sourceSnapshot'=>$sourceSnapshot,'sourceGuid'=>(string)($pointItem['guid']??''),'dataset'=>$target,'mountpoint'=>$mountpoint,'mappings'=>$objectMaps];
     }
@@ -3431,7 +3448,7 @@ function unmRecoveryTransformDomainXml(string $xml,array $diskMaps,bool $stripPi
         $block=$match[0];$device=preg_match('~\bdevice=(["\'])([^"\']+)\1~i',$match[1],$dm)?strtolower($dm[2]):'';
         if($device==='cdrom')return (string)preg_replace('~\s*<source\b[^>]*/>~si','',$block);
         if($device!=='disk')return $block;if(!preg_match('~<source\b([^>]*)/>~si',$block,$sourceMatch))throw new RuntimeException('A recovery disk has no local source path.');
-        if(!preg_match('~\b(file|dev)=(["\'])([^"\']+)\2~i',$sourceMatch[1],$pathMatch))throw new RuntimeException('Network and unsupported disk sources cannot be activated by recovery.');$original=html_entity_decode($pathMatch[3],ENT_QUOTES|ENT_XML1);if(!array_key_exists($original,$diskMaps))throw new RuntimeException('Recovery XML disk source is not covered by the activation plan: '.$original);$replacement=(string)$diskMaps[$original];$used[$original]=true;$escaped=htmlspecialchars($replacement,ENT_QUOTES|ENT_XML1);
+        if(!preg_match('~\b(file|dev)=(["\'])([^"\']+)\2~i',$sourceMatch[1],$pathMatch))throw new RuntimeException('Network and unsupported disk sources cannot be activated by recovery.');$original=html_entity_decode($pathMatch[3],ENT_QUOTES|ENT_XML1);$key=str_starts_with($original,'/dev/zvol/')?unmZvolMappingKey($original,$diskMaps):$original;if(!array_key_exists($key,$diskMaps)||isset($used[$key]))throw new RuntimeException('Recovery XML disk source is not covered exactly once by the activation plan: '.$original);$replacement=(string)$diskMaps[$key];$used[$key]=true;$escaped=htmlspecialchars($replacement,ENT_QUOTES|ENT_XML1);
         $newSource=preg_replace('~\b'.preg_quote($pathMatch[1],'~').'=(["\'])[^"\']+\1~i',$pathMatch[1].'='.$pathMatch[2].$escaped.$pathMatch[2],$sourceMatch[0],1);return str_replace($sourceMatch[0],(string)$newSource,$block);
     },$xml);
     if(!is_string($xml)||count($used)!==count($diskMaps))throw new RuntimeException('Recovery XML does not reference every activation disk mapping exactly once.');
@@ -3664,7 +3681,7 @@ function unmVmReplicationSources(array $vm): array {
     foreach(($vm['disks']??[]) as $disk){
         $type=(string)($disk['type']??'');
         $class=(string)($disk['transferClass']??'');
-        if($type==='zvol') $source=substr((string)($disk['source']??''),strlen('/dev/zvol/'));
+        if($type==='zvol') $source=unmZvolSourceDataset((string)($disk['source']??''));
         elseif($class==='zfs-dataset-image') $source=(string)($disk['zfsDataset']??'');
         elseif($type==='file') $source=(string)($disk['source']??'');
         else $source='';
@@ -4022,7 +4039,7 @@ function unmPrepareDestinationOverwrite(array $request): array {
         foreach ((array)($staleVm['disks'] ?? []) as $disk) {
             $source = (string)($disk['source'] ?? '');
             $kind = (string)($disk['type'] ?? '');
-            if ($kind === 'zvol' && str_starts_with($source, '/dev/zvol/')) $items[] = ['kind'=>'zvol','path'=>substr($source, strlen('/dev/zvol/')),'authorisedByVm'=>true];
+            if ($kind === 'zvol' && str_starts_with($source, '/dev/zvol/')) $items[] = ['kind'=>'zvol','path'=>unmZvolSourceDataset($source),'authorisedByVm'=>true];
             elseif ($kind === 'file' && str_starts_with($source, '/mnt/')) {
                 if (($disk['transferClass']??'')==='zfs-dataset-image' && !empty($disk['zfsDataset'])) $items[]=['kind'=>'dataset','path'=>$disk['zfsDataset'],'authorisedByVm'=>true];
                 else $items[] = ['kind'=>'image','path'=>$source,'authorisedByVm'=>true];
@@ -4279,6 +4296,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
         }
     }
     if($migrationMode==='cold'&&strtolower(trim((string)($local['state']??'')))!=='shut off') $errors[]='Power off the VM before a cold migration.';
+    try{unmZvolAssertPeer($local,$caps);}catch(Throwable $e){$errors[]=$e->getMessage();}
     if(!empty($local['pci'])) $errors[]='PCIe passthrough is present and is not supported for migration.';
     foreach(($local['disks']??[]) as $disk)if(($disk['transferClass']??'')==='unsupported-backing-chain'){
         $detail=(string)($disk['backingInfo']['error']??'');
@@ -4382,7 +4400,7 @@ function unmPreflight(string $vmIdentifier,string $peerId,array $options=[]): ar
 
     foreach($local['disks'] as $disk) {
         if($disk['type']==='zvol') {
-            $src=substr($disk['source'],strlen('/dev/zvol/'));
+            $src=unmZvolSourceDataset((string)$disk['source']);
             $enc=unmRun(['zfs','get','-H','-o','value','encryption',$src],null,15);
             if($enc['code']===0&&trim($enc['stdout'])!=='off') $errors[]='Native ZFS encryption is not supported for zvol replication: '.$src;
             $rr=unmRun(['zfs','get','-pH','-o','value','referenced',$src],null,15);

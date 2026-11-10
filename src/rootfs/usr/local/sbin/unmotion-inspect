@@ -16,7 +16,7 @@ if(preg_match_all('~<disk\b[^>]*>.*?</disk>~s',$xml,$blocks))foreach($blocks[0] 
     if($device==='cdrom'){$out['isos'][]=$source;continue;}
     if($device!=='disk')continue;
     $format=preg_match('~<driver\b[^>]*\btype=(["\'])(.*?)\1~s',$block,$fm)?strtolower($fm[2]):'';
-    if($kind==='block'&&str_starts_with($source,'/dev/zvol/')){$out['zvols'][]=substr($source,strlen('/dev/zvol/'));$disks[]=['type'=>'zvol','source'=>$source,'format'=>$format];}
+    if($kind==='block'&&str_starts_with($source,'/dev/zvol/')){$out['zvols'][]=unmZvolSourceDataset($source);$disks[]=['type'=>'zvol','source'=>$source,'format'=>$format];}
     elseif($kind==='file'){$out['files'][]=$source;$disks[]=['type'=>'file','source'=>$source,'format'=>$format];}
 }
 $vm=unmClassifyVmStorage(['name'=>$out['name'],'uuid'=>$out['uuid'],'disks'=>$disks,'pci'=>[],'nvram'=>unmMigrationNvramXml($xml)],true);
