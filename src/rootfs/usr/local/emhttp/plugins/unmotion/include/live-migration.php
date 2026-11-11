@@ -25,6 +25,9 @@ function unmLivePrivateDir(string $dir): void {
     @chmod($dir,0700);if(fileowner($dir)!==0)throw new RuntimeException('Live migration directory is not root-owned.');
 }
 require_once __DIR__.'/live-engine.php';
+require_once __DIR__.'/live-zvol.php';
+require_once __DIR__.'/live-progress.php';
+require_once __DIR__.'/live-unreserved.php';
 function unmLiveStoreJob(array $job): void {unmLiveId($job['id']);unmLivePrivateDir(dirname(unmLiveJobPath($job['id'])));unmAtomicJson(unmLiveJobPath($job['id']),$job);}
 function unmLivePeerForJob(array $job): array {
     $host=$job[$job['role']==='source'?'destinationHostId':'sourceHostId'];$matches=array_values(array_filter(unmPeers(),static fn($p)=>($p['pairingState']??'')==='paired'&&($p['hostId']??'')===$host));

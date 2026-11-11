@@ -27,7 +27,7 @@ function unmLiveXmlBlockers(string $xml): array {
 }
 function unmLivePreviewPublic(array $pre): array {
     $s=$pre['spec'];$disks=unmLiveDisks($s);
-    return ['vmUuid'=>$pre['vmUuid'],'vmName'=>$pre['vmName'],'peerId'=>$pre['peerId'],'machine'=>$s['machine'],'memoryMiB'=>$s['memoryKiB']/1024,'vcpus'=>$s['vcpus'],'diskGiB'=>round(unmLiveDiskTotal($disks)/1073741824,2),'diskCount'=>count($disks),'format'=>implode('/',array_unique(array_column($disks,'format'))),'disks'=>array_map(static fn($disk)=>['target'=>$disk['target'],'format'=>$disk['format'],'sizeGiB'=>round($disk['bytes']/1073741824,2)],$disks),'tpm'=>$s['tpm']===null?'none':'Software TPM 2.0','warnings'=>$pre['warnings']];
+    return ['vmUuid'=>$pre['vmUuid'],'vmName'=>$pre['vmName'],'peerId'=>$pre['peerId'],'machine'=>$s['machine'],'memoryMiB'=>$s['memoryKiB']/1024,'vcpus'=>$s['vcpus'],'diskGiB'=>round(unmLiveDiskTotal($disks)/1073741824,2),'diskCount'=>count($disks),'format'=>implode('/',array_unique(array_column($disks,'format'))),'disks'=>array_map(static fn($disk)=>['target'=>$disk['target'],'kind'=>$disk['type']??'file','format'=>$disk['format'],'sizeGiB'=>round($disk['bytes']/1073741824,2)],$disks),'capacity'=>$pre['capacity']??null,'tpm'=>$s['tpm']===null?'none':'Software TPM 2.0','warnings'=>$pre['warnings']];
 }
 function unmLiveReadiness(string $uuid,string $peerId): array {
     $uuid=unmTransportUuid($uuid);$blockers=[];$add=static function(string $code,string $message)use(&$blockers){if(!in_array($message,array_column($blockers,'message'),true))$blockers[]=['code'=>$code,'message'=>$message];};
@@ -36,7 +36,7 @@ function unmLiveReadiness(string $uuid,string $peerId): array {
     try{
         $peer=unmPeer($peerId);if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed reciprocal pairing is required.');unmAssertRemotePeerHost($peer['host']);
         $r=unmRemote($peer,'/usr/local/sbin/unmotion-agent capabilities',20);$caps=$r['code']===0?json_decode($r['stdout'],true):null;
-        if(($caps['hostId']??'')!==$peer['hostId']||($caps['pluginVersion']??'')!==UNM_VERSION||($caps['liveMigrationVersion']??null)!==3)throw new RuntimeException('Update both peers to matching '.UNM_VERSION.' for this live-migration contract. Ordinary protocol-7 Cold/Warm Move compatibility is unchanged.');
+        unmLiveAssertVersion(is_array($caps)?$caps:[],$peer['hostId'],true);
     }catch(Throwable $e){$add('peer',$e->getMessage());}
     $preview=null;
     if(!$blockers)try{$preview=unmLivePreviewPublic(unmLivePreview($uuid,$peerId));}catch(Throwable $e){$add('fresh-preflight',$e->getMessage());}

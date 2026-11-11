@@ -1,0 +1,7 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+if(posix_geteuid()!==0)exit(1);
+unmLiveZvolRefreshAll();

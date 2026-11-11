@@ -4,8 +4,9 @@
 declare(strict_types=1);
 require_once __DIR__.'/live-firmware.php';
 require_once __DIR__.'/live-storage.php';
+require_once __DIR__.'/live-zvol-native.php';
 require_once __DIR__.'/live-tpm.php';
-function unmLiveNativeHelperHash(): string {return hash('sha256',hash_file('sha256',__FILE__).hash_file('sha256',__DIR__.'/live-firmware.php').hash_file('sha256',__DIR__.'/live-storage.php').hash_file('sha256',__DIR__.'/live-tpm.php').hash_file('sha256',__DIR__.'/xml-canonical.php'));}
+function unmLiveNativeHelperHash(): string {return hash('sha256',hash_file('sha256',__FILE__).hash_file('sha256',__DIR__.'/live-firmware.php').hash_file('sha256',__DIR__.'/live-storage.php').hash_file('sha256',__DIR__.'/live-zvol-native.php').hash_file('sha256',__DIR__.'/live-tpm.php').hash_file('sha256',__DIR__.'/xml-canonical.php'));}
 // Standalone synchronous hook helper. Never invoke libvirt, SSH or a peer here.
 function unmLiveNativeRecord(string $base,string $uuid): ?array {
     $path=$base.'/live-authority/'.$uuid.'.json';$marker=$base.'/live-managed/'.$uuid.'.json';
@@ -76,6 +77,7 @@ function unmLiveNativeFence(array $d,string $op,string $phase,string $base,strin
         $path=$run.'/live-admissions/'.$d['uuid'].'.json';$a=is_file($path)?unmNativeJson($path):null;$qemu=null;
         if(in_array($op,['started','reconnect'],true))$qemu=unmNativeQemu($d['uuid'],$d['name']);
         if($op!=='release'&&is_file(dirname($run).'/shutdown-fence'))throw new RuntimeException('The host shutdown fence is active.');
+        if($op!=='release'&&isset($r['disks']))unmLiveZvolNativeCheck($r,$boot,'/run/unmotion/live-zvol/'.$d['uuid'].'.json');
         $next=unmLiveNativeDecision($r,$d,$op,$phase,$a,$boot,time(),$qemu);
         if($next===null){if(is_file($path)&&!unlink($path))throw new RuntimeException('Cannot clear live admission.');}
         else unmNativeWrite($path,$next);

@@ -73,17 +73,23 @@ Defer zvol/multiple-disk live migration, HTTPS transport and recovery arming aft
 
 ## Live migration follow-up
 
+### Beta8 development scope
+
+Implemented, lab-qualified and **published as 0.5.0-beta8 on the opt-in beta feed** on 2026-11-11: native live zvol-to-zvol migration, mixed file/zvol guests, conservative pooled destination capacity/reservation and separate disk/RAM progress. No on-the-fly conversion, shared storage, automatic cleanup, HTTPS transport or new HA authority is introduced. The native hook must not invoke libvirt, ZFS or a peer: fresh runtime ZFS GUID checks are tied to boot and kernel device sequence before starts are admitted. Destination zvols reserve full capacity and retain the configured dedup policy. Existing file-only authorities remain readable; live capability 4 requires matching Beta8, while wire protocol 7 and ordinary workflow gates remain unchanged. See [qualification results and limits](BETA8-QUALIFICATION.md).
+
+Qualification used snapshotted DEV01/DEV02, live write/canary integrity in both directions, source-retirement/destination-owner proof, protected Windows/BitLocker cold boots, cancellation/link failure, capacity/readonly/missing/replaced-volume/foreign-reference denial, native starts and the full isolated regression suite. Nine interrupted-reservation cases passed. DEV02's kernel hang required an outer-VM restart; persistence passed afterward, but graceful host shutdown was not qualified. Stable remains 0.4.9.
+
 ### Beta7 development scope
 
 Accepted, lab-qualified and **published as 0.5.0-beta7 on the opt-in beta feed** on 2026-11-10. Native software-TPM 2.0 live migration, multiple independent raw/qcow2 file disks, empty CD-ROM drives, independent structural readiness blockers, and source replica-count/encoded-zvol-path fixes are included. See [qualification results and limits](BETA7-QUALIFICATION.md), including Windows/BitLocker acceptance and the corrected long-transfer idle-channel defect. Stable remains 0.4.9.
 
 Require independent destination TPM reservations, matching swtpm/libtpms evidence, exact disk/TPM start-fence bindings and authenticated paused-receiver handover. Do not introduce shared storage or copy a running emulator's files. Preserve older source/partial state and all existing authority/reconciliation rules. Qualification must include bidirectional moves and destination full stop/start with TPM identity/sealed-secret checks; Windows/BitLocker is an explicit acceptance target, not implied by an Ubuntu pass. Test multiple mixed-format disks, duplicate/foreign/changed disks, empty versus populated CD-ROMs, mixed-peer rejection, cancellation/interruption and current legacy regressions on snapshotted DEV01/DEV02.
 
-Live zvol storage, shared storage/Ceph, AMD nested live migration, passthrough, automatic failover, live-leftover reclamation and recovery arming after hand-back remain separate work. Changing a CPU/XML profile still requires a full stop/start before it is active.
+Live zvol storage is included in Beta8. Shared storage/Ceph, AMD nested live migration, passthrough, automatic failover, live-leftover reclamation and recovery arming after hand-back remain separate work. Changing a CPU/XML profile still requires a full stop/start before it is active.
 
-The current beta retains Beta5's pinned new-VM CPU default/native editor integration, UEFI without TPM, powered-off ordinary hand-back, readiness/progress and browser-session handling. See the [qualification record](TESTING-LIVE-BETA5.md).
+The current beta retains Beta5's pinned new-VM CPU default/native editor integration, UEFI, powered-off ordinary hand-back, readiness/progress and browser-session handling. Software TPM support is qualified in Beta7/Beta8; the earlier [Beta5 qualification record](TESTING-LIVE-BETA5.md) covered UEFI without TPM.
 
-Later work includes live zvol storage and a reviewed ownership handover from formerly live-managed VMs to coordinated recovery. Replication-only configuration after hand-back does not yet allow recovery arming. Beta7's TPM/multiple-file-disk support does not imply AMD nested live migration, passthrough or automatic failover.
+Later work includes a reviewed ownership handover from formerly live-managed VMs to coordinated recovery. Replication-only configuration after hand-back does not yet allow recovery arming. Beta8's zvol/TPM/multiple-disk support does not imply AMD nested live migration, passthrough or automatic failover.
 
 Beta5 separates provisional online file-seed verification from the mandatory powered-off final transfer. It checks the received length against rsync's file list, tolerates subsequent guest disk growth, and forces the final mutable-image delta even when file size/timestamps match. A provisional copy is not a bootable recovery point.
 

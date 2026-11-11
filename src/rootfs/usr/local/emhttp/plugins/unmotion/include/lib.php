@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0-beta7';
+const UNM_VERSION = '0.5.0-beta8';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -850,7 +850,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>3,'liveOrdinaryVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveOrdinaryVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }

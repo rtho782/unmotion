@@ -462,6 +462,7 @@ if [[ "$MODE" == --daemon ]]; then
   rm -f -- "$EVENT_FIFO"; mkfifo -m 0600 "$EVENT_FIFO"; exec 7<>"$EVENT_FIFO"; start_event_listener
 fi
 while :; do
+  /usr/local/sbin/unmotion-live-storage-refresh || true
   /usr/local/sbin/unmotion-native-fence ensure || true
   native_now="$(date +%s)"
   if ((native_now>=${NATIVE_PROBE_RETRY_AT:-0})); then

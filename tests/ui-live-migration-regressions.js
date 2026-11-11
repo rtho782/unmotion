@@ -14,7 +14,7 @@ function $(key){
     html(v){if(v===undefined)return this.content;this.content=v;return this;},
     show(){this.hidden=false;return this;},hide(){this.hidden=true;return this;},
     addClass(v){this.classes.add(v);return this;},removeClass(v){this.classes.delete(v);return this;},
-    empty(){this.content='';return this;},append(v){this.content=v.content;return this;}});
+    empty(){this.content='';return this;},append(v){this.content+=typeof v==='string'?v:v.content;return this;}});
   return elements.get(key);
 }
 $.extend=Object.assign;
@@ -22,7 +22,7 @@ $.ajax=function(options){const r={options,readyState:1,done(f){this.success=f;re
   abort(){this.aborted=true;this.readyState=4;if(this.failure)this.failure({},'abort');if(this.finished)this.finished();},
   resolve(v){this.readyState=4;if(this.success)this.success(v);if(this.finished)this.finished();},reject(v){this.readyState=4;if(this.failure)this.failure(v,'error');if(this.finished)this.finished();}};requests.push(r);return r;};
 const context={jQuery:$,document:{hidden:false},window:{getSelection(){return null;}}};vm.createContext(context);
-vm.runInContext(source.replace('  $(function(){','  globalThis.testLive={preview,close,readLog,refreshLog,reviewHandback,esc};\n  $(function(){'),context);
+vm.runInContext(source.replace('  $(function(){','  globalThis.testLive={preview,close,readLog,refreshLog,reviewHandback,esc,capacityHtml,transferText};\n  $(function(){'),context);
 const api=context.testLive,button={attrs:{'data-vm-id':'vm1','data-vm-name':'Squid Proxy'},attr(k){return this.attrs[k];}};
 $('#unm-peer-select').val('dev2');api.preview(button);
 assert.match($('#unm-live-content').content,/Checking the running CPU/);assert.equal($('#unm-live-start').props.disabled,true);assert.equal(requests.length,1);
@@ -39,4 +39,7 @@ api.close();requests.at(-1).resolve({success:true,review:'late',vmName:'Late VM'
 api.reviewHandback('live-b');requests.at(-1).resolve({success:true,review:'a'.repeat(64),vmName:'Squid Proxy <script>'});assert.equal($('#unm-live-start').props.disabled,false);assert.match($('#unm-live-content').content,/replication-only/);assert.match($('#unm-live-content').content,/Recovery arming remains unavailable/);assert.match($('#unm-live-content').content,/old copy stays fenced/);
 const nextReadiness=requests.length;api.preview(button);requests[nextReadiness].resolve({success:true,ready:false,blockers:[{message:'CPU not active'},{message:'<TPM incompatible>'}],alternative:'Cold/Warm Move has separate checks.',observedAt:'2026-11-10T00:00:00Z'});
 assert.equal($('#unm-live-start').props.disabled,true);assert.match($('#unm-live-content').content,/CPU not active/);assert.match($('#unm-live-content').content,/&lt;TPM incompatible&gt;/);assert.match($('#unm-live-content').content,/Recheck readiness/);
+assert.match(api.capacityHtml({capacity:{groups:[{group:'<pool>',requiredBytes:1073741824,availableBytes:4294967296,headroomBytes:858993460}]},disks:[{target:'vda',kind:'zvol',sizeGiB:1}]}),/&lt;pool&gt;: 1.00 GiB budget/);
+assert.match(api.transferText({phase:'RAM_CONVERGENCE',memory:{remainingBytes:1048576,totalBytes:1073741824},ramIteration:3}),/RAM CONVERGENCE.*RAM:.*RAM pass 3/);
+assert.doesNotMatch(api.transferText({phase:'DISK_COPY',disk:{processedBytes:99999,totalBytes:100,remainingBytes:1}}),/%|ETA/);
 console.log('Live/hand-back UI immediate review, readiness blockers, disabled submission, POST, scope, errors, escaping, cancellation and late response isolation passed.');

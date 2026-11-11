@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0-beta8 — 2026-11-11
+
+- Extend native live migration to whole raw ZFS volumes and mixed file/zvol guests. Zvols stay block-backed in the configured destination parent, with independent job-owned volumes and full reservations; there is no live format conversion or ZFS-send shortcut.
+- Bind fresh ZFS GUID/geometry checks to kernel block-device lifetime proofs. Native start hooks remain local and command-free; boot/import/replacement requires fresh asynchronous local verification.
+- Budget file and zvol capacity together when they share a destination pool, including allocation overhead, quota-limited availability and 20% free-space headroom. Preserve destination dedup policy and journal provisioning intent before creating storage. Retain source/partial copies.
+- Show separate disk-copy and RAM pre-copy/convergence statistics. Retransmitted/remaining bytes are observations, not a combined completion percentage, guaranteed transfer size or ETA.
+- Reconcile live attempts rejected before a receiver job was recorded, including targets retaining an old non-owner record. Require authenticated callback/VM absence proof, persist a non-startable cancellation record, retain any partial data and never boot a stopped source automatically.
+- Keep wire protocol 7; live capability 4 requires matching Beta8 peers. DEV01/DEV02 qualification is complete with the scope and limits recorded in `docs/BETA8-QUALIFICATION.md`. Published as an opt-in prerelease using the qualified artifacts and fixed installer ID `2026.11.10.02`; stable and Community Apps remain 0.4.9.
+
 ## 0.5.0-beta7 — 2026-11-10
 
 - Keep an admitted disk's live-transfer channel available while other disks or RAM are copying. Bound its total lifetime to the 30-minute worker limit plus two minutes of completion/rollback grace, rather than disconnecting a legitimately idle small disk after five minutes. Fresh authority checks and cancellation remain mandatory.
