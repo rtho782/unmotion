@@ -2,19 +2,21 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.11.10.01-0.5.0-beta7">
+<!ENTITY version "2026.11.10.02-0.5.0-beta8">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta7-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_beta8-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
 <CHANGES>
-### unMotion 0.5.0-beta7
+### unMotion 0.5.0-beta8
 - Experimental native software-TPM 2.0 live migration with fresh matching swtpm/libtpms checks, independent job/UUID-scoped destination state, exact native start fencing and retained source/partial state. No shared storage is required. Encrypted/custom-profile TPM backends remain excluded.
-- Live migration supports one to sixteen independent raw/qcow2 file disks and empty read-only file CD-ROM drives. Reserve every disk, validate aggregate capacity and require every exact target once in the restricted migration RPC; zvol/block disks and attached ISOs remain excluded from live moves.
+- Live migration supports one to sixteen independent raw/qcow2 file disks or whole raw ZFS volumes, including mixed guests. Zvols remain zvols, with independent job-owned destinations and full reservations; unrelated block devices and attached ISOs remain excluded.
+- Fresh ZFS GUID/geometry and kernel device-lifetime checks protect zvol ownership. Capacity checks combine file/zvol budgets on shared destination pools, include allocation overhead and 20% free-space headroom, and preserve the destination dedup policy.
+- Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
-- Preserve protocol 7. Live capability 3 requires matching Beta7 peers; ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve protocol 7. Live capability 4 requires matching Beta8 peers; ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
 - Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
 - Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
@@ -306,8 +308,8 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta7/unmotion-0.5.0_beta7-noarch-1.txz</URL>
-<SHA256>8eceb269e6fcef073a62d9b0b4f53f77b57078b2ec764b1423392d4bd83b2b85</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0-beta8/unmotion-0.5.0_beta8-noarch-1.txz</URL>
+<SHA256>f6a1647e6b75717aefa2885c3fa1ced16c81adb76b64b4411d820aa156f6e52e</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
