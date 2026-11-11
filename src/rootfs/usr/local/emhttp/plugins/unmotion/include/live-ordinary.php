@@ -26,6 +26,7 @@ function unmLiveRecordReplace(array $r,?array $expected): void {
 }
 function unmLiveHandbackReview(string $id): array {
     $j=unmLiveJob($id);$r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);$peer=unmLivePeerForJob($j);unmLiveFenceProof();
+    unmLiveCleanupInterlock($j['vmUuid']);
     if(($r['jobId']??'')!==$id||!in_array($j['state'],['COMPLETE','FAILED','CANCELLED'],true)||!($r['state']==='OWNER'||$r['state']==='MOVING'&&($r['workflow']??'')==='ordinary-pending'))throw new RuntimeException('Only a settled local owner can return to ordinary workflows.');
     $vm=unmLiveVmState($j['vmUuid']);if($vm['state']!=='shut off'||!$vm['qemuAbsent'])throw new RuntimeException('Fully power off the owner before returning to ordinary workflows.');
     $xml=unmLiveCommand(['virsh','dumpxml',$j['vmUuid'],'--inactive','--security-info']);unmLiveNativeBinding(unmNativeDomain($xml),$r);

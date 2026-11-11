@@ -84,6 +84,7 @@ function unmLiveNativeFence(array $d,string $op,string $phase,string $base,strin
     }finally{flock($lock,LOCK_UN);fclose($lock);}
 }
 function unmLiveNativeAssertRemovable(string $base): void {
+    foreach(glob($base.'/live-migration/jobs/*/cleanup.json')?:[] as $path){$c=json_decode((string)@file_get_contents($path),true);if(is_link($path)||!is_array($c)||($c['schemaVersion']??null)!==1||($c['state']??'')!=='COMPLETE')throw new RuntimeException('Finish or retry retained live-copy cleanup before uninstalling; its receipts and fences must be preserved.');}
     $paths=array_unique(array_merge(glob($base.'/live-managed/*.json')?:[],glob($base.'/live-authority/*.json')?:[]));
     foreach($paths as $path){
         $uuid=basename($path,'.json');if(!preg_match('/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D',$uuid))throw new RuntimeException('Invalid live fencing identity prevents removal.');$r=unmLiveNativeRecord($base,$uuid);

@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.0-beta8}"
+EXPECTED_VERSION="${1:-0.5.0-beta9}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -50,6 +50,10 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/live-preflight-regressions.php"
   php "$ROOT/tests/live-beta7-regressions.php"
   php "$ROOT/tests/live-beta8-regressions.php"
+  php "$ROOT/tests/live-cleanup-regressions.php"
+  php "$ROOT/tests/live-cleanup-journal-regressions.php"
+  php "$ROOT/tests/live-cleanup-rpc-regressions.php"
+  php "$ROOT/tests/live-completion-regressions.php"
   php "$ROOT/tests/zvol-path-regressions.php"
   php "$ROOT/tests/live-record-regressions.php"
   php "$ROOT/tests/live-worker-regressions.php"

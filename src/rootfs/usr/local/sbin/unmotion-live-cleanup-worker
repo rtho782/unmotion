@@ -1,0 +1,8 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{if(posix_geteuid()!==0)throw new RuntimeException('Root is required.');umask(0077);putenv('LC_ALL=C');putenv('LANG=C');unmLiveCleanupRun(unmLiveId($argv[1]??''));}
+catch(Throwable $e){fwrite(STDERR,$e->getMessage()."\n");exit(1);}

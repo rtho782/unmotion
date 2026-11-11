@@ -55,7 +55,7 @@ function unmLiveStoragePlan(array $sourceDisks,?string $id=null,?array $config=n
     if(!in_array($cfg['dedup'],['off','on','verify'],true))throw new RuntimeException('Invalid destination dedup policy.');
     return ['disks'=>$dest,'groups'=>$groups,'imageDirectory'=>$root,'zvolParent'=>$parent,'zvolPolicy'=>'Full reservation; no thin overcommit','dedup'=>$cfg['dedup'],'retention'=>'Source and partial copies are retained; their space is not reclaimed automatically.'];
 }
-function unmLiveStorageProvision(array $plan): array {
+function unmLiveStorageProvision(array $plan,?callable $created=null): array {
     $out=[];foreach($plan['disks'] as $d){if(($d['type']??'')==='zvol'){
         $dataset=$d['plannedDataset'];if(unmRun(['zfs','list','-H','-o','name',$dataset],null,10)['code']===0||file_exists($d['path'])||is_link($d['path']))throw new RuntimeException('Destination zvol already exists.');
         // Non-sparse -V computes a full reservation. Explicit '=auto' during
@@ -64,7 +64,7 @@ function unmLiveStorageProvision(array $plan): array {
         $until=microtime(true)+5;do{clearstatcache(true,$d['path']);if(file_exists($d['path']))break;usleep(100000);}while(microtime(true)<$until);
         $d['volume']=unmLiveZvolInspect($d['path']);if($d['volume']['dataset']!==$dataset||$d['volume']['volsize']!==$d['bytes'])throw new RuntimeException('Provisioned volume geometry changed.');unset($d['plannedDataset'],$d['volblocksize']);
         $reservation=trim(unmLiveCommand(['zfs','get','-Hp','-o','value','refreservation',$dataset]));if(!ctype_digit($reservation)||(float)$reservation<$d['reservationBytes'])throw new RuntimeException('Destination zvol is not fully reserved.');unset($d['reservationBytes']);
-    }else{unmLivePrivateDir(dirname($d['path']));if(file_exists($d['path'])||is_link($d['path']))throw new RuntimeException('Destination image already exists.');unmLiveCommand(['qemu-img','create','-f',$d['format'],$d['path'],(string)$d['bytes']]);}$out[]=$d;}return $out;
+    }else{unmLivePrivateDir(dirname($d['path']));if(file_exists($d['path'])||is_link($d['path']))throw new RuntimeException('Destination image already exists.');unmLiveCommand(['qemu-img','create','-f',$d['format'],$d['path'],(string)$d['bytes']]);}if($created!==null)$created($d);$out[]=$d;}return $out;
 }
 function unmLiveReservationEstimate(string $dryRun,int $minimum): int {
     $values=[];foreach(explode("\n",trim($dryRun)) as $line){$p=explode("\t",$line);if(($p[0]??'')==='property'&&($p[1]??'')==='refreservation')$values[]=$p[2]??'';}

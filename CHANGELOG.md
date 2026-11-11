@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0-beta9 — 2026-11-11
+
+- Add explicit review/cleanup of proven inactive live-migration copies, with paired owner callbacks and short ownership-change leases, per-object identity/reference checks, write-before-delete intents and retryable receipts. Preserve current-owner data, native start fences and job history. Recorded legacy zvol GUIDs can prove individual volumes; unrecorded file/TPM/NVRAM identities remain protected.
+- Record successful, non-cancelled native libvirt finish as a durable receipt bound to the domain, storage/XML contract, host boot and receiver QEMU lifetime. Require it before committing an uncommitted receiver; paused state alone is not completion proof.
+- Bind newly admitted ZFS file-cleanup identities to the filesystem dataset GUID and inode, preserving exact identity across import-order device renumbering without adopting older unproven paths.
+- Correct the installed plugin description for the live-migration beta and add the GitHub support link to PLG metadata.
+- Keep wire protocol 7 and live ABI capability 4 with matching Beta9 builds; inactive-copy cleanup adds optional `liveCleanupVersion: 1`. Published as an opt-in prerelease using the exact qualified candidate-3 artifacts and fixed installer ID `2026.11.11.01`; stable/Community Apps remain 0.4.9. See `docs/BETA9-QUALIFICATION.md` for completed checks and limits.
+
 ## 0.5.0-beta8 — 2026-11-11
 
 - Extend native live migration to whole raw ZFS volumes and mixed file/zvol guests. Zvols stay block-backed in the configured destination parent, with independent job-owned volumes and full reservations; there is no live format conversion or ZFS-send shortcut.

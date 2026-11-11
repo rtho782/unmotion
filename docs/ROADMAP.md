@@ -73,6 +73,12 @@ Defer zvol/multiple-disk live migration, HTTPS transport and recovery arming aft
 
 ## Live migration follow-up
 
+### Beta9 stabilization scope
+
+Implemented, lab-qualified and **published as 0.5.0-beta9 on the opt-in beta feed** on 2026-11-11. DEV01 stayed on Unraid 7.3.4 and DEV02 on 7.4.0. This adds reviewed, exact inactive-copy cleanup with owner leases, immutable identity plans and retryable deletion receipts, plus native receive-completion proof before an uncommitted receiver may own a VM. Recorded zvol GUIDs can support older jobs; unrecorded file/state identities are retained rather than adopted. See [workflow](LIVE-CLEANUP-BETA9.md) and [qualification](BETA9-QUALIFICATION.md).
+
+The recorded lab scope passed actual host loss during copy/handover, Linux TPM protected boot/live proof, cleanup/reboot/replay blockers, normal cold/warm and replication regressions, and the guarded package/upgrade path. Qualification also found and fixed import-order ZFS file-identity renumbering; only newly proven dataset/GUID identities may use that fix. Installed description/support-link polish and the companion guide accompany the release. Only the beta feed advances; stable remains 0.4.9 and production updates are left to the owner. Separate physical-host validation is a proposed later test, not permission to alter existing production VMs. HTTPS, broader CPU/passthrough support and recovery authority-system handover remain deferred.
+
 ### Beta8 development scope
 
 Implemented, lab-qualified and **published as 0.5.0-beta8 on the opt-in beta feed** on 2026-11-11: native live zvol-to-zvol migration, mixed file/zvol guests, conservative pooled destination capacity/reservation and separate disk/RAM progress. No on-the-fly conversion, shared storage, automatic cleanup, HTTPS transport or new HA authority is introduced. The native hook must not invoke libvirt, ZFS or a peer: fresh runtime ZFS GUID checks are tied to boot and kernel device sequence before starts are admitted. Destination zvols reserve full capacity and retain the configured dedup policy. Existing file-only authorities remain readable; live capability 4 requires matching Beta8, while wire protocol 7 and ordinary workflow gates remain unchanged. See [qualification results and limits](BETA8-QUALIFICATION.md).
@@ -85,7 +91,7 @@ Accepted, lab-qualified and **published as 0.5.0-beta7 on the opt-in beta feed**
 
 Require independent destination TPM reservations, matching swtpm/libtpms evidence, exact disk/TPM start-fence bindings and authenticated paused-receiver handover. Do not introduce shared storage or copy a running emulator's files. Preserve older source/partial state and all existing authority/reconciliation rules. Qualification must include bidirectional moves and destination full stop/start with TPM identity/sealed-secret checks; Windows/BitLocker is an explicit acceptance target, not implied by an Ubuntu pass. Test multiple mixed-format disks, duplicate/foreign/changed disks, empty versus populated CD-ROMs, mixed-peer rejection, cancellation/interruption and current legacy regressions on snapshotted DEV01/DEV02.
 
-Live zvol storage is included in Beta8. Shared storage/Ceph, AMD nested live migration, passthrough, automatic failover, live-leftover reclamation and recovery arming after hand-back remain separate work. Changing a CPU/XML profile still requires a full stop/start before it is active.
+Live zvol storage is included in Beta8 and reviewed inactive-copy cleanup in Beta9. Shared storage/Ceph, AMD nested live migration, passthrough, automatic failover and recovery arming after hand-back remain separate work. Changing a CPU/XML profile still requires a full stop/start before it is active.
 
 The current beta retains Beta5's pinned new-VM CPU default/native editor integration, UEFI, powered-off ordinary hand-back, readiness/progress and browser-session handling. Software TPM support is qualified in Beta7/Beta8; the earlier [Beta5 qualification record](TESTING-LIVE-BETA5.md) covered UEFI without TPM.
 

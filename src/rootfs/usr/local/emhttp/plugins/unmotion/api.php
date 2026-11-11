@@ -36,6 +36,10 @@ try {
         case 'liveStart':
             requirePostMutation();reply(['success'=>true,'job'=>unmLiveCreate((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''))]);
         case 'liveJobs': reply(['success'=>true,'jobs'=>unmLivePublicJobs()]);
+        case 'liveCleanupPreview': requirePostMutation();reply(unmLiveCleanupPreview(unmLiveId((string)($_POST['id']??''))));
+        case 'liveCleanupStart':
+            requirePostMutation();if(($_POST['confirmation']??'')!=='delete-inactive-copy')throw new RuntimeException('Confirm deletion of the reviewed inactive copy.');
+            reply(unmLiveCleanupStart(unmLiveId((string)($_POST['id']??'')),(string)($_POST['review']??'')));
         case 'liveLog':
             $id=unmLiveId((string)($_POST['id']??''));$job=unmLiveJob($id);$path=dirname(unmLiveJobPath($id)).'/live.log';if(is_link($path))throw new RuntimeException('Redirected log.');
             $fp=is_file($path)?fopen($path,'r'):false;$log='';if($fp){$length=filesize($path);if($length>262144)fseek($fp,-262144,SEEK_END);$log=(string)stream_get_contents($fp,262144);fclose($fp);}reply(['success'=>true,'log'=>$log]);

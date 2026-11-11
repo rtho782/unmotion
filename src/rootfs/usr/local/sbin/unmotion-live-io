@@ -30,7 +30,7 @@ try{
         $guard=new UnmLiveRpcGuard($job,static function($kind,$value)use($id){unmLiveLog($id,'RPC '.$kind.' '.json_encode($value));},static function()use($job,$runtime){
             $r=unmLiveNativeRecord(UNM_BOOT_DIR,$job['vmUuid']);$state=unmLiveVmState($job['vmUuid']);if(($r['jobId']??'')!==$job['id']||($r['state']??'')!=='RECEIVING'||$state['state']!=='undefined'||!$state['qemuAbsent'])throw new RuntimeException('Incoming live VM ownership/conflict check failed.');
             $f=fopen($runtime.'/control-consumed','x');if(!$f)throw new RuntimeException('Migration control prepare was already consumed.');fclose($f);
-        });
+        },static function(array $domain)use($job):void{unmLiveReceiveComplete($job);});
         unmLiveRpcProxy(STDIN,STDOUT,$backend,$guard,static fn()=>unmLiveAlive($job));fclose($backend);
     }elseif($mode==='data'){
         $channel=$argv[3]??'';$path=$runtime.'/'.$channel.'.sock';if(!in_array($channel,['memory','disk'],true)||is_link($path)||!file_exists($path)||filetype($path)!=='socket')throw new RuntimeException('Incoming data socket is unavailable.');

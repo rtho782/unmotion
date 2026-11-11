@@ -6,6 +6,7 @@ function packageCheck(bool $ok, string $message): void {
     if (!$ok) throw new RuntimeException($message);
 }
 [$script, $descriptor, $package, $version, $releaseId] = $argv;
+$syntaxBash=getenv('UNM_TEST_BASH')?:'bash';
 $source = file_get_contents($descriptor);
 $xml = simplexml_load_string($source, SimpleXMLElement::class, LIBXML_NONET | LIBXML_NOCDATA);
 packageCheck($xml !== false, 'Generated XML must parse');
@@ -44,7 +45,7 @@ packageCheck($fenceCheck!==false&&$fenceCheck<strpos($removeSource,'/etc/rc.d/rc
 foreach ([2, 3] as $index) {
     packageCheck((string)$xml->FILE[$index]['Run'] === '/bin/bash', 'Shell action interpreter');
     $pipes = [];
-    $process = proc_open(['bash', '-n'], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
+    $process = proc_open([$syntaxBash, '-n'], [['pipe', 'r'], ['pipe', 'w'], ['pipe', 'w']], $pipes);
     fwrite($pipes[0], (string)$xml->FILE[$index]->INLINE);
     fclose($pipes[0]);
     $output = stream_get_contents($pipes[1]).stream_get_contents($pipes[2]);

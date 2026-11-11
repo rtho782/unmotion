@@ -38,8 +38,8 @@ function unmLiveXmlHash(string $xml): string {
 
 final class UnmLiveRpcGuard {
     private bool $opened=false;private bool $prepared=false;private bool $finished=false;
-    private array $pending=[];
-    public function __construct(private array $job,private $audit=null,private $prepare=null){}
+    private array $pending=[];private array $finishCancelled=[];
+    public function __construct(private array $job,private $audit=null,private $prepare=null,private $complete=null){}
     private function heartbeat(array $h,string $frame): bool {
         if($h['program']!==0x6b656570)return false;
         if(strlen($frame)!==28||$h['length']!==28||$h['version']!==1||$h['type']!==2||$h['serial']!==0||$h['status']!==0||!in_array($h['procedure'],[1,2],true))throw new RuntimeException('Invalid migration keepalive.');return true;
@@ -77,7 +77,7 @@ final class UnmLiveRpcGuard {
             }
             if(isset($seen['migrate_disks'])&&count($migrated)!==count($expectedTargets))throw new RuntimeException('Every admitted disk must be migrated exactly once.');
             if($method===303){if($this->prepared||$this->finished||!isset($seen['destination_xml'],$seen['migrate_uri'],$seen['disks_uri'],$seen['migrate_disks']))throw new RuntimeException('Invalid migration prepare sequence.');$this->prepared=true;}
-            else{if(!$this->prepared||$this->finished||!isset($seen['destination_xml']))throw new RuntimeException('Invalid migration finish sequence.');$cancel=$x->uint();if($cancel>1)throw new RuntimeException('Invalid migration cancellation.');$this->finished=true;}
+            else{if(!$this->prepared||$this->finished||!isset($seen['destination_xml']))throw new RuntimeException('Invalid migration finish sequence.');$cancel=$x->uint();if($cancel>1)throw new RuntimeException('Invalid migration cancellation.');$this->finished=true;$this->finishCancelled[$h['serial']]=$cancel;}
         }else throw new RuntimeException('Migration RPC method denied: '.$method);
         $x->end();if($method===303&&$this->prepare)($this->prepare)();$this->pending[$h['serial']]=$method;
         if($this->audit)($this->audit)('request',['method'=>$method,'serial'=>$h['serial']]);
@@ -88,7 +88,15 @@ final class UnmLiveRpcGuard {
         $h=unpack('Nlength/Nprogram/Nversion/Nprocedure/Ntype/Nserial/Nstatus',substr($frame,0,28));
         if($this->heartbeat($h,$frame))return;
         if($h['length']!==strlen($frame)||$h['program']!==0x20008086||$h['version']!==1||$h['type']!==1||!in_array($h['status'],[0,1],true)||($this->pending[$h['serial']]??null)!==$h['procedure'])throw new RuntimeException('Unexpected migration RPC response.');
-        unset($this->pending[$h['serial']]);if($this->audit)($this->audit)('response',['method'=>$h['procedure'],'status'=>$h['status']]);
+        if($h['procedure']===306&&$h['status']===0){
+            // v12.2.0 remote_domain_migrate_finish3_params_ret: nonnull domain
+            // (string name, fixed 16-byte UUID, signed id), then opaque cookie.
+            // Only a successful, NON-cancelled finish may attest completion.
+            $x=new UnmLiveXdr(substr($frame,28));$name=$x->string(128);$hex=bin2hex($x->raw(16));$uuid=substr($hex,0,8).'-'.substr($hex,8,4).'-'.substr($hex,12,4).'-'.substr($hex,16,4).'-'.substr($hex,20);$domainId=$x->uint();$x->bytes(262144);$x->end();
+            if($name!==$this->job['vmName']||$uuid!==($this->job['vmUuid']??'')||$domainId>2147483647)throw new RuntimeException('Native finish returned a foreign or inactive domain.');
+            if(($this->finishCancelled[$h['serial']]??null)===0&&$this->complete)($this->complete)(['vmUuid'=>$uuid,'vmName'=>$name,'domainId'=>$domainId]);
+        }
+        unset($this->pending[$h['serial']],$this->finishCancelled[$h['serial']]);if($this->audit)($this->audit)('response',['method'=>$h['procedure'],'status'=>$h['status']]);
     }
 }
 
