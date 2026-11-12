@@ -2,24 +2,28 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.10.15.01-0.4.9">
+<!ENTITY version "2026.11.11.02-0.5.0">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.4.9_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_stable-noarch-1.txz">
 ]>
-<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange">
+<PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
-### unMotion 0.4.9
-- Preserve the numeric OVMF X-PciMmio64Mb firmware setting when moving or replicating a VM. Only its bounded decimal string form is accepted; other custom QEMU arguments, environment overrides and file-backed values remain blocked.
-- Update both hosts to 0.4.9 or later for VMs using this setting. Fresh preflight and worker checks reject a destination without the optional capability before copying.
-- Protocol 7 and existing pairings remain compatible for ordinary VMs. Source power-state rules, storage ownership, source-cleanup protections, UEFI/TPM handling, recovery fencing and Unraid CSRF checks remain enforced.
-- New pairing requires 0.4.7 or later on both hosts. First-contact fingerprint acceptance with optional manual verification remains available from 0.4.8.
-- Requires Unraid 7.3.2 or later. Successful registered installs/updates prune older cached unMotion TXZ downloads while retaining the verified current package for offline boots.
-- Application/release version stays 0.4.9; the Plugins tab shows fixed installer version 2026.10.15.01-0.4.9 for reliable upgrade ordering.
-- Protocol 7 peers running 0.4.2 or later remain compatible. The optional cached inventory operation is capability-advertised; existing fresh inventory and safety checks are unchanged.
-- Finish active operations and shut down recovery-managed VMs before upgrading. Use unMotion controls to restart managed VMs after checking native-fence readiness.
-- Upgrading from 0.4.1 or earlier still requires coordinated protocol-7 maintenance: finish or remove old prepared/partial Warm Moves, pause replication and upgrade both peers together.
-- Existing settings, host identities and recovery authority records are retained. Keep verified backups. GPL-3.0-only.
+### unMotion 0.5.0
+- Native disk/RAM forwarding over pinned SSH with short-lived per-migration keys, exact socket admission, fresh authority checks and receiver-owned session revocation. PHP supervises/control-validates but does not relay VM payload. Matching native-data capability is required on both hosts.
+- Explicitly review and reclaim proven inactive live-migration copies on the non-owner host. Exact per-object identity, fresh paired ownership callbacks, short owner leases and retryable deletion receipts protect active data; native start fences and job history remain.
+- Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No automatic or recursive cleanup is introduced.
+- Require a durable successful native finish receipt bound to the exact receiver boot, QEMU process and storage/XML contract before committing an uncommitted receiver. Paused state or received-byte counters alone do not prove transfer completion.
+- Experimental native software-TPM 2.0 live migration with fresh matching swtpm/libtpms checks, independent job/UUID-scoped destination state, exact native start fencing and retained source/partial state. No shared storage is required. Encrypted/custom-profile TPM backends remain excluded.
+- Live migration supports one to sixteen independent raw/qcow2 file disks or whole raw ZFS volumes, including mixed guests. Zvols remain zvols, with independent job-owned destinations and full reservations; unrelated block devices and attached ISOs remain excluded.
+- Fresh ZFS GUID/geometry and kernel device-lifetime checks protect zvol ownership. Capacity checks combine file/zvol budgets on shared destination pools, include allocation overhead and 20% free-space headroom, and preserve the destination dedup policy.
+- Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
+- Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
+- Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
+- Preserve protocol 7. Live capability 4 requires matching 0.5.0 peers; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
+- Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
+- Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
 </CHANGES>
 <FILE Run="/usr/bin/php"><INLINE><![CDATA[<?php
 declare(strict_types=1);
@@ -198,7 +202,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -216,6 +220,11 @@ function unmProcessUpgradeInventory(): array {
 function unmProcessPreinstall(): void {
     if(!function_exists('posix_kill'))throw new RuntimeException('PHP POSIX support is required for safe unMotion service upgrades.');
     $bootRestore=unmProcessEarlyBootRestore();
+    $installed=@file_get_contents('/usr/local/emhttp/plugins/unmotion/include/lib.php');
+    $installedProtocol=is_string($installed)&&preg_match('/const\s+UNM_PROTOCOL\s*=\s*(\d+)\s*;/',$installed,$match)?(int)$match[1]:0;
+    // Do not break fencing restoration at boot or prevent an already-protocol-7
+    // host from installing cleanup fixes. Legacy entries still cannot mutate.
+    if(!$bootRestore&&$installedProtocol!==7)unmProcessAssertPreparedCompatible('/boot/config/plugins/unmotion',7);
     unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore);
     if($bootRestore)echo "unMotion: restoring plugin during verified early boot, before VM Manager or QEMU. Durable recovery authority remains fenced.\n";
     $inventory=unmProcessUpgradeInventory();
@@ -232,16 +241,42 @@ function unmProcessPreinstall(): void {
     echo "unMotion upgrade guard: no active workers; verified scheduling/lifecycle daemons stopped. Do not start new operations until installation completes.\n";
 }
 
+/** Standalone: also embedded in the readable PLG before installed code changes. */
+function unmProcessAssertPreparedCompatible(string $base,int $targetProtocol): void {
+    foreach(glob($base.'/seeds/*/seed.json')?:[] as $path){
+        $seed=json_decode((string)file_get_contents($path),true);
+        if(!is_array($seed))throw new RuntimeException('A corrupt prepared-copy record prevents safe protocol upgrade.');
+        if(($seed['state']??'')==='REMOVED')continue;
+        $hasData=!empty($seed['storage'])||!empty($seed['storageStarted'])||!empty($seed['baseSnapshot'])||!empty($seed['pendingSnapshot'])||!empty($seed['generation']);
+        if(!$hasData)continue;
+        $capsPath=dirname($path).'/remote-capabilities.json';$caps=is_file($capsPath)?json_decode((string)file_get_contents($capsPath),true):[];
+        $protocol=(int)($seed['protocolVersion']??$caps['protocolVersion']??0);
+        if($protocol!==$targetProtocol)throw new RuntimeException('Prepared/partial Warm Move '.basename(dirname($path)).' has legacy or unproven protocol ownership. Finish/remove it on compatible old peers before upgrading; already-upgraded legacy copies need ownership review. No cleanup was attempted.');
+    }
+}
+
 // No adoption of an already-running managed QEMU into a new native start fence.
 // Run before stopping lifecycle services or replacing any installed file.
 function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false): void {
+    $liveManaged=[];
+    foreach(array_unique(array_merge(glob($base.'/live-managed/*.json')?:[],glob($base.'/live-authority/*.json')?:[])) as $candidate){
+        $path=$base.'/live-managed/'.basename($candidate);
+        $m=json_decode((string)@file_get_contents($path),true);$uuid=(string)($m['vmUuid']??'');$r=json_decode((string)@file_get_contents($base.'/live-authority/'.$uuid.'.json'),true);
+        if(is_link($path)||is_link($candidate)||!preg_match('/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D',$uuid)||basename($path)!==$uuid.'.json'||($m['schemaVersion']??null)!==1||($r['schemaVersion']??null)!==1||($r['vmUuid']??'')!==$uuid||!preg_match('/\Alive-[a-f0-9]{24}\z/D',(string)($m['jobId']??''))||($r['jobId']??'')!==$m['jobId']||!in_array($r['state']??'',['OWNER','MOVING','RECEIVING','RETIRED','ABORTED'],true))throw new RuntimeException('Corrupt live migration authority prevents upgrade.');
+        $host=trim((string)@file_get_contents($base.'/host_id'));$pattern='/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D';
+        if(isset($r['workflow'])&&!in_array($r['workflow'],['ordinary','ordinary-pending'],true)||($r['workflow']??'')==='ordinary-pending'&&(($r['state']??'')!=='OWNER'||!preg_match('/\A[a-f0-9]{32}\z/D',(string)($r['handbackNonce']??''))))throw new RuntimeException('Corrupt ordinary hand-back authority prevents upgrade.');
+        if(!$verifiedEarlyBoot&&($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Finish the pending ordinary hand-back before upgrading.');
+        if(!in_array($r['role']??'',['source','destination'],true)||!preg_match($pattern,(string)($r['sourceHostId']??''))||!preg_match($pattern,(string)($r['destinationHostId']??''))||$r['sourceHostId']===$r['destinationHostId']||($r[$r['role'].'HostId']??'')!==$host||!preg_match($pattern,(string)($r['bootId']??''))||!is_int($r['expiresAt']??null)||!in_array($r['state'],$r['role']==='source'?['OWNER','MOVING','RETIRED']:['OWNER','RECEIVING','ABORTED'],true))throw new RuntimeException('Live authority host/role is invalid; upgrade refused.');
+        if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=true;
+    }
     foreach(glob($base.'/native-managed/*.json')?:[] as $markerPath){$m=json_decode((string)@file_get_contents($markerPath),true);$id=(string)($m['replicationId']??'');$uuid=(string)($m['vmUuid']??'');$side=(string)($m['side']??'');if(!is_array($m)||($m['schemaVersion']??null)!==1||!preg_match('/^[a-f0-9-]{36}$/',$uuid)||!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!in_array($side,['source','destination'],true))throw new RuntimeException('Corrupt native managed identity prevents safe upgrade.');$paths=$side==='source'?[$base.'/replications/'.$id.'/recovery.json']:(glob($base.'/replicas/*/'.$id.'/recovery.json')?:[]);$matched=0;foreach($paths as $path){$r=json_decode((string)@file_get_contents($path),true);if(is_array($r)&&($r['replicationId']??'')===$id&&strtolower((string)($r['vmUuid']??''))===$uuid&&($r['side']??'')===$side)++$matched;}if($matched!==1)throw new RuntimeException('Exact native managed authority is missing or ambiguous; reconcile it before upgrading.');}
-    $managed=[];foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=json_decode((string)@file_get_contents($path),true);if(!is_array($r))throw new RuntimeException('Corrupt recovery authority must be reconciled before upgrade.');if(in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)&&empty($r['armed'])&&empty($r['managedAutostart'])&&empty($r['activationId'])&&empty($r['claim'])&&empty($r['activation']))continue;$uuid=strtolower((string)($r['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid managed VM identity prevents safe upgrade.');$managed[$uuid]=true;}
+    $managed=$liveManaged;foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=json_decode((string)@file_get_contents($path),true);if(!is_array($r))throw new RuntimeException('Corrupt recovery authority must be reconciled before upgrade.');if(in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)&&empty($r['armed'])&&empty($r['managedAutostart'])&&empty($r['activationId'])&&empty($r['claim'])&&empty($r['activation']))continue;$uuid=strtolower((string)($r['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid managed VM identity prevents safe upgrade.');$managed[$uuid]=true;}
     if(!$managed)return;
     // At genuine rc.local boot replay libvirt is not started yet. The caller
     // proves that phase and absence of QEMU; missing libvirt alone is NEVER proof.
     // Authority/marker validation above is deliberately retained in both paths.
     if($verifiedEarlyBoot)return;
+    foreach(glob('/proc/[0-9]*/cmdline')?:[] as $file){$exe=(string)@readlink(dirname($file).'/exe');if(!str_starts_with(basename($exe),'qemu-system-'))continue;$args=explode("\0",rtrim((string)@file_get_contents($file),"\0"));$at=array_search('-uuid',$args,true);if($at!==false&&isset($liveManaged[strtolower((string)($args[$at+1]??''))]))throw new RuntimeException('A live-managed QEMU is running; upgrade refused even if libvirt cannot report it.');}
     $run=static function(array $args):string{$p=proc_open(array_merge(['timeout','-k','2','15','virsh'],$args),[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['file','/dev/null','w']],$pipes);if(!is_resource($p))throw new RuntimeException('Cannot check managed VMs before upgrade.');$out=(string)stream_get_contents($pipes[1]);fclose($pipes[1]);if(proc_close($p)!==0)throw new RuntimeException('Libvirt state is unavailable; upgrade cannot prove managed VMs are stopped.');return trim($out);};
     $inventory=strtolower($run(['list','--all','--uuid']));$defined=$inventory===''?[]:preg_split('/\s+/',$inventory);foreach($defined as $entry)if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/',$entry))throw new RuntimeException('Libvirt returned an invalid VM inventory; upgrade refused.');
     foreach(array_keys($managed) as $uuid)if(in_array($uuid,$defined,true)&&strtolower($run(['domstate',$uuid]))!=='shut off')throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
@@ -277,14 +312,15 @@ function unmProcessEarlyBootRestore(): bool {
 try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.4.9/unmotion-0.4.9_stable-noarch-1.txz</URL>
-<SHA256>63bc8db6651a9e890a89b401891a4d6785a9e570ad4b4b9e6b0187bc163e430e</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0/unmotion-0.5.0_stable-noarch-1.txz</URL>
+<SHA256>98797cc5881211dd41cff715cb4aba3ca44b0cc533906bc6f15243728ae39af0</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
 </INLINE></FILE>
 <FILE Run="/bin/bash" Method="remove"><INLINE>
 /usr/local/sbin/unmotion-native-fence check-remove || exit 1
+/usr/local/sbin/unmotion-cpu-editor restore || exit 1
 /etc/rc.d/rc.unmotion stop || exit 1
 /usr/local/sbin/unmotion-cleanup || exit 1
 /sbin/removepkg unmotion 2>/dev/null || true

@@ -1,11 +1,15 @@
-# unMotion stable installer
+# unMotion stable update feed
 
-This branch serves the stable Unraid installer for **unMotion 0.4.9** (Plugins-tab version **2026.10.15.01-0.4.9**). Requires Unraid 7.3.2 or later.
+This feed offers **unMotion 0.5.0 stable** (Plugins version **2026.11.11.02-0.5.0**), requiring Unraid 7.3.2 or later. Both feeds currently install the same qualified SHA-256-pinned package. This descriptor retains the **plugin-stable** update URL; beta users remain opted in for future prereleases.
 
-Install or update using [unmotion.plg](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). It downloads a separate versioned TXZ release asset and verifies SHA-256. The current package is retained for offline boots; older cached downloads are pruned after successful registration.
+Install via [unmotion.plg](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg), or use **Plugins → Check for Updates → Update** on an existing installation. Keep its installed name **unmotion.plg**. The small PLG downloads a separate versioned TXZ and retains the verified current package for offline boots.
 
-VMs using the numeric OVMF `X-PciMmio64Mb` firmware setting require 0.4.9 or later on both hosts. The narrowly validated setting is preserved; arbitrary QEMU command lines remain blocked. Fresh preflight and worker checks reject unsupported destinations before transfer. Ordinary protocol-7 pairings remain compatible.
+0.5.0 includes CPU compatibility/defaults, scoped file/zvol live migration with optional experimental software TPM 2.0, reviewed inactive-copy cleanup, replication retirement/recreation and guarded ordinary hand-back. Live controls retain beta labels in the tested interface. Both live peers need matching 0.5.0, live ABI4/native-data1, an active compatible custom CPU and the qualified matching virtualization stack (libvirt12.2.0). Passthrough, attached ISOs, AMD nested live migration and other unsupported layouts remain blocked. No automatic failover is provided.
 
-Read the [user guide](https://github.com/rtho782/unmotion-community-apps/blob/main/README.md), [release notes](https://github.com/rtho782/unmotion/releases/tag/0.4.9), [firmware guidance](https://github.com/rtho782/unmotion/blob/main/docs/OVMF-FIRMWARE.md) and [upgrade guidance](https://github.com/rtho782/unmotion/blob/main/docs/SECURITY-042.md).
+Live disk/RAM traffic uses a packaged native connector over pinned SSH with disposable job-restricted keys and receiver-owned session revocation. PHP supervises/control-validates, not VM-payload forwarding. Native ownership/fencing remains. The 30-minute transfer limit and documented capacity/headroom requirements apply; neither wire speed nor subsecond handover is guaranteed.
 
-Author: Richard Skinner. GPL-3.0-only.
+Before updating, pause replication, finish/reconcile jobs and cleanup, and fully stop recovery/live-managed guests. Preserve settings, pairings and authority records; never bypass upgrade/start guards. Update both peers before live migration: Beta9 lacks the native transport. Wire protocol7 remains unchanged for otherwise-supported ordinary operations.
+
+The stable descriptor is byte-identical to the released PLG. The beta descriptor changes only the embedded feed URL; both reference the exact released TXZ/hash. See [release notes](https://github.com/rtho782/unmotion/releases/tag/0.5.0), [user guide](https://github.com/rtho782/unmotion-community-apps), [live requirements](https://github.com/rtho782/unmotion/blob/main/docs/LIVE-MIGRATION-BETA.md), [qualification](https://github.com/rtho782/unmotion/blob/main/docs/NATIVE-TRANSPORT-QUALIFICATION.md) and [upgrade guidance](https://github.com/rtho782/unmotion/blob/main/docs/PLUGIN-UPDATES.md).
+
+Author: Richard Skinner. GPL-3.0-only. Keep verified backups.
