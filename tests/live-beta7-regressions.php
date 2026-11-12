@@ -49,9 +49,7 @@ ok7(unmLiveDataWithinWindow(1000,2800),'data channel lasts through the worker tr
 ok7(unmLiveDataWithinWindow(1000,2920),'bounded rollback/finish grace remains available');
 ok7(!unmLiveDataWithinWindow(1000,2921),'channel cannot outlive the total bounded transfer window');
 ok7(!unmLiveDataWithinWindow(1000,999),'backwards clock cannot extend channel lifetime');
-$pumpStreams=[fopen('php://temp','w+b'),fopen('php://temp','w+b'),fopen('php://temp','w+b')];
-try{bad7(fn()=>unmLiveRawPump($pumpStreams[0],$pumpStreams[1],$pumpStreams[2],static fn()=>false),'revoked authority still terminates an idle data channel immediately');ok7(fstat($pumpStreams[1])['size']===0,'lease rejection writes no human-readable output into the binary stream');}
-finally{foreach($pumpStreams as $stream)fclose($stream);}
+ok7(!function_exists('unmLiveRawPump'),'PHP payload pump is removed; native tests cover immediate revocation and binary isolation');
 $locks=sys_get_temp_dir().'/unmotion-beta7-data-'.bin2hex(random_bytes(8));mkdir($locks);$held=[];
 try{for($i=0;$i<3;$i++){[$h,$slot]=unmLiveDataLock(['disks'=>$spec['disks']],$locks,'disk');$held[]=$h;ok7($slot==='disk-'.$i,'independent concurrent NBD slot');}bad7(fn()=>unmLiveDataLock(['disks'=>$spec['disks']],$locks,'disk'),'excess NBD connection refused');flock($held[1],LOCK_UN);fclose($held[1]);unset($held[1]);[$h,$slot]=unmLiveDataLock(['disks'=>$spec['disks']],$locks,'disk');$held[]=$h;ok7($slot==='disk-1','released NBD slot may be reused inside the same live lease');}
 finally{foreach($held as $h){flock($h,LOCK_UN);fclose($h);}foreach(glob($locks.'/*')?:[] as $p)unlink($p);rmdir($locks);}

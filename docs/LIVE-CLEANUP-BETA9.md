@@ -1,8 +1,8 @@
-# Retained live-copy cleanup — 0.5.0-beta9
+# Retained live-copy cleanup — 0.5.0
 
 Author: Richard Skinner
 
-**Beta only:** [0.5.0-beta9](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta9) is available through the opt-in beta feed. Install matching Beta9 on both paired hosts. Stable and Community Apps remain 0.4.9; live migration and this cleanup workflow remain experimental. See the qualification report for the tested scope.
+Available in [stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0) through Community Apps/the stable feed. Install matching 0.5.0 on both paired hosts. The beta feed also offers this release. The filename is retained to preserve documentation links; see [qualification scope and limits](NATIVE-TRANSPORT-QUALIFICATION.md).
 
 Live migration retains the original source disks and the data from failed/cancelled receivers. These are not continuously updated backups. Cleanup is a separate, explicit operation; successful migration never automatically deletes them.
 

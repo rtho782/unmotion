@@ -86,9 +86,11 @@ Recovery requires a Guest-Agent-eligible point, places source-side autostart und
 
 These controls use recovery protocol 1 over protocol 7. Native pre-start fencing requires verified libvirt hook invocation and exact one-use source/recovered start permits. Automatic failover, network-silence claims and witnesses are not supported.
 
-## Ending replication (beta)
+## Ending replication
 
-This workflow is available in **0.5.0-beta6 and later**, including the current Beta8, on the opt-in beta feed, not stable 0.4.9. Both hosts need optional `retirementVersion: 1` on protocol 7. An older/offline peer blocks retirement without authorizing storage cleanup.
+This workflow is available in **stable 0.5.0** and on the beta feed. Both hosts need optional `retirementVersion: 1` on protocol 7. An older/offline peer blocks retirement without authorizing storage cleanup. The earlier `#ending-replication-beta` anchor is retained below for existing links.
+
+<a id="ending-replication-beta"></a>
 
 Use **Disable** for a reversible pause. Use **End replication** when permanently ending the policy, then choose:
 

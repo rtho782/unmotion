@@ -612,7 +612,8 @@ function unmTransportDispatch(array $request,string $keyId): array {
         if($peer===null||($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');
         require_once __DIR__.'/live-migration.php';return unmTransportResult(0,json_encode(unmLiveRemote($peer,$request['args']),JSON_THROW_ON_ERROR)."\n");
     }
-    if(in_array($request['op'],['live-control','live-data','live-benchmark'],true)){
+    if(in_array($request['op'],['live-data','live-benchmark'],true))throw new RuntimeException('VM data requires its disposable job-key gate, not the permanent pairing key.');
+    if($request['op']==='live-control'){
         if($peer===null||($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');
         require_once __DIR__.'/live-migration.php';$kind=match($request['op']){'live-control'=>'control','live-data'=>'data','live-benchmark'=>'benchmark'};$job=unmLiveStreamAuthorize($request['args'],$peer,$kind);
         return unmTransportRun(array_merge(['/usr/local/sbin/unmotion-live-io',$kind,$job['id']],$kind==='data'?[$request['args']['channel']]:[]),true);

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-Use a Linux/Unraid development environment with Bash, PHP CLI, Node.js (for JavaScript parse checks), `tar`, `xz` and `sha256sum`. Verification of historical fixtures also uses `base64`. Live integration tests additionally need two disposable Unraid hosts with SSH, libvirt, ZFS and test VMs. Run the full suite with privileges on a disposable development host: some regressions use isolated fixtures under `/mnt` and lock files under `/var/run`.
+Use a Linux/Unraid development environment with Bash, PHP CLI, Node.js (for JavaScript parse checks), Go 1.24 or later, `tar`, `xz` and `sha256sum`. `UNM_GO` may name a private toolchain; `GOTOOLCHAIN=local` prevents automatic toolchain downloads. Go is a build/test prerequisite, not an end-user dependency. Verification of historical fixtures also uses `base64`. Live integration tests additionally need two disposable Unraid hosts with SSH, libvirt, ZFS and test VMs. Run the full suite with privileges on a disposable development host: some regressions use isolated fixtures under `/mnt` and lock files under `/var/run`.
 
 The supported baseline is Unraid 7.3.2 or later. Do not maintain extra older-version test servers solely to support the historical 7.0.0 declaration. Keep the PLG minimum, Community Apps `MinVer` and guide requirements aligned on publication.
 
@@ -17,10 +17,10 @@ The script verifies regression fixtures, checks current version/protocol invaria
 ## Build
 
 ```bash
-./scripts/build.sh 0.4.9
+./scripts/build.sh 0.5.0
 ```
 
-The script stages `src/rootfs`, applies package permissions and creates a Slackware-style TXZ and a small PLG under `dist/`. The PLG references that exact package on the matching GitHub release tag and supplies its SHA-256 for Unraid's plugin manager to verify. It does not embed the archive. For a new release, update both application version constants, release notes and `RELEASE_ID` first, then pass the matching version. `RELEASE_ID` contains `<application-version> YYYY.MM.DD.NN`, using a fixed UTC release date and zero-padded sequence 01..99. Allocate it once, commit it, and reuse it for every rebuild; the builder rejects mismatches or invalid dates.
+The script stages `src/rootfs`, compiles the static Linux/amd64 native data connector, includes its Go runtime licence, applies package permissions and creates a Slackware-style TXZ and a small PLG under `dist/`. See [native source/build instructions](../native/live-stream/README.md). The PLG references that exact package on the matching GitHub release tag and supplies its SHA-256 for Unraid's plugin manager to verify. It does not embed the archive. For a new release, update both application version constants, release notes and `RELEASE_ID` first, then pass the matching version. `RELEASE_ID` contains `<application-version> YYYY.MM.DD.NN`, using a fixed UTC release date and zero-padded sequence 01..99. Allocate it once, commit it, and reuse it for every rebuild; the builder rejects mismatches or invalid dates. Publish the qualified artifacts without rebuilding after their hashes are recorded.
 
 `tests/package-regressions.sh` builds stable and beta descriptors and checks XML, archive hashes, channel selection and shell syntax. On Unraid it also exercises the native FILE processor with intercepted downloads and commands, covering cache reuse, corruption, unavailable downloads and installer failure without installing the package.
 

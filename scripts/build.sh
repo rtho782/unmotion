@@ -16,6 +16,9 @@ mkdir -p "$STAGE" "$DIST"
 cp -a "$ROOT/src/rootfs/." "$STAGE/"
 cp "$ROOT/LICENSE" "$STAGE/usr/local/emhttp/plugins/unmotion/LICENSE"
 cp "$STAGE/etc/libvirt/hooks/qemu.d/50-unmotion-recovery" "$STAGE/usr/local/emhttp/plugins/unmotion/include/native-qemu-hook"
+bash "$ROOT/scripts/build-native.sh" "$STAGE/usr/local/sbin/unmotion-live-stream" "$VERSION"
+mkdir -p "$STAGE/usr/local/emhttp/plugins/unmotion/licenses"
+cp "$("${UNM_GO:-go}" env GOROOT)/LICENSE" "$STAGE/usr/local/emhttp/plugins/unmotion/licenses/Go-LICENSE"
 
 find "$STAGE" -type d -exec chmod 0755 {} +
 chmod 0755 "$STAGE/etc/rc.d/rc.unmotion" "$STAGE/install/doinst.sh" "$STAGE/usr/local/sbin/"*
@@ -56,6 +59,7 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
 ### unMotion $VERSION
+- Native disk/RAM forwarding over pinned SSH with short-lived per-migration keys, exact socket admission, fresh authority checks and receiver-owned session revocation. PHP supervises/control-validates but does not relay VM payload. Matching native-data capability is required on both hosts.
 - Explicitly review and reclaim proven inactive live-migration copies on the non-owner host. Exact per-object identity, fresh paired ownership callbacks, short owner leases and retryable deletion receipts protect active data; native start fences and job history remain.
 - Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No automatic or recursive cleanup is introduced.
 - Require a durable successful native finish receipt bound to the exact receiver boot, QEMU process and storage/XML contract before committing an uncommitted receiver. Paused state or received-byte counters alone do not prove transfer completion.
@@ -65,7 +69,7 @@ cat <<EOF
 - Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
-- Preserve protocol 7. Live capability 4 requires matching Beta9 peers; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve protocol 7. Live capability 4 requires matching 0.5.0 peers; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
 - Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
 - Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.

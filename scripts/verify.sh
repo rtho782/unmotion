@@ -3,9 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.0-beta9}"
+EXPECTED_VERSION="${1:-0.5.0}"
+GO="${UNM_GO:-go}"
+command -v "$GO" >/dev/null || { echo 'Go is required for native transport verification.' >&2; exit 1; }
+(cd "$ROOT/native/live-stream" && GOTOOLCHAIN=local CGO_ENABLED=0 "$GO" test ./...)
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
+if command -v php >/dev/null; then
+  (cd "$ROOT/native/live-stream" && GOTOOLCHAIN=local CGO_ENABLED=0 "$GO" test -c -o "$TMP/native-fd-test")
+  php "$ROOT/tests/native-fd-integration.php" "$TMP/native-fd-test"
+fi
 
 echo 'Checking recovered artifact hashes...'
 bash "$ROOT/tests/release-version-regressions.sh"
@@ -50,6 +57,7 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/live-preflight-regressions.php"
   php "$ROOT/tests/live-beta7-regressions.php"
   php "$ROOT/tests/live-beta8-regressions.php"
+  php "$ROOT/tests/live-io-regressions.php"
   php "$ROOT/tests/live-cleanup-regressions.php"
   php "$ROOT/tests/live-cleanup-journal-regressions.php"
   php "$ROOT/tests/live-cleanup-rpc-regressions.php"

@@ -1,148 +1,83 @@
 # unMotion
 
-Stable release: **[0.4.9](https://github.com/rtho782/unmotion/releases/tag/0.4.9)**. Beta release: **[0.5.0-beta9](https://github.com/rtho782/unmotion/releases/tag/0.5.0-beta9)**, available by opting into the [beta installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg). Community Apps and the stable feed remain on 0.4.9.
+**Stable release: [0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0)**. Install through Community Apps or the [stable installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). The [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg) currently offers the same stable release and retains its opt-in channel for future prereleases.
 
-**Beta retained-copy cleanup:** on the inactive, non-owning host, choose **Clean up retained copy**, review the exact disks/state paths and confirm deletion. Both paired hosts must be reachable and running Beta9. Current-owner data, start fences and job history remain; unproven legacy artifacts are protected. Interrupted cleanup requires an explicit reviewed retry. See [instructions and limitations](docs/LIVE-CLEANUP-BETA9.md) and [Beta9 qualification](docs/BETA9-QUALIFICATION.md), including mixed Unraid 7.3.4/7.4.0 and controlled host-loss checks.
+Clone a VM locally, move it between paired Unraid hosts, or maintain scheduled ZFS replicas with coordinated manual recovery. unMotion provides preflight checks, progress and guarded ownership in the Unraid web interface.
 
-**Beta storage and progress:** live zvols remain zvols in the destination's configured parent, with full reservations; independent file images remain sparse. Mixed file/zvol guests are supported. Capacity checks combine requirements sharing a pool, including allocation overhead and free-space headroom. Disk-copy and RAM-convergence statistics are shown separately, not as an overall percentage or promised ETA. Source and partial copies retain space until explicitly removed.
-
-**Beta live migration:** move running BIOS or supported UEFI guests with one to sixteen independent raw/qcow2 file disks or whole raw ZFS volumes and optional software TPM 2.0. Both hosts need matching Beta9 and the qualified matching virtualization stack, including swtpm/libtpms for TPM guests. The readiness dialog explains independent blockers before enabling Start. Windows Server 2025 with active BitLocker and Linux mixed-disk guests passed lab qualification; see the [results and limits](docs/BETA8-QUALIFICATION.md).
-
-**Beta replication controls:** end scheduled replication while keeping inert replicas or deleting their owned data, retry blocked cleanup, and configure an independent new cycle for the same VM/destination. Both peers need the applicable optional capabilities. Warm Move removal also waits for destination acknowledgement before releasing source bases. See the [retirement workflow and limits](docs/REPLICATION.md#ending-replication-beta) and [qualification record](docs/TESTING-RETIREMENT-BETA6.md).
-
-**Live migration remains experimental:** an active compatible CPU mode, equivalent networking and sufficient bandwidth are required. Intel nested live moves require nesting and CPU validation on both hosts; AMD SVM live moves remain blocked. Native ZFS-encrypted volumes, unrelated block devices, attached ISOs and passthrough devices are not live-migratable; empty read-only CD-ROM drives may remain. After a settled move, powered-off hand-back enables otherwise-supported ordinary workflows while retaining non-owner start fences. See [requirements](docs/LIVE-MIGRATION-BETA.md).
-
-VMs using the numeric OVMF `X-PciMmio64Mb` firmware setting can be transferred without removing it. Both peers need 0.4.9 or later for this narrow exception; other custom QEMU arguments remain blocked. See [accepted syntax and peer requirements](docs/OVMF-FIRMWARE.md).
-
-**Beta CPU defaults:** select a validated mode in Settings and choose **Use for new VMs**. Unraid's form editor offers the pinned default without changing existing VMs; saved templates retain their own fixed profiles. Active/next-boot CPU information, destination receive progress and session-expiry guidance are also included. See the [CPU guide](docs/CPU-COMPATIBILITY.md). Recovery arming after live hand-back is not supported; replication-only configuration is available.
-
-The beta handles file growth during online Warm Move preparation and Update. These copies are provisional, not bootable backups. Cutover still powers off the source and forces a final image delta, including when file size/timestamps match, before destination startup.
-
-New pairings display the peer's Ed25519 SSH fingerprint with **Accept and pair / Cancel**. Manual verification is optional; both hosts require 0.4.7 or later. Dataset isolation checks and exact source cleanup protect unrelated storage; persistent web actions require CSRF-protected POST. See the [pairing guide](docs/PAIRING.md) and [storage safety and upgrade guidance](docs/SECURITY-047.md).
-
-Migration/cutover and clone setup opens immediately while fresh checks run, with submission disabled until those checks finish. Background refreshes preserve unchanged details, controls and focus. Logs follow new output while at the bottom and preserve your position when you scroll back.
-
-VM inventory loads progressively from a private RAM cache and shows its observation time. Existing rows remain visible during refresh; **Refresh** requests a new observation. Display data can be briefly out of date: migration, clone and recovery actions still perform fresh safety checks. Paired peers can request the cached display view through the existing restricted SSH interface; no HTTPS peer API is included.
-
-Protocol 7 restricts pairing keys to authenticated unMotion operations and adds native pre-start recovery fencing. Existing pairings with 0.4.2 through 0.4.9 remain compatible; optional firmware-setting support is checked separately. **When upgrading from 0.4.1 or earlier, upgrade both peers together:** those older versions cannot transfer or coordinate recovery with protocol 7. Read the [protocol upgrade guidance](docs/SECURITY-042.md) before updating.
-
-Includes [diagnostic problem reports](docs/DIAGNOSTIC-REPORTS.md), [concurrent warm preparations and failed-record archival](docs/CONCURRENT-WARM-PREPARATION.md), and [parallel independent cutovers with phase-aware preflight](docs/WARNINGS-AND-PREFLIGHT.md). Operations needing exclusive access wait cancellably; same-VM and overlapping-storage conflicts remain blocked.
-
-unMotion is an Unraid plugin for cloning virtual machines, moving them between paired hosts, and maintaining scheduled ZFS replicas with guarded coordinated manual recovery.
-
-> Keep verified backups. Migration and recovery change VM definitions and storage. Test your workloads before relying on these operations; a successful preflight is not a substitute for a recovery plan.
-
-Author: Richard Skinner. Copyright (C) 2026 Richard Skinner.
-Licensed under **GPL-3.0-only**, not GPLv3-or-later. See [LICENSE](LICENSE). Software is provided without warranty under the licence terms.
+Author: Richard Skinner. Copyright (C) 2026 Richard Skinner. Licensed under **GPL-3.0-only**, not GPLv3-or-later; see [LICENSE](LICENSE). Keep verified backups and test your workloads. A successful preflight is not a recovery plan.
 
 ## Features
 
-**Beta only — 0.5.0-beta9:** **Settings → unMotion → CPU compatibility levels** provides cached local masks, newest recognised families first, an all-peers comparison and a suggested exact level shared by every selected host. Q35/i440fx references are combined automatically; **Show all revisions** exposes older definitions. **Review and apply to all local VMs** backs up and updates eligible persistent XMLs after fresh checks, preserving topology, pinning, nested virtualization and non-CPU settings. The change takes effect at the next full stop/start, not a guest reboot. A compatible active CPU enables the beta's restricted live-migration workflow, subject to fresh VM-specific checks. Cold/Warm Move still use a powered-off handover and do not require a shared CPU mode, including Intel/AMD where guest/VM settings are compatible. Older masks may reduce performance or omit guest-required instructions, but can suit lightly loaded essential VMs. These controls are not included in stable 0.4.9. See [CPU compatibility](docs/CPU-COMPATIBILITY.md).
+- **Cold Move:** transfer a powered-off VM and start it on the destination.
+- **Warm Move:** prepare/update storage while the source runs, then shut down for the final transfer and startup. Independent preparations/cutovers can run concurrently; shared-storage/same-VM conflicts remain blocked.
+- **Live migration:** copy a running guest's disk and RAM without a shutdown/reboot, with a handover pause. Supports one to sixteen independent raw/qcow2 file disks or whole raw zvols, including mixed guests, BIOS or reviewed UEFI, and optional native software TPM 2.0.
+- **CPU preparation:** cached compatibility masks, all-peers comparison, a suggested shared mode, reviewed persistent-XML application and a pinned default for newly created VMs. Changes to an existing VM's CPU require a full stop/start.
+- **Storage and media:** native resumable ZFS streams for dedicated VM datasets/zvols, sparse image transfers for ordinary/shared layouts, verified NVRAM/TPM handling and Cold/Warm ISO copy/map/omit choices.
+- **Local cloning:** independent disks, new VM identifiers/MACs and optional Ubuntu Guest Agent identity/DHCP customization. TPM guests cannot be cloned.
+- **Scheduled replication:** dedicated-ZFS incremental points with five-minute to 24-hour RPO choices, retention, consistency evidence and opportunistic powered-off TPM checkpoints. End a cycle with keep/delete choices and create a separate new cycle for the same VM/destination.
+- **Coordinated manual recovery:** source fencing, activation-owned storage copies, managed autostart and exact single-use native start permits. Recovery needs eligible Guest Agent evidence and a reachable, stopped source.
+- **Reviewed cleanup and recovery actions:** reclaim proven inactive live copies without deleting owner data, fences or history; reconcile interrupted handovers; finish the selected source policy after repairing destination startup.
+- **Responsive inventory and diagnostics:** progressive cached display observations with fresh operational checks; reviewable job/VM/storage/host reports that users download or submit themselves.
 
-- Reciprocal host discovery and restricted, peer-bound root SSH pairing.
-- Cold migration of powered-off VMs and prepared **Warm Move**, which seeds while running but requires a powered-off final cutover.
-- Native ZFS send/receive for zvols and dedicated VM datasets, with sparse rsync fallback for ordinary/shared image files.
-- Resumable interrupted ZFS receives, destination conflict checks and guarded source cleanup.
-- UEFI NVRAM and software TPM transfer, content-verified firmware mapping, and ISO copy/map/omit handling with checksum validation.
-- Same-host full-copy cloning with independent disks, new domain UUIDs and NIC MAC addresses, and disabled autostart.
-- Optional Ubuntu Guest Agent customization to reset guest identity and replace inherited static networking before enabling cloned NICs.
-- Scheduled replication with RPO choices from five minutes to 24 hours, configurable retention, Guest Agent consistency evidence and opportunistic powered-off TPM checkpoints.
-- Guarded coordinated manual recovery, authenticated peer controls and native pre-start fencing, with one-off managed starts and managed autostart.
-- Concurrent independent Warm Move preparation/cutover with cancellable waiting for exclusive operations.
-- Reviewable diagnostic reports with logs, VM/storage details and both hosts' specifications; download/copy or open a user-submitted GitHub issue draft.
+## Live migration requirements and limits
 
-### Storage and recovery requirements
+Both hosts need matching **0.5.0**, reciprocal pairing, live ABI capability 4, native-data capability 1 and a verified native start fence. The control adapter is qualified for **libvirt 12.2.0**, matching QEMU and the same versioned Q35/i440fx machine. Other stacks fail preflight rather than using an unrestricted fallback.
 
-Replication requires dedicated ZFS zvols or datasets. Shared datasets, non-ZFS storage, encrypted datasets and qcow2 backing chains are not supported for replication. Use ZFS Master or another storage tool to prepare an appropriate layout; unMotion does not convert it.
+Use an active compatible custom CPU on same-vendor, same/newer-generation hosts. Settings can suggest/apply a shared mode, but cached CPU matches are not migration authority. A full stop/start is required after changing next-boot CPU XML. Older masks may reduce performance or hide instructions. Cold/Warm Move do not require a shared mode and remain useful for otherwise-compatible Intel/AMD hosts.
 
-Retained replica storage remains inert. Manual recovery uses separate activation-owned clones, requires eligible Guest Agent evidence, and requires a reachable, fenced source. Only one recovery destination may be armed for a VM. Arming disables native Unraid autostart; unMotion manages starts until recovery authority is safely reconciled.
+Live storage must use supported direct-pool raw/qcow2 files or whole raw zvols; zvols remain zvols with full reservations, while files stay sparse. No passthrough, attached ISO, native ZFS-encrypted zvol, backing chain, unrelated block device, pinning, huge pages or recovery/replication-managed guest. Equivalent networks are your responsibility. AMD nested live migration remains blocked; Intel nesting requires fresh validation on both hosts.
 
-Recovery requires a verified libvirt hook. Use **Start source VM** or **Start recovered VM** in unMotion; direct starts of managed VMs without a one-use authorization are rejected before QEMU. A one-off source start does not enable autostart. Existing Unraid hooks and ordinary unmanaged VM starts are preserved.
+Only one live job may run per host. The worker requests abort at **30 minutes**; budget disk transfer as well as RAM convergence. The measured encrypted throughput needs headroom over guest dirtying; 4x is recommended. A fast NIC does not promise wire speed or a subsecond handover. Disk and RAM progress are separate observations, not an overall percentage or guaranteed ETA.
 
-While recovery is armed or unreconciled, conflicting migration, clone and replication-policy changes are blocked. Retention can preserve an additional eligible point when the newest point is storage-only.
+Disk/RAM traffic uses a packaged native connector through pinned SSH with a disposable, job-restricted key. PHP admits/supervises endpoints and validates control RPCs; it does not relay VM payload. Completion/abort revokes keys and closes proven job-owned sessions. No unrestricted shell, forwarding grant, public listener or shared TPM service is introduced.
 
-**Beta:** use **End replication** to keep inert replicas or delete exact owned data. After ending, **Replicate** can start a separate full-copy cycle for the same destination; old retained copies remain separately inventoried. **Disable** is a reversible pause instead. Both peers must support the applicable optional operations. Stable 0.4.9 cannot remove stored replicas through the UI; **Replica removal deferred** is not queued deletion. Never delete ownership records manually.
+Live controls still carry **beta** labels in the 0.5.0 interface; software-TPM support remains experimental within the documented scope. Windows Server 2025 Core with active TPM-only BitLocker passed live and protected cold-boot tests. Windows 11/TPM+PIN, AMD nested workloads and every hardware/guest failure combination are not qualified. See [live instructions](docs/LIVE-MIGRATION-BETA.md), [final native qualification](docs/NATIVE-TRANSPORT-QUALIFICATION.md) and [earlier physical-host qualification](docs/BETA9-QUALIFICATION.md#final-stable-qualification--unpublished-050-candidate).
 
-**Not supported:** automatic failover, unreachable-source recovery, quorum/witness voting, alternate TPM checkpoint selection or failback transfer. Cold failback is preflight-only. Stable has no live migration; Beta9 has the restricted scope described above, excluding recovery/replication-managed guests.
+Source/partial live storage is retained. Use **Reconcile** after interrupted work; never manually start a retired source or delete authority records. **Clean up retained copy** is explicit paired deletion on the non-owner. To use ordinary workflows again, fully stop the owner and choose **Return to ordinary workflows**. Non-owner fences remain; recovery arming after hand-back is not supported.
 
-### Firmware and manually repaired migrations
+## Install, pair and update
 
-Custom UEFI variables files may be transferred when ownership is provable and the path can be mapped safely. Firmware loaders/templates are mapped only when size and SHA-256 match; this does not upgrade firmware or convert Secure Boot configuration.
+Requires **Unraid 7.3.2 or later**, VM Manager, SSH, sufficient capacity/RAM and appropriate destination networking. Install matching versions on both peers. End users do not install Go.
 
-If destination startup fails after transfer, repair and start it manually, then use **Resolve migration**. unMotion rechecks both hosts and finishes the originally selected source policy: retain and rename, unregister while retaining storage, or validated deletion after the five-minute observation period. It does not retransfer disks, overwrite repaired destination XML, or start/stop either VM. Missing ownership evidence, uncertain VM state, unreachable hosts or changed writable disk identities block resolution.
+1. Install unMotion through **Apps**, or paste the stable installer URL into **Plugins → Install Plugin**. Keep the installed descriptor named **unmotion.plg**.
+2. Open **Settings → unMotion** on each host; review image storage, zvol parent and ISO paths. Pools may have different names.
+3. Pair by discovery or address. Review the peer's Ed25519 fingerprint and choose **Accept and pair**. Manual verification is optional. Pair only trusted hosts: restricted root keys still authorize privileged VM/storage operations.
+4. Test the pairing, review a disposable VM's preflight and verify its destination boot, data and networking.
 
-## Installation
+Stable application version is **0.5.0**, shown in Plugins as **2026.11.11.02-0.5.0**. The fixed installer date/sequence was allocated during qualification and is not the publication date. Both feeds currently provide 0.5.0; beta installations retain their existing channel rather than silently switching to stable.
 
-Requires **Unraid 7.3.2 or later**. Install matching unMotion versions on both peers.
+Use **Plugins → Check for Updates → Update**, then refresh unMotion. Before updating, pause replication, finish/reconcile jobs and cleanup, and fully shut down recovery/live-managed guests. A pending hand-back or unresolved authority blocks upgrade/removal. Update both hosts before live migration; Beta9 is not a compatible live peer for 0.5.0's native transport. Existing pairings, settings and state are preserved. Confirm pairing/native-hook readiness before restarting managed guests. unMotion never restarts VM Manager automatically.
 
-Download the [stable unmotion.plg](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg) and use Unraid's **Plugins → Install Plugin**, or save it as /tmp/unmotion.plg and run as root:
+Wire protocol 7 remains unchanged since 0.4.2. Otherwise-supported ordinary protocol-7 transfers retain their capability gates. New pairing needs 0.4.7 or later on both hosts. For 0.4.1 or earlier, finish/remove prepared partial work on compatible old peers before a coordinated upgrade; see [protocol upgrade guidance](docs/SECURITY-042.md).
 
-```bash
-plugin install /tmp/unmotion.plg
-cat /usr/local/emhttp/plugins/unmotion/VERSION
-```
+The small PLG downloads a versioned, SHA-256-pinned TXZ from GitHub Releases. The verified current package remains cached for offline boots. Older recognized package downloads are cleaned after successful registration; settings, logs, newer packages and VM storage are preserved. Initial/uncached installs need GitHub access. See [plugin updates](docs/PLUGIN-UPDATES.md).
 
-Stable reports **0.4.9** in the application and **2026.10.15.01-0.4.9** in the Plugins tab. Beta reports **0.5.0-beta9** and **2026.11.11.01-0.5.0-beta9** respectively. The fixed release date/sequence allows Unraid to order updates correctly. Preserve the installed filename **unmotion.plg** to avoid duplicate plugin entries.
+## Replication, recovery and source policies
 
-To opt into beta updates, use **Plugins → Install Plugin** with `https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg`, then refresh unMotion. Update both hosts for cached CPU comparison. Ordinary protocol-7 pairing and existing migration workflows remain compatible with 0.4.2 or later; older peers simply cannot provide the optional CPU report. Follow the upgrade safety steps below. Stable installations are not switched automatically.
+Replication needs dedicated ZFS objects, not shared datasets, native ZFS encryption or qcow2 backing chains. Use ZFS Master or another storage tool to arrange storage; unMotion does not convert it. Replica points stay read-only/inert; manual recovery uses separate writable activation copies.
 
-Pair hosts from **Settings → unMotion**: enter the peer address, SSH port and root password, then choose **Pair**. Review its Ed25519 fingerprint and choose **Accept and pair**, or **Cancel** to return without pairing. If you want to compare the fingerprint independently, expand **Verify manually (optional)** and run this command on the peer's console or through a connection you already trust:
+Arming recovery gives unMotion control of native autostart. Use **Start source VM** / **Start recovered VM** in unMotion; unauthorized native starts are rejected before QEMU. Automatic failover, unreachable-source recovery, quorum/witness voting, alternate TPM selection and automated failback are not implemented. Cold failback is preflight-only.
 
-```bash
-ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub -E sha256
-```
+Cold/Warm Move can retain storage, retain/rename the source, or delete proven source data after five minutes of destination runtime. Holds, unrelated contents or uncertain ownership block deletion. If destination startup fails, repair/start it and use **Resolve migration** to finish the original source policy without retransferring or overwriting repaired XML. Do not run both copies.
 
-Acceptance uses trust on first use, like an SSH client's first-connection prompt. The preview sends no password to the peer; pairing rechecks and pins the accepted key before authentication. A changed key is rejected. Both hosts need 0.4.7 or later for new pairing. Existing pins are preserved. Test connectivity before migrating a VM.
+Removal refuses armed/unresolved recovery, retained replicas or unfinished retirement/cleanup. Finish the paired workflows before uninstalling; do not delete ownership records to bypass guards.
 
-Automatic discovery uses Avahi/mDNS on the local network. Enable discovery on both hosts and allow multicast traffic; if a host is not listed, you can pair using its address instead. unMotion makes its public service advertisement readable by Avahi on startup while keeping pairing keys and private settings restricted.
+## Documentation and support
 
-The installer downloads the versioned TXZ package from GitHub Releases and Unraid verifies its SHA-256 before installation. The package is cached on the boot device for subsequent boots; an initial install or an update to an uncached package needs access to GitHub. Pairing uses root credentials to establish restricted plugin keys, not general-purpose root shells. Paired hosts can still request privileged VM/storage operations: only pair hosts you fully trust.
+- [Complete Unraid user guide](https://github.com/rtho782/unmotion-community-apps)
+- [CPU compatibility/defaults](docs/CPU-COMPATIBILITY.md) · [Cloning](docs/CLONING.md)
+- [Live migration](docs/LIVE-MIGRATION-BETA.md) · [Retained-copy cleanup](docs/LIVE-CLEANUP-BETA9.md)
+- [Replication](docs/REPLICATION.md) · [Recovery/fencing](docs/RECOVERY.md)
+- [Migration resolution](docs/MIGRATION-RESOLUTION.md) · [Firmware setting](docs/OVMF-FIRMWARE.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Roadmap](docs/ROADMAP.md) · [Verification](VERIFICATION.md)
 
-After a successful install/update is registered, unMotion removes recognized older TXZ downloads from its package cache, keeping the verified current package for offline boots. Settings, logs and VM storage are unaffected; newer packages and uncertain or redirected files are retained.
-
-### Updates
-
-Use **Plugins → Check for Updates → Update**, then refresh the unMotion page. Stable installations follow the **plugin-stable** feed; prerelease testing requires explicit opt-in. Updates preserve settings, pairings and job state.
-
-For the beta, finish/reconcile live jobs and shut down live-managed guests before updating. Let cleanup workers finish; incomplete cleanup blocks uninstall. Pending hand-back and unresolved handover authority block normal upgrade/removal; never delete authority records to bypass that protection. Update both hosts to matching Beta9 before live migration or retained-copy cleanup; ordinary transfers of formerly live-managed VMs require the guarded handover capability on both hosts.
-
-Before upgrading from 0.4.1 or earlier, finish or explicitly remove prepared/partial Warm Moves while both peers still run the old version. Pause replication, wait for active operations and cleanup to finish, and shut down recovery-managed sources and recovered activations. Upgrade both hosts in one maintenance window and retest pairing. Legacy partial storage without provable ownership is retained, not silently adopted or deleted.
-
-After installation, verify native-hook readiness before restarting recovery-managed VMs. If required, stop guests and restart VM Manager, then run `unmotion-native-fence probe`; unMotion never restarts libvirt automatically.
-
-See [plugin update documentation](docs/PLUGIN-UPDATES.md) for channel maintenance.
-
-### Uninstall
-
-```bash
-plugin remove unmotion.plg
-```
-
-Removal is refused while recovery authority is armed or unresolved. Reconcile recovery and disarm it first. The removal hook verifies owned processes before stopping unMotion, runs its cleanup helper, removes the package and deletes plugin settings. Retain necessary backups before uninstalling. The beta also refuses uninstall while replicas are retained or retirement/preparation cleanup is unfinished; finish paired cleanup first so ownership records are not orphaned.
-
-## Documentation
-
-- [Planned features](docs/ROADMAP.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [CPU compatibility and local configuration (beta)](docs/CPU-COMPATIBILITY.md)
-- [Cloning](docs/CLONING.md)
-- [UEFI variables migration](docs/NVRAM-MIGRATION.md)
-- [Migration resolution](docs/MIGRATION-RESOLUTION.md)
-- [Scheduled replication](docs/REPLICATION.md)
-- [Recovery and fencing](docs/RECOVERY.md)
-- [Verification](VERIFICATION.md)
+Use **Report a problem** on a job to review/edit anonymised diagnostics, download/copy them or open a [GitHub issue draft](https://github.com/rtho782/unmotion/issues). Nothing is uploaded automatically. Sign in to GitHub and submit the reviewed report yourself, or share the saved file with someone helping you. Review paths/logs for private information first.
 
 ## Development
 
-The package root is src/rootfs. Build and verification helpers are in scripts; automated regressions are in tests. See the [development guidance](docs/DEVELOPMENT.md) for the build and release workflow. External code contributions are not currently accepted; bug reports remain welcome.
+The package root is src/rootfs. Build/verify on Linux with PHP CLI, Bash, Node.js, Go 1.24+, tar/xz and checksum tools. A private Go executable can be selected with UNM_GO; users do not need a compiler. The packaged connector targets Linux/amd64, has no external modules and includes the Go runtime's BSD licence alongside unMotion's GPL licence.
 
-Build on Linux/Unraid with PHP CLI, Bash, Node.js, tar, xz, base64 and checksum tools:
+    ./scripts/verify.sh 0.5.0
+    ./scripts/build.sh 0.5.0
 
-```bash
-./scripts/verify.sh
-./scripts/build.sh
-```
-
-Packages are written to dist. Verify downloaded release checksums; archive metadata can make independent builds differ byte-for-byte.
-
-Use **Report a problem** on a migration or clone job to review and download/copy diagnostics, or open a [GitHub issue](https://github.com/rtho782/unmotion/issues) draft and attach the reviewed report yourself. Nothing is uploaded automatically; check the report before sharing publicly.
+See [development/release guidance](docs/DEVELOPMENT.md) and [native source/build details](native/live-stream/README.md). Publish the exact qualified artifacts, not an untested rebuild. External code contributions are not currently accepted; bug reports remain welcome.

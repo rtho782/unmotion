@@ -1,0 +1,20 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{
+    if($argc===2&&$argv[1]==='--sweep'&&posix_geteuid()===0){unmLiveDataSweep();exit;}
+    if($argc!==3||posix_geteuid()!==0||!preg_match('/\A[a-f0-9]{64}\z/D',$argv[2]))throw new RuntimeException('Invalid disposable key gate.');
+    $id=unmLiveId($argv[1]);$j=unmLiveJob($id);if($j['role']!=='destination')throw new RuntimeException('Wrong data direction.');$key=unmLiveDataKeyCheck($j,$argv[2]);
+    $request=unmTransportDecode((string)getenv('SSH_ORIGINAL_COMMAND'));$op=$request['op']??'';if(!in_array($op,['live-data','live-benchmark'],true)||($request['args']['jobId']??'')!==$id)throw new RuntimeException('This key authorizes only its exact migration data channels.');
+    $peer=unmLivePeerForJob($j);unmLiveStreamAuthorize($request['args'],$peer,$op==='live-data'?'data':'benchmark');
+    $gate=unmProcessSnapshot(getmypid());if(!$gate||!unmProcessCommandMatches($gate,'/usr/local/sbin/unmotion-live-key-gate',[$id,$key['keyId']]))throw new RuntimeException('Unprovable data session.');$ssh=null;$parent=$gate['parentPid'];
+    for($i=0;$i<8&&$parent>1;$i++){$p=unmProcessSnapshot($parent);if(!$p)break;if(basename($p['executable'])==='sshd-session'){$ssh=$p;break;}if(!in_array(basename($p['executable']),['bash','sh'],true))break;$parent=$p['parentPid'];}
+    if(!$ssh)throw new RuntimeException('Cannot bind this connection to an exact SSH session.');
+    $path=$j['runtime'].'/data-session-'.getmypid().'-'.$gate['startTicks'].'.json';unmAtomicJson($path,['jobId'=>$id,'keyId'=>$key['keyId'],'gate'=>$gate,'ssh'=>$ssh,'sshBound'=>true]);
+    try{$mode=$op==='live-data'?'data':'benchmark';$result=unmTransportRun(array_merge(['/usr/local/sbin/unmotion-live-io',$mode,$id],$mode==='data'?[$request['args']['channel']]:[]),true);}
+    finally{if(is_file($path))unlink($path);}
+    exit($result['code']);
+}catch(Throwable $e){fwrite(STDERR,'unMotion disposable SSH: '.$e->getMessage()."\n");exit(126);}

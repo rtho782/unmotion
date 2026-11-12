@@ -5,7 +5,7 @@ declare(strict_types=1);
 require __DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/lib.php';
 $n=0;function ok8(bool $v,string $m): void {global $n;if(!$v)throw new RuntimeException($m);$n++;}function bad8(callable $f,string $m): void {try{$f();}catch(Throwable){ok8(true,$m);return;}throw new RuntimeException($m);}
 $uuid='11111111-1111-4111-8111-111111111111';
-$cap=['hostId'=>$uuid,'pluginVersion'=>UNM_VERSION,'liveMigrationVersion'=>4];unmLiveAssertVersion($cap,$uuid,true);ok8(true,'matching live contract accepted');
+$cap=['hostId'=>$uuid,'pluginVersion'=>UNM_VERSION,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>1];unmLiveAssertVersion($cap,$uuid,true);ok8(true,'matching live contract accepted');
 foreach([['pluginVersion'=>'0.5.0-beta7'],['liveMigrationVersion'=>3],['liveMigrationVersion'=>'4'],['hostId'=>'different']] as $change)bad8(fn()=>unmLiveAssertVersion(array_replace($cap,$change),$uuid,true),'mixed version/capability/identity rejected in preflight');
 bad8(fn()=>unmLiveAssertVersion(['hostId'=>$uuid,'version'=>UNM_VERSION,'liveMigrationVersion'=>3],$uuid),'fresh platform cannot contradict advertised live capability');
 $volume=['dataset'=>'cache/vm-zvols/Squid Proxy','guid'=>'18446744073709551615','volsize'=>67108864,'volblocksize'=>16384];

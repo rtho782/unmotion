@@ -17,9 +17,7 @@ try{
     if($job['role']!=='destination')throw new RuntimeException('Wrong server direction.');
     if($mode==='benchmark'){
         $lock=fopen($runtime.'/benchmark.lock','c');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))throw new RuntimeException('Bandwidth measurement already active.');
-        stream_set_blocking(STDIN,false);$bytes=0;$deadline=microtime(true)+30;
-        while(!feof(STDIN)){$r=[STDIN];$w=[];$e=[];if(microtime(true)>$deadline||!unmLiveAlive($job))throw new RuntimeException('Bandwidth measurement expired.');if(stream_select($r,$w,$e,1)>0){$v=fread(STDIN,262144);if($v===false)throw new RuntimeException('Bandwidth read failed.');$bytes+=strlen($v);if($bytes>33554432)throw new RuntimeException('Bandwidth sample exceeded its limit.');}}
-        if($bytes!==33554432)throw new RuntimeException('Incomplete bandwidth sample.');fwrite(STDOUT,json_encode(['bytes'=>$bytes])."\n");exit;
+        unmLiveNativeRun($job,null,null,true);exit;
     }
     if(!in_array($mode,['control','data'],true))throw new RuntimeException('Invalid stream operation.');
     if($mode==='control'){$lock=fopen($runtime.'/control.lock','c');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))throw new RuntimeException('Migration channel is already in use.');}
@@ -36,6 +34,6 @@ try{
         $channel=$argv[3]??'';$path=$runtime.'/'.$channel.'.sock';if(!in_array($channel,['memory','disk'],true)||is_link($path)||!file_exists($path)||filetype($path)!=='socket')throw new RuntimeException('Incoming data socket is unavailable.');
         $backend=stream_socket_client('unix://'.$path,$error,$text,5);if(!$backend)throw new RuntimeException('Incoming data socket is unavailable.');
         $progressFailed=false;$prior=unmLoadJson($runtime.'/received-'.$progressChannel.'.json')['bytes']??0;if(!is_int($prior)||$prior<0)$prior=0;
-        unmLiveRawPump(STDIN,STDOUT,$backend,static fn()=>unmLiveAlive($job),static function($bytes)use($runtime,$progressChannel,$prior,&$progressFailed){if(!$progressFailed&&$bytes<=PHP_INT_MAX-$prior)$progressFailed=!unmLiveObserveReceived($runtime,$progressChannel,$prior+$bytes);});fclose($backend);
+        unmLiveNativeRun($job,$backend,static function($bytes)use($runtime,$progressChannel,$prior,&$progressFailed){if(!$progressFailed&&$bytes<=PHP_INT_MAX-$prior)$progressFailed=!unmLiveObserveReceived($runtime,$progressChannel,$prior+$bytes);});fclose($backend);
     }else throw new RuntimeException('Unknown live I/O operation.');
 }catch(Throwable $e){if(isset($id)&&preg_match('/\Alive-[a-f0-9]{24}\z/D',$id))unmLiveLog($id,'Transport rejected: '.$e->getMessage());fwrite(STDERR,'unMotion live transport: '.$e->getMessage()."\n");exit(1);}

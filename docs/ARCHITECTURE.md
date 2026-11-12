@@ -1,6 +1,6 @@
 # Architecture
 
-The released architecture uses protocol-7 restricted transport, verified process ownership and native pre-start recovery fencing. Version 0.4.5 adds a display-only inventory cache without changing operational safety checks.
+The released 0.5.0 architecture uses protocol-7 restricted transport, verified process ownership and native pre-start recovery/live fencing. Display inventory is cached without changing operational safety checks. Live disk/RAM payload uses a packaged native connector; typed paired control and exact libvirt RPC validation remain separate.
 
 ## Components
 
@@ -13,6 +13,9 @@ The released architecture uses protocol-7 restricted transport, verified process
 - `unmotion-agent`: restricted remote operations used over paired SSH.
 - `unmotion-ssh-gate`, `unmotion-transport` and `include/transport.php`: forced-command key identity, typed requests, exact destination reservations and confined storage/VM operations.
 - `unmotion-process` and process-identity helpers: process-lifetime verification before signalling, including upgrade/removal guards.
+- `unmotion-live-worker`, `include/live-engine.php` and the reviewed libvirt control guard: live preparation, transfer, successful-finish proof, durable ownership and paired reconciliation.
+- `unmotion-live-key-gate`, `include/live-data-keys.php` and `include/live-native-stream.php`: disposable per-job SSH credentials, exact endpoint admission, supervision and receiver-owned session revocation. Permanent pairing keys authorize control, not a payload bypass.
+- `unmotion-live-stream`: static Linux/amd64 connector for approved inherited data descriptors, fresh job/authority/key checks on every I/O loop, bounded buffers, parent lifeline and separate telemetry. It opens no supplied data path, listens on no port and grants no VM ownership. See [source](../native/live-stream/README.md) and [qualification](NATIVE-TRANSPORT-QUALIFICATION.md).
 - `unmotion-worker`: cold migration and Warm Move cutover worker.
 - `unmotion-seed-worker`: prepare/update/resume/remove lifecycle for Warm Move seeds.
 - `unmotion-replication-scheduler`: UTC-slot scheduler and interrupted-policy retry coordinator.

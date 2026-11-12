@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0-beta9';
+const UNM_VERSION = '0.5.0';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
@@ -852,7 +852,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -3898,7 +3898,7 @@ function unmClearJobHistory(): int {
 
 function unmCleanupAll(): void {
     unmNativeAssertRemovable();
-    foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$p=unmProcessSnapshot((int)basename(dirname($path)));if(!$p)continue;foreach(['unmotion-live-worker','unmotion-live-io','unmotion-live-client'] as $name)if(unmProcessCommandMatches($p,'/usr/local/sbin/'.$name))throw new RuntimeException('A live migration process is still active; finish or reconcile it before removal.');}
+    foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$p=unmProcessSnapshot((int)basename(dirname($path)));if(!$p)continue;foreach(['unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-client'] as $name)if(unmProcessCommandMatches($p,'/usr/local/sbin/'.$name))throw new RuntimeException('A live migration process is still active; finish or reconcile it before removal.');}
     unmEnsureDirs();
     $workers=[];
     foreach(unmJobs() as $job) {

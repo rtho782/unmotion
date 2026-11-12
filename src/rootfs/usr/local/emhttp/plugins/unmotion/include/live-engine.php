@@ -20,6 +20,7 @@ function unmLiveRpc(array $peer,string $action,array $args=[],int $seconds=30): 
 }
 function unmLiveAssertVersion(array $p,string $hostId,bool $advertisement=false): void {
     if(($p['hostId']??'')!==$hostId||($p[$advertisement?'pluginVersion':'version']??'')!==UNM_VERSION||($p['liveMigrationVersion']??null)!==4)throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' / live capability 4 on both paired hosts. Ordinary protocol-7 Cold/Warm Move compatibility is unchanged.');
+    if(($p['liveDataTransportVersion']??null)!==1)throw new RuntimeException('Both hosts need the native disposable-key data transport. Upgrade both peers before live migration.');
 }
 function unmLiveAuthority(array $j,string $state,string $disk,?array $qemu=null): void {
     $r=['schemaVersion'=>1,'vmUuid'=>$j['vmUuid'],'vmName'=>$j['vmName'],'jobId'=>$j['id'],'role'=>$j['role'],'state'=>$state,'diskPath'=>$disk,'sourceHostId'=>$j['sourceHostId'],'destinationHostId'=>$j['destinationHostId'],'bootId'=>unmNativeBoot(),'expiresAt'=>$j['expiresAt'],'updatedAt'=>gmdate('c')];
@@ -106,7 +107,7 @@ function unmLivePlatform(bool $needTpm=false): array {
     $caps=unmCpuCompatibilityXml(unmLiveCommand(['virsh','capabilities']));$xp=new DOMXPath($caps);$vendor=$xp->evaluate('string(/capabilities/host/cpu/vendor)');$model=$xp->evaluate('string(/capabilities/host/cpu/model)');
     $cpu=(string)file_get_contents('/proc/cpuinfo');preg_match('/^cpu family\s*:\s*(\d+)/m',$cpu,$family);preg_match('/^model\s*:\s*(\d+)/m',$cpu,$number);
     if(!in_array($vendor,['Intel','AMD'],true)||(int)($family[1]??0)<1||!isset($number[1]))throw new RuntimeException('A usable physical x86 CPU identity is unavailable.');
-    return ['version'=>UNM_VERSION,'liveMigrationVersion'=>4,'hostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'vendor'=>$vendor,'model'=>$model,'family'=>(int)($family[1]??0),'modelNumber'=>(int)($number[1]??0),'hypervisor'=>$v,'imageDirectory'=>(string)unmLoadConfig()['image_dir'],'tpm'=>$needTpm?unmLiveTpmPlatform():null];
+    return ['version'=>UNM_VERSION,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'hostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'vendor'=>$vendor,'model'=>$model,'family'=>(int)($family[1]??0),'modelNumber'=>(int)($number[1]??0),'hypervisor'=>$v,'imageDirectory'=>(string)unmLoadConfig()['image_dir'],'tpm'=>$needTpm?unmLiveTpmPlatform():null];
 }
 function unmLiveGeneration(array $source,array $destination): bool {
     if($source['vendor']!==$destination['vendor'])return false;
@@ -169,7 +170,7 @@ function unmLiveSource(string $uuid): array {
 }
 function unmLivePreview(string $uuid,string $peerId): array {
     $peer=unmPeer($peerId);if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');unmAssertRemotePeerHost($peer['host']);
-    $spec=unmLiveSource($uuid);$local=unmLivePlatform($spec['tpm']!==null);
+    $spec=unmLiveSource($uuid);$local=unmLivePlatform($spec['tpm']!==null);unmLiveAssertVersion($local,unmHostId());
     $caps=unmRemote($peer,'/usr/local/sbin/unmotion-agent capabilities',20);$cap=$caps['code']===0?json_decode($caps['stdout'],true):null;
     unmLiveAssertVersion(is_array($cap)?$cap:[],$peer['hostId'],true);
     try{$remote=unmLiveRpc($peer,'inspect',['xml'=>$spec['liveXml'],'firmware'=>$spec['firmwareEvidence'],'disks'=>$spec['disks']],45);}catch(Throwable $e){if(str_contains($e->getMessage(),'Unsupported unMotion RPC'))throw new RuntimeException('Live migration requires matching '.UNM_VERSION.' on both peers. Cold/Warm Move protocol-7 compatibility is unchanged.');throw $e;}
@@ -204,6 +205,7 @@ function unmLiveStatus(array $j): array {
 }
 function unmLiveRemote(array $peer,array $a): array {
     if(($peer['pairingState']??'')!=='paired')throw new RuntimeException('Completed pairing is required.');$action=$a['action']??'';
+    if(in_array($action,['data-authorize','data-revoke'],true))return unmLiveDataKeyAuthorize($peer,$a);
     if(in_array($action,['cleanup-owner','cleanup-proof','cleanup-lease','cleanup-release'],true))return unmLiveCleanupRemote($peer,$a);
     if(in_array($action,['handback-ack','handback-proof'],true))return unmLiveHandbackRemote($peer,$a);
     if(in_array($action,['ordinary-accept','ordinary-proof','ordinary-commit'],true))return unmLiveOrdinaryRemote($peer,$a);
@@ -297,6 +299,7 @@ function unmLiveRemote(array $peer,array $a): array {
         // Persist intent before granting ownership. A crash immediately after
         // the authority write must still be recognized as an unfinished commit,
         // not as an unrenewable OWNER/DESTINATION_READY combination.
+        unmLiveDataRevoke($j);
         $j['state']='COMMITTING';$j['message']='Source retired; committing destination ownership';unmLiveStoreJob($j);unmLiveCommand(['sync','-f',unmLiveJobPath($j['id'])]);
         unmLiveAuthority($j,'OWNER',$j['diskPath'],$q);
         if($status['vm']['state']==='paused')unmLiveCommand(['virsh','resume',$j['vmUuid']]);
@@ -304,6 +307,7 @@ function unmLiveRemote(array $peer,array $a): array {
         $j['state']='COMPLETE';$j['message']='Live migration committed; destination owns this VM';unmLiveStoreJob($j);return unmLiveStatus($j);
     }
     if(!in_array($status['authority'],['RECEIVING','ABORTED'],true))throw new RuntimeException('A committed destination cannot be aborted.');
+    unmLiveDataRevoke($j);
     if(!$status['vm']['qemuAbsent']){
         if($status['vm']['state']!=='paused')throw new RuntimeException('A running or uncertain destination cannot be removed during abort.');
         $q=unmNativeQemu($j['vmUuid'],$j['vmName']);$ad=unmNativeJson('/run/unmotion/lifecycle/live-admissions/'.$j['vmUuid'].'.json');if(($ad['jobId']??'')!==$j['id']||($ad['qemu']??null)!==$q)throw new RuntimeException('Abort cannot prove this job owns the destination QEMU.');
@@ -315,8 +319,8 @@ function unmLiveRemote(array $peer,array $a): array {
 }
 function unmLiveUpdate(array &$j,string $state,string $message): void {$j['state']=$state;$j['message']=$message;$j['updatedAt']=gmdate('c');unmLiveStoreJob($j);unmLiveLog($j['id'],$state.' '.$message);}
 function unmLiveBandwidth(array $j,array $peer,string $token): float {
-    $p=proc_open(unmLiveSshArgs($peer,['jobId'=>$j['id'],'token'=>$token],'live-benchmark'),[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);if(!$p)throw new RuntimeException('Cannot start encrypted bandwidth sample.');
-    $identity=unmProcessSnapshot(proc_get_status($p)['pid']);foreach($pipes as $pipe)stream_set_blocking($pipe,false);$start=microtime(true);$sent=0;$out='';$err='';$exit=-1;
+    $args=unmLiveSshArgs($peer,['jobId'=>$j['id'],'token'=>$token],'live-benchmark');$p=proc_open($args,[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);if(!$p)throw new RuntimeException('Cannot start encrypted bandwidth sample.');
+    $identity=unmLiveChildIdentity($p,$args);foreach($pipes as $pipe)stream_set_blocking($pipe,false);$start=microtime(true);$sent=0;$out='';$err='';$exit=-1;
     try{
         while(true){
             if(microtime(true)-$start>35||is_file($j['runtime'].'/cancel'))throw new RuntimeException('Bandwidth test cancelled or timed out.');
@@ -418,6 +422,7 @@ function unmLiveRunWorker(string $id): void {
         unmLiveUpdate($j,'SOURCE_MOVING','Source native starts fenced; reserving an independent destination disk');
         $reserved=true;$r=unmLiveRpc($peer,'reserve',['jobId'=>$id,'token'=>$token,'liveXml'=>$j['spec']['liveXml'],'persistentXml'=>$j['spec']['persistentXml'],'sourcePlatform'=>$j['sourcePlatform']],60);
         foreach(['destinationXml','persistentXml','diskPath','disks'] as $key)$j[$key]=$r[$key];$j['diskTarget']=$j['spec']['diskTarget'];unmLiveStoreJob($j);
+        unmLiveDataPrepare($j,$peer,$token);
         unmLiveUpdate($j,'SOURCE_MOVING','Measuring the encrypted link and guest RAM dirty rate');$j['bandwidthMiB']=round(unmLiveBandwidth($j,$peer,$token),2);$j['dirtyRateMiB']=unmLiveDirtyRate($j['vmUuid']);
         unmLiveLog($id,'Measured encrypted throughput '.$j['bandwidthMiB'].' MiB/s; RAM dirty rate '.($j['dirtyRateMiB']??'unknown').' MiB/s. Fourfold headroom is recommended; concurrent disk/network load also matters.');
         if($j['dirtyRateMiB']!==null&&$j['dirtyRateMiB']>=$j['bandwidthMiB']*0.8)throw new RuntimeException('Insufficient measured bandwidth headroom to converge safely. Reduce guest activity and retry.');unmLiveStoreJob($j);
@@ -462,6 +467,7 @@ function unmLiveRunWorker(string $id): void {
         foreach($pipes as $p)if(is_resource($p))fclose($p);
         if($migration!==null)proc_close($migration);
         foreach($relay as $p){if($p['identity'])unmProcessStop($p['identity'],1000);proc_close($p['handle']);}
+        try{unmLiveDataRevoke($j);if($reserved)unmLiveRpc($peer,'data-revoke',['jobId'=>$id,'token'=>$token],20);}catch(Throwable $keyError){unmLiveLog($id,'Disposable key cleanup requires review: '.$keyError->getMessage());}
         if(is_file('/var/lib/unmotion/live-client-job')&&trim((string)file_get_contents('/var/lib/unmotion/live-client-job'))===$id)unlink('/var/lib/unmotion/live-client-job');
         flock($lock,LOCK_UN);fclose($lock);flock($host,LOCK_UN);fclose($host);
     }

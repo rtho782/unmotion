@@ -73,6 +73,11 @@ function unmRewriteManagedSshKeys(string $contents, array $publicKeys, string $m
 
 function unmUpdateManagedSshKeys(array $publicKeys, string $mode): void {
     if (!$publicKeys) return;
+    unmEditAuthorizedKeys(static fn(string $old):string=>unmRewriteManagedSshKeys($old,$publicKeys,$mode));
+}
+
+/** Local-only atomic editor shared by permanent and job-bound restricted keys. */
+function unmEditAuthorizedKeys(callable $rewrite): void {
     $directory = '/root/.ssh';
     if (!is_dir($directory) && !mkdir($directory, 0700, true)) throw new RuntimeException('Unable to create SSH directory.');
     $path = $directory.'/authorized_keys';
@@ -88,7 +93,7 @@ function unmUpdateManagedSshKeys(array $publicKeys, string $mode): void {
     try {
         $old = is_file($path) ? file_get_contents($path) : '';
         if ($old === false) throw new RuntimeException('Unable to read authorized_keys.');
-        $new = unmRewriteManagedSshKeys($old, $publicKeys, $mode);
+        $new = $rewrite($old);
         if ($new === $old) return;
         $tmp = tempnam(dirname($path), '.unmotion-keys-');
         if ($tmp === false || !chmod($tmp, 0600) || file_put_contents($tmp, $new) !== strlen($new)) throw new RuntimeException('Unable to prepare restricted SSH keys.');
