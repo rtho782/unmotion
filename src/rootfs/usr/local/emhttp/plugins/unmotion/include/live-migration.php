@@ -8,6 +8,7 @@ const UNM_LIVE_SCHEMA=1;
 const UNM_LIVE_TRANSFER_SECONDS=1800;
 const UNM_LIVE_TRANSPORT_GRACE_SECONDS=120;
 require_once __DIR__.'/live-native-stream.php';
+require_once __DIR__.'/live-trusted-native.php';
 function unmLiveId(string $id): string {if(!preg_match('/\Alive-[a-f0-9]{24}\z/D',$id))throw new InvalidArgumentException('Invalid live migration identity.');return $id;}
 function unmLiveRoot(): string {return UNM_BOOT_DIR.'/live-migration';}
 function unmLiveRuntime(string $id): string {return '/run/unmotion/live/'.unmLiveId($id);}
@@ -17,7 +18,8 @@ function unmLiveJob(string $id): array {
     for($parent=dirname($path);$parent!==dirname($parent);$parent=dirname($parent))if(is_link($parent))throw new RuntimeException('Live job directory is redirected.');
     $j=json_decode((string)file_get_contents($path),true,64,JSON_THROW_ON_ERROR);
     $uuid='/\A[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\z/D';
-    if(!is_array($j)||($j['schemaVersion']??0)!==UNM_LIVE_SCHEMA||($j['id']??'')!==$id||!preg_match($uuid,(string)($j['vmUuid']??''))||!preg_match($uuid,(string)($j['sourceHostId']??''))||!preg_match($uuid,(string)($j['destinationHostId']??''))||($j['sourceHostId']??'')===($j['destinationHostId']??'')||!in_array($j['role']??'',['source','destination'],true)||($j['runtime']??'')!==unmLiveRuntime($id)||!is_int($j['expiresAt']??null)||!preg_match('/\A[a-f0-9]{64}\z/D',(string)($j['tokenHash']??'')))throw new RuntimeException('Live migration job identity is corrupt.');
+    if(!is_array($j)||!in_array($j['schemaVersion']??0,[UNM_LIVE_SCHEMA,2],true)||($j['id']??'')!==$id||!preg_match($uuid,(string)($j['vmUuid']??''))||!preg_match($uuid,(string)($j['sourceHostId']??''))||!preg_match($uuid,(string)($j['destinationHostId']??''))||($j['sourceHostId']??'')===($j['destinationHostId']??'')||!in_array($j['role']??'',['source','destination'],true)||($j['runtime']??'')!==unmLiveRuntime($id)||!is_int($j['expiresAt']??null)||!preg_match('/\A[a-f0-9]{64}\z/D',(string)($j['tokenHash']??'')))throw new RuntimeException('Live migration job identity is corrupt.');
+    unmLiveValidateJobMode($j);
     return $j;
 }
 function unmLivePrivateDir(string $dir): void {
@@ -54,8 +56,8 @@ function unmLiveStreamAuthorize(array $request,array $peer,string $kind): array 
 }
 function unmLiveSshArgs(array $peer,array $request,string $operation): array {
     unmAssertRemotePeerHost($peer['host']);if(($peer['username']??'root')!=='root')throw new RuntimeException('Live migration requires the paired root account.');
-    $key=$peer['keyPath'];if(in_array($operation,['live-data','live-benchmark'],true)){$j=unmLiveJob((string)($request['jobId']??''));if($j['role']!=='source'||($j['destinationHostId']??'')!==$peer['hostId'])throw new RuntimeException('Wrong data-key peer.');unmLiveDataKeyCheck($j);$key=$j['runtime'].'/data-key';if(is_link($key)||!is_file($key))throw new RuntimeException('Private disposable key is unavailable.');}
-    return ['/usr/bin/ssh','-F','/dev/null','-T','-p',(string)$peer['port'],'-i',$key,'-o','ControlMaster=no','-o','ControlPath=none','-o','BatchMode=yes','-o','Compression=no','-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','ClearAllForwardings=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='.$peer['knownHosts'],'-o','GlobalKnownHostsFile=/dev/null','-o','UpdateHostKeys=no','root@'.$peer['host'],unmTransportEnvelope($operation,$request)];
+    $key=$peer['keyPath'];if(in_array($operation,['live-data','live-benchmark'],true)){$j=unmLiveJob((string)($request['jobId']??''));if($j['role']!=='source'||($j['destinationHostId']??'')!==$peer['hostId'])throw new RuntimeException('Wrong data-key peer.');if($operation==='live-benchmark'&&unmLiveTrusted($j))return unmLiveTrustedSshArgs($j,$peer,(string)$request['token'],false);unmLiveDataKeyCheck($j);$key=$j['runtime'].'/data-key';if(is_link($key)||!is_file($key))throw new RuntimeException('Private disposable key is unavailable.');}
+    return ['/usr/bin/ssh','-F','/dev/null','-T','-c',unmSshCipher(),'-p',(string)$peer['port'],'-i',$key,'-o','ControlMaster=no','-o','ControlPath=none','-o','BatchMode=yes','-o','Compression=no','-o','IdentitiesOnly=yes','-o','IdentityAgent=none','-o','ClearAllForwardings=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=15','-o','ServerAliveCountMax=3','-o','StrictHostKeyChecking=yes','-o','UserKnownHostsFile='.$peer['knownHosts'],'-o','GlobalKnownHostsFile=/dev/null','-o','UpdateHostKeys=no','root@'.$peer['host'],unmTransportEnvelope($operation,$request)];
 }
 function unmLiveLog(string $id,string $message): void {
     $dir=dirname(unmLiveJobPath($id));if(is_dir($dir))file_put_contents($dir.'/live.log',gmdate('c').' '.$message."\n",FILE_APPEND|LOCK_EX);

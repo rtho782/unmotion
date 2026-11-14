@@ -4,6 +4,8 @@
 
 Author: Richard Skinner
 
+**Beta 0.5.2-beta4** removes the additional physical-generation veto for an already compatible active mask. Fresh VM-specific destination CPU and nested-feature checks remain mandatory; cached suggestions are not authorization. See the [earlier CPU-fix qualification](CPU-MASK-051-QUALIFICATION.md). Stable 0.5.0 retains the same/newer-generation restriction.
+
 Available in **[stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0)** through [Community Apps/the stable installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). The beta feed also offers this release until another prerelease is available. Update both paired hosts for live migration; older protocol-7 peers retain their existing workflows but may lack the optional CPU report or live-migration capability.
 
 A shared active virtual CPU enables **live migration without powering the VM off**, apart from a brief handover pause. Fresh VM, machine, software, storage, device and ownership checks are also required. **Cold migration and Warm Move do not require a common CPU mode** because their handover occurs while powered off. They remain useful across generations and Intel/AMD hosts where the VM and guest are otherwise compatible; a vendor-specific custom CPU may need adjusting while the VM is off.

@@ -1,0 +1,7 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{unmLiveProgressRun(unmLiveId($argv[1]??''));}catch(Throwable $e){fwrite(STDERR,'unMotion display sampler: '.$e->getMessage()."\n");exit(1);}

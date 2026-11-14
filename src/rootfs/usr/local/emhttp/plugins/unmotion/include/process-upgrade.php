@@ -7,7 +7,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-progress','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-native-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){

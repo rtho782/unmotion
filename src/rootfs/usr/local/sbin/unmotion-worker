@@ -64,7 +64,8 @@ if [[ ! -e "$JOBDIR/source-ownership-before.json" && -f "$BASE/ownership/$VM_UUI
   cp -- "$BASE/ownership/$VM_UUID.json" "$JOBDIR/source-ownership-before.json"
   chmod 600 "$JOBDIR/source-ownership-before.json"
 fi
-SSH_OPTS=(-T -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \
+source /usr/local/emhttp/plugins/unmotion/include/ssh-cipher.sh
+SSH_OPTS=(-T -c "$SSH_CIPHER" -p "$PEER_PORT" -i "$PEER_KEY" -o BatchMode=yes -o Compression=no -o ConnectTimeout=10 \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=6 -o UserKnownHostsFile="$PEER_KNOWN_HOSTS" -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no)
 REMOTE="${PEER_USER}@${PEER_HOST}"
 DEST_STARTED=0
@@ -84,6 +85,7 @@ SOAK_SECONDS="${SOAK_SECONDS:-300}"
 [[ "$DESTINATION_CONFLICT_ACTION" == cancel || "$DESTINATION_CONFLICT_ACTION" == overwrite ]] || { echo "Invalid destination conflict action" >&2; exit 4; }
 
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" | tee -a "$LOG" >&2; }
+log "SSH encryption: $SSH_CIPHER"
 state(){ /usr/local/sbin/unmotion-state "$JOB_ID" "$1" "$2" "$3"; log "[$1 $2%] $3"; }
 sq(){ printf "'%s'" "${1//\'/\'\\\'\'}"; }
 remote(){ [[ $# == 1 ]] || return 2; local command; command="$(/usr/local/sbin/unmotion-transport encode "$1")" || return; ssh -n "${SSH_OPTS[@]}" "$REMOTE" "$command"; }
@@ -553,7 +555,7 @@ transfer_zfs_object(){
   progress_update TRANSFERRING "$base" "$span" "$label" 100 'snapshot GUID verified'
 }
 
-RSYNC_RSH="ssh -T -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
+RSYNC_RSH="ssh -T -c $SSH_CIPHER -p $PEER_PORT -i $PEER_KEY -o BatchMode=yes -o Compression=no -o UserKnownHostsFile=$PEER_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no"
 transfer_file(){
   local src="$1" dst="$2" base="$3" span="$4" label="$5" parent rc src_size dst_size rsync_command
   parent="${dst%/*}"

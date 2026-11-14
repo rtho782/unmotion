@@ -59,7 +59,9 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
 ### unMotion $VERSION
-- Native disk/RAM forwarding over pinned SSH with short-lived per-migration keys, exact socket admission, fresh authority checks and receiver-owned session revocation. PHP supervises/control-validates but does not relay VM payload. Matching native-data capability is required on both hosts.
+- Permit same-vendor masked guests to move to an older physical CPU generation only after fresh complete guest CPU/nested validation. Repeat validation at receiver reservation; no physical-family ranking substitutes for compatibility proof.
+- Native OpenSSH/libvirt live migration without a custom payload relay, RPC inspector or extra application-controlled pause. Both peers must enable administrator-equivalent native migration trust. Disposable source-bound keys, persistent start fences and authenticated ownership reconciliation remain; this is not a per-path sandbox.
+- Settings selects AES-128-GCM (default) or AES-256-GCM for outgoing paired-host SSH connections, including Cold/Warm Move and replication. Cipher performance depends on the hosts and workload; no plaintext or silent fallback is offered.
 - Explicitly review and reclaim proven inactive live-migration copies on the non-owner host. Exact per-object identity, fresh paired ownership callbacks, short owner leases and retryable deletion receipts protect active data; native start fences and job history remain.
 - Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No automatic or recursive cleanup is introduced.
 - Require a durable successful native finish receipt bound to the exact receiver boot, QEMU process and storage/XML contract before committing an uncommitted receiver. Paused state or received-byte counters alone do not prove transfer completion.
@@ -69,7 +71,7 @@ cat <<EOF
 - Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
-- Preserve protocol 7. Live capability 4 requires matching 0.5.0 peers; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve protocol 7. Live capability 4 requires matching $VERSION peers and native-data capability 1; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
 - Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
 - Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.

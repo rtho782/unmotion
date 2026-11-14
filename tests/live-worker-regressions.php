@@ -17,6 +17,12 @@ $engine=(string)file_get_contents(__DIR__.'/../src/rootfs/usr/local/emhttp/plugi
 $commit=substr($engine,strpos($engine,"if(\$action==='commit')"));
 check(strpos($commit,"\$j['state']='COMMITTING'")<strpos($commit,"unmLiveAuthority(\$j,'OWNER'"),'commit intent precedes its durable execution authority grant');
 check(strpos($commit,"sync','-f',unmLiveJobPath")<strpos($commit,"unmLiveAuthority(\$j,'OWNER'"),'commit intent is synced before granting ownership');
+check(!str_contains($engine,'unmLiveProgressObserve($j)'),'Display query cannot synchronously stall the handover worker');
+check(strpos($engine,'unmLiveProgressStop($progressChild)')>strpos($engine,"unmLiveUpdate(\$j,'COMPLETE','Live migration complete"),'Progress sampler teardown is outside successful handover critical path');
+check(strpos($commit,"unmLiveCommand(['virsh','resume'")<strpos($commit,'unmLiveTimingStore($j,$commitTrace)'),'Destination phase diagnostics are written only after resume');
+$upgrade=(string)file_get_contents(__DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/process-upgrade.php');
+check(str_contains($upgrade,"'unmotion-live-progress'"),'Upgrade admission recognizes exact display sampler workers');
+$clock=hrtime(true);$trace=[];unmLiveTimingMark($trace,'proof',$clock);check(isset($trace['proof'])&&$trace['proof']>=0,'Monotonic display timing is recorded independently');
 if(PHP_OS_FAMILY==='Linux') {
     $progress=sys_get_temp_dir().'/unmotion-progress-'.bin2hex(random_bytes(6));mkdir($progress,0700);
     try{

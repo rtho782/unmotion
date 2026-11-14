@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.5.2-beta4 — 2026-11-14
+
+- Add AES-128-GCM as the default outgoing SSH cipher, with AES-256-GCM selectable in Settings across paired operations, Cold/Warm Move, replication and live migration. Validate the exact option without fallback; live jobs pin it and ordinary workers capture it at launch. Performance depends on the host and path, not simply key length.
+- Add explicit native live-migration trust on both hosts, disposable source-IP/expiry-bound credentials and native OpenSSH Unix-socket/libvirt transport. New jobs use native finish/resume without the Go payload forwarder or libvirt RPC filter. System-libvirt access is administrator-equivalent while authorised; permanent pairing keys remain restricted.
+- Reject an old queued guarded job before preflight/reservation rather than mixing its transport with a new native receiver. Old job records, retained data and reconciliation remain available; create a new native job after resolving the old one.
+- Prepare durable start-blocking intent before native handover, then reconcile ownership after native resume. Sync successful native completion bound to both admitted boots and the mapped contract; require authenticated retired-source absence and exact destination bindings before granting ownership. Preserve a subsequent guest shutdown/pause rather than booting/resuming it again. Ambiguous outcomes, retained source data, legacy jobs and existing restart fences remain protected. Native schema-2 jobs require their mode/cipher fields; wire protocol 7 is unchanged and native capability 1 plus matching versions is required.
+- The core implementation passed file/zvol and Windows TPM/active-BitLocker round trips, protected cold boot, partial-copy cancellation/worker loss, post-resume guest shutdown with lost-worker reconciliation, blocked duplicate native starts, unrelated SSH survival, and actual Cold/Warm Move/full-incremental replication cipher selection. The final build additionally passed cached host reboots, receiver loss during incomplete copying, and source loss after native resume/durable success with authenticated reconciliation. See `docs/NATIVE-TRUSTED-MIGRATION.md` and `docs/NATIVE-HOST-LOSS-052-QUALIFICATION.md` for exact tests, inherited evidence and conservative failure limits.
+
+### Included live-control performance work
+
+- Reduce live-control command latency with event-driven process I/O; leave the generic command runner used by ordinary workflows unchanged.
+- Collect live progress in a separately supervised display-only worker so a statistics query cannot synchronously delay source retirement or destination resume.
+- Flush newly written authority records once per freshly identified containing filesystem, preserving durable commit/ownership ordering, and record non-authoritative handover phase timings after resume.
+- Earlier delay-only qualification passed both lab suites, Linux file/zvol moves, display-worker failure isolation, Windows TPM/active-BitLocker live/protected-cold-boot checks, cancellation, fresh CPU denial and final runtime/key/settings audits. Comparable file round-trip pauses fell from 2.10/2.17 s to 1.42/1.37 s before the native redesign; these are historical bounded samples, not production or subsecond guarantees. See `docs/LIVE-HANDOVER-PERFORMANCE.md`. The native trust option and cipher selector above supersede the earlier planning proposal; no additional bulk-guard profiles are offered.
+
+### Included CPU-eligibility correction
+
+- Let a same-vendor VM with a freshly validated active CPU mask migrate to an older physical host generation. Remove physical-family chronology as a veto in both preflight and receiver reservation; retain fresh complete CPU/nested-feature, machine, software, firmware, storage and native ownership/fencing checks. A newer host alone is not compatibility proof either.
+- Preserve protocol 7/live ABI4/native-data1; new native operations add capability 1 and require matching 0.5.2-beta4 peers. Existing otherwise-supported ordinary protocol-7 operations are unchanged. `docs/CPU-MASK-051-QUALIFICATION.md` records earlier private-build qualification, not a separate public 0.5.1 release.
+
 ## 0.5.0 — 2026-11-12
 
 - Release CPU compatibility/defaults, scoped live migration with file/zvol and software-TPM support, guarded ordinary hand-back, replication retirement/recreation and reviewed inactive-copy cleanup. Live moves require matching 0.5.0 builds and native-data capability on both peers; otherwise-supported ordinary protocol-7 operations retain their existing gates. The wire protocol is unchanged.

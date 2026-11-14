@@ -1,8 +1,9 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.0';
+const UNM_VERSION = '0.5.2-beta4';
 require_once __DIR__.'/ssh-keys.php';
+require_once __DIR__.'/ssh-cipher.php';
 require_once __DIR__.'/pairing-trust.php';
 require_once __DIR__.'/migration-storage.php';
 require_once __DIR__.'/zvol-path.php';
@@ -107,6 +108,8 @@ function unmBaseDefaults(): array {
         'health_memory_warning_percent' => 10,
         'health_memory_critical_percent' => 5,
         'debug_logging' => false,
+        'ssh_cipher' => 'aes128-gcm@openssh.com',
+        'trusted_native_live' => false,
         'config_schema' => 5,
     ];
 }
@@ -270,6 +273,7 @@ function unmWriteRuntimeConfig(array $cfg): void {
         'WARM_BANDWIDTH_MIB' => $cfg['warm_bandwidth_mib'],
         'HEALTH_POLL_SECONDS' => $cfg['health_poll_seconds'],
         'DEBUG_LOGGING' => $cfg['debug_logging'],
+        'SSH_CIPHER' => unmSshCipher($cfg),
     ]);
 }
 
@@ -286,6 +290,7 @@ function unmSaveConfig(array $input): array {
     if ($cfg['zvol_dataset'] !== '' && !preg_match('/^[A-Za-z0-9_.:-]+\/[A-Za-z0-9_\.\/-]+$/', $cfg['zvol_dataset'])) throw new InvalidArgumentException('Invalid ZFS dataset name.');
     if (!in_array($cfg['dedup'], ['off', 'on', 'verify'], true)) throw new InvalidArgumentException('Invalid dedup setting.');
     if (!in_array($cfg['compression'], ['inherit', 'off', 'lz4', 'zstd', 'zstd-fast', 'gzip'], true)) throw new InvalidArgumentException('Invalid compression setting.');
+    unmSshCipher($cfg);
     if (!in_array($cfg['source_cleanup_default'], ['unregister', 'retain', 'delete'], true)) throw new InvalidArgumentException('Invalid source-cleanup default.');
     $cfg['shutdown_timeout'] = max(30, min(3600, (int)$cfg['shutdown_timeout']));
     $cfg['warm_bandwidth_mib'] = max(0, min(10240, (int)$cfg['warm_bandwidth_mib']));
@@ -852,7 +857,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'nativeLiveVersion'=>1,'nativeLiveTrust'=>($cfg['trusted_native_live']??false)===true,'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -1231,7 +1236,7 @@ function unmSshBase(array $peer): string {
     if (($peer['username']??'root') !== 'root') throw new RuntimeException('unMotion pairing requires the Unraid root account.');
     $port = filter_var($peer['port']??22, FILTER_VALIDATE_INT, ['options'=>['min_range'=>1,'max_range'=>65535]]);
     if ($port === false) throw new RuntimeException('Invalid peer SSH port.');
-    $parts=['ssh','-T','-p',(string)($peer['port']??22),'-i',$peer['keyPath'],
+    $parts=['ssh','-T','-c',unmSshCipher(),'-p',(string)($peer['port']??22),'-i',$peer['keyPath'],
         '-o','BatchMode=yes','-o','ConnectTimeout=10','-o','ServerAliveInterval=30','-o','ServerAliveCountMax=6',
         '-o','UserKnownHostsFile='.$peer['knownHosts'],'-o','StrictHostKeyChecking=yes',
         '-o','GlobalKnownHostsFile=/dev/null','-o','UpdateHostKeys=no',
@@ -3898,7 +3903,7 @@ function unmClearJobHistory(): int {
 
 function unmCleanupAll(): void {
     unmNativeAssertRemovable();
-    foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$p=unmProcessSnapshot((int)basename(dirname($path)));if(!$p)continue;foreach(['unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-client'] as $name)if(unmProcessCommandMatches($p,'/usr/local/sbin/'.$name))throw new RuntimeException('A live migration process is still active; finish or reconcile it before removal.');}
+    foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$p=unmProcessSnapshot((int)basename(dirname($path)));if(!$p)continue;foreach(['unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-native-gate','unmotion-live-client'] as $name)if(unmProcessCommandMatches($p,'/usr/local/sbin/'.$name))throw new RuntimeException('A live migration process is still active; finish or reconcile it before removal.');}
     unmEnsureDirs();
     $workers=[];
     foreach(unmJobs() as $job) {

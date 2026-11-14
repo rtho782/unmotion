@@ -1,6 +1,8 @@
 # unMotion
 
-**Stable release: [0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0)**. Install through Community Apps or the [stable installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). The [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg) currently offers the same stable release and retains its opt-in channel for future prereleases.
+**Beta: [0.5.2-beta4](https://github.com/rtho782/unmotion/releases/tag/0.5.2-beta4)** adds [native OpenSSH/libvirt live handover and SSH encryption settings](docs/NATIVE-TRUSTED-MIGRATION.md), with AES-128-GCM by default and optional AES-256-GCM. Both peers must explicitly enable administrator-equivalent **Native live migration trust**; permanent pairing keys remain restricted. The beta also permits same-vendor newer-to-older CPU migration when fresh checks validate the complete active guest CPU. Read the [lab host-loss/reboot qualification and limits](docs/NATIVE-HOST-LOSS-052-QUALIFICATION.md) before updating.
+
+**Stable release: [0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0)**. Install through Community Apps or the [stable installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). The opt-in [beta feed](https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg) offers **0.5.2-beta4**, shown in Plugins as **2026.11.13.03-0.5.2-beta4**. Update both peers together before live migration; finish/reconcile active work and stop managed VMs first. Stable installation requirements below remain the 0.5.0 baseline unless marked beta.
 
 Clone a VM locally, move it between paired Unraid hosts, or maintain scheduled ZFS replicas with coordinated manual recovery. unMotion provides preflight checks, progress and guarded ownership in the Unraid web interface.
 

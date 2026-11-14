@@ -4,13 +4,16 @@
 declare(strict_types=1);
 
 function unmLiveCompletionContract(array $j): string {
-    return hash('sha256',json_encode([$j['id'],$j['vmUuid'],$j['sourceHostId'],$j['destinationHostId'],unmLiveXmlHash($j['persistentXml']),unmLiveDisks($j)],JSON_THROW_ON_ERROR));
+    $binding=[$j['id'],$j['vmUuid'],$j['sourceHostId'],$j['destinationHostId'],unmLiveXmlHash($j['persistentXml']),unmLiveDisks($j)];
+    if(unmLiveTrusted($j))$binding[]=['nativeHandoverVersion'=>1,'sshCipher'=>$j['sshCipher'],'sourceBootId'=>$j['sourceBootId']??null,'destinationBootId'=>$j['destinationBootId']??null];
+    return hash('sha256',json_encode($binding,JSON_THROW_ON_ERROR));
 }
 function unmLiveCompletionCheck(array $receipt,array $j,string $boot,?array $qemu): bool {
-    return ($receipt['schemaVersion']??null)===1&&($receipt['jobId']??'')===$j['id']&&($receipt['vmUuid']??'')===$j['vmUuid']&&($receipt['bootId']??'')===$boot&&($receipt['contract']??'')===unmLiveCompletionContract($j)&&$qemu!==null&&($receipt['qemu']??null)===$qemu;
+    return ($receipt['schemaVersion']??null)===1&&(!unmLiveTrusted($j)||($receipt['nativeHandoverVersion']??null)===1)&&($receipt['jobId']??'')===$j['id']&&($receipt['vmUuid']??'')===$j['vmUuid']&&($receipt['bootId']??'')===$boot&&($receipt['contract']??'')===unmLiveCompletionContract($j)&&$qemu!==null&&($receipt['qemu']??null)===$qemu;
 }
 function unmLiveReceiveProven(array $j): bool {
     if($j['role']!=='destination')return false;$path=dirname(unmLiveJobPath($j['id'])).'/receive-complete.json';
+    if(unmLiveTrusted($j)&&!file_exists($path)&&!is_link($path))return unmLiveTrustedReceiveComplete($j);
     try{if(!is_file($path)||is_link($path))return false;$r=unmNativeJson($path);if(($r['bootId']??'')!==unmNativeBoot())return false;return unmLiveCompletionCheck($r,$j,unmNativeBoot(),unmNativeQemu($j['vmUuid'],$j['vmName']));}catch(Throwable){return false;}
 }
 /** Called only after validated libvirt Finish3Params success, before forwarding. */

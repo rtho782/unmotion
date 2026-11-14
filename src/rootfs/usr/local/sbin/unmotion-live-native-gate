@@ -1,0 +1,32 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+$session=null;$ssh=null;$gate=null;
+try{
+    if($argc!==3||posix_geteuid()!==0||!preg_match('/\A[a-f0-9]{64}\z/D',$argv[2]))throw new RuntimeException('Invalid native session identity.');
+    $j=unmLiveJob(unmLiveId($argv[1]));unmLiveTrustedRequire();if(!unmLiveTrusted($j)||$j['role']!=='destination')throw new RuntimeException('Not a native destination job.');
+    $key=unmLiveDataKeyCheck($j,$argv[2]);$request=unmTransportDecode((string)getenv('SSH_ORIGINAL_COMMAND'));
+    if(!in_array($request['op'],['live-native','live-benchmark'],true)||array_diff(array_keys($request['args']),['jobId','token'])||array_diff(['jobId','token'],array_keys($request['args']))||($request['args']['jobId']??'')!==$j['id'])throw new RuntimeException('This key permits only its native migration lease or bandwidth sample.');
+    unmLiveStreamAuthorize($request['args'],unmLivePeerForJob($j),'benchmark');
+    $connection=preg_split('/\s+/',trim((string)getenv('SSH_CONNECTION')));if(($connection[0]??'')!==($key['sourceAddress']??null))throw new RuntimeException('Native source address changed.');
+    $lock=fopen($j['runtime'].'/native-session.lock','ce');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))throw new RuntimeException('Another native key session is already active.');
+    $gate=unmProcessSnapshot(getmypid());if(!$gate||!unmProcessCommandMatches($gate,'/usr/local/sbin/unmotion-live-native-gate',[$j['id'],$key['keyId']]))throw new RuntimeException('Unprovable native gate.');$ssh=unmLiveDataSshAncestor($gate);if(!$ssh)throw new RuntimeException('No exact native SSH session.');
+    $session=$j['runtime'].'/data-session-'.getmypid().'-'.$gate['startTicks'].'.json';unmAtomicJson($session,['jobId'=>$j['id'],'keyId'=>$key['keyId'],'gate'=>$gate,'ssh'=>$ssh,'sshBound'=>true]);
+    if($request['op']==='live-benchmark'){
+        // Native dd owns the data descriptors. PHP reads only its small count.
+        $p=proc_open(['/bin/dd','of=/dev/null','bs=1048576','count=32','iflag=fullblock'],[0=>STDIN,1=>['file','/dev/null','w'],2=>['pipe','w']],$pipes);if(!$p)throw new RuntimeException('Cannot start native sample.');$stats=stream_get_contents($pipes[2]);fclose($pipes[2]);$exit=proc_close($p);if($exit!==0||!preg_match('/(?:^|\n)33554432 bytes /',$stats))throw new RuntimeException('Incomplete native bandwidth sample.');echo "{\"bytes\":33554432}\n";
+    }else{
+        echo "unmotion-native-ready\n";fflush(STDOUT);stream_set_blocking(STDIN,false);
+        while(true){$part=fread(STDIN,1);if($part===false||$part!=='')throw new RuntimeException('Unexpected native lease input.');if(feof(STDIN))break;unmLiveDataKeyCheck($j,$key['keyId']);if(!unmLiveAlive($j))break;usleep(100000);}
+    }
+}catch(Throwable $e){fwrite(STDERR,'unMotion native SSH: '.$e->getMessage()."\n");$failed=true;}
+finally{
+    if($session!==null&&is_file($session))unlink($session);
+    // Expiring/removing a key does not itself close an established connection.
+    // Signal only our freshly re-proven SSH ancestor, including its forwards.
+    if(($request['op']??'')==='live-native'&&$ssh!==null&&$gate!==null&&unmProcessIdentityMatches($gate)&&unmLiveDataSshAncestor($gate)===$ssh)unmProcessStop($ssh,1000);
+}
+exit(isset($failed)?126:0);
