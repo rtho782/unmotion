@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.2-beta6';
+const UNM_VERSION = '0.5.2';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/ssh-cipher.php';
 require_once __DIR__.'/pairing-trust.php';

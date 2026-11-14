@@ -1,12 +1,12 @@
-# Retained live-copy cleanup — 0.5.0
+# Retained live-copy cleanup
 
 Author: Richard Skinner
 
-Available in [stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0) through Community Apps/the stable feed. The opt-in beta feed offers [0.5.2-beta6](https://github.com/rtho782/unmotion/releases/tag/0.5.2-beta6). The filename is retained to preserve documentation links; see [qualification scope and limits](NATIVE-TRANSPORT-QUALIFICATION.md).
+Available in [stable 0.5.2](https://github.com/rtho782/unmotion/releases/tag/0.5.2) through Community Apps and both feeds. The historical filename preserves documentation links; see [release scope and qualification](RELEASE-0.5.2.md).
 
-**Beta6:** new successful live jobs automatically reclaim their exact obsolete source data after sessions close. The destination remains a normal VM, without reboot/manual hand-back. Its fresh normal-owner proof can endorse cleanup; the stable-only live-managed-owner requirement below no longer applies. Failed/cancelled/unresolved copies are not automatically discarded, and blocked cleanup needs review/retry. An already-absent temporary TPM/NVRAM is recorded as absent, never permission to delete a replacement. Small fences/history remain, and unknown legacy identities or recovery-managed authority still block deletion. See [beta6 instructions and results](NORMAL-LIVE-COMPLETION-BETA6.md). The remainder describes the stable 0.5.0 baseline unless noted.
+New successful live jobs automatically reclaim exact obsolete source data after sessions close. The destination remains a normal VM without reboot/manual hand-back and its fresh normal-owner proof can endorse cleanup. Failed/cancelled/unresolved copies are not automatically discarded; blocked cleanup needs review/retry. Already-absent temporary TPM/NVRAM is recorded as absent, never permission to delete a replacement. Small fences/history remain; unknown legacy identities and recovery-managed authority still block deletion. See [normal-completion instructions/results](NORMAL-LIVE-COMPLETION-BETA6.md).
 
-Live migration retains the original source disks and the data from failed/cancelled receivers. These are not continuously updated backups. Cleanup is a separate, explicit operation; successful migration never automatically deletes them.
+Use the reviewed workflow below for eligible retained older, failed or blocked copies. Retained data is not a continuously updated backup. Successful handover and cleanup progress are separate outcomes; a cleanup blocker does not stop the normal destination.
 
 ## Review and remove an inactive copy
 
@@ -29,13 +29,13 @@ An uncertain response is not permission to submit an unrelated new deletion. Ref
 
 New ZFS file identities bind the dataset name/GUID and inode, not its temporary kernel device number, which can change when a pool is imported after reboot. Other filesystem identities still require an exact device/inode match. A changed filesystem identity blocks deletion; an old unproven identity is never upgraded from a filename merely to make cleanup succeed.
 
-The first implementation requires the current owning peer to remain live-managed. Cleanup after ordinary hand-back or transfer into coordinated recovery is not an authority-system handover and is not enabled by this workflow. Missing peers, missing/corrupt records or filesystem identity changes can block cleanup; data remains available for investigation.
+The current owning peer must prove either its exact settled live ownership or its normal-completion receipt with unchanged storage evidence. Recovery authority is a separate system and cannot be borrowed to authorize old-copy cleanup. Missing peers, corrupt records or changed identities block deletion and preserve data for investigation.
 
 File/state deletion uses exact unlink/rmdir operations, and a volume uses non-recursive destruction of its admitted dataset. A durable per-object intent precedes deletion; target storage is flushed before its receipt is acknowledged. A retry can recognize the narrow interrupted-delete case without treating a reappeared/replaced object as disposable. Start fences and authority records are never cleanup targets.
 
 ## Native receive completion
 
-Beta9 also requires a durable receiver completion receipt before granting ownership to an uncommitted paused VM. It records a validated, successful, non-cancelled libvirt Finish3Params response and binds it to the exact domain, job storage/XML contract, host boot and admitted QEMU lifetime. A paused VM or received-byte counter alone is not proof that disk/RAM transfer completed. Rebooted, replaced or incomplete receivers cannot consume this proof. Existing committed owners keep their ordinary native-start semantics.
+Native completion requires a durable successful receipt bound to the exact domain, storage/XML contract, admitted boots and QEMU lifetime. Current native mode observes successful libvirt CLI completion or authenticated receiver completion before final ownership bookkeeping; native libvirt resumes the guest without an extra application-controlled pause. A paused/running VM or byte count alone is insufficient, and old-boot/replaced/incomplete receivers cannot borrow proof. The older guarded adapter validated successful non-cancelled Finish3Params; those historical receipts remain protected, not converted into new execution authority.
 
 The response layout is checked against [libvirt 12.2.0's protocol definition](https://github.com/libvirt/libvirt/blob/v12.2.0/src/remote/remote_protocol.x); its [QEMU destination finish implementation](https://github.com/libvirt/libvirt/blob/v12.2.0/src/qemu/qemu_migration.c) waits for incoming state processing. The adapter remains limited to that reviewed ABI. There is no unrestricted libvirt/shell fallback or automatic failover.
 

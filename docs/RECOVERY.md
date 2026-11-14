@@ -4,7 +4,7 @@
 
 This document specifies the recovery control plane that sits above the inert scheduled-replication inventory described in [REPLICATION.md](REPLICATION.md). Implemented capabilities and deferred designs are distinguished below.
 
-Stable 0.5.0 requires protocol 7 on both peers, including signed recovery envelopes; this wire protocol is unchanged since 0.4.2. The durable schema-1 authority record retains its historical `protocolVersion: 6` field; this does not permit protocol-6 wire traffic.
+Stable 0.5.2 requires protocol 7 on both peers, including signed recovery envelopes; this wire protocol is unchanged since 0.4.2. The durable schema-1 authority record retains its historical `protocolVersion: 6` field; this does not permit protocol-6 wire traffic. Normal live completion does not replace recovery's separate eligibility/ownership rules.
 
 Current capabilities include a coordinated, manual-recovery path:
 

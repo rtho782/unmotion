@@ -1,6 +1,6 @@
 # Normal VM completion after a live move
 
-Author: Richard Skinner. **[0.5.2-beta6](https://github.com/rtho782/unmotion/releases/tag/0.5.2-beta6), published on the opt-in beta feed on 2026-11-14.** Stable/Community Apps remains 0.5.0. Plugins displays `2026.11.14.02-0.5.2-beta6`.
+Author: Richard Skinner. Available in **[stable 0.5.2](https://github.com/rtho782/unmotion/releases/tag/0.5.2)** through Community Apps and both feeds, displayed as `2026.11.14.03-0.5.2`. This promotes the qualified beta6 logic unchanged apart from release metadata. The historical filename and beta6 artifact/test records below are retained; see [stable release scope and later physical-host measurements](RELEASE-0.5.2.md).
 
 ## User workflow
 

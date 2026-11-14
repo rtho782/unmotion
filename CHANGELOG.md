@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2 — 2026-11-14
+
+- Promote the qualified 0.5.2-beta6 functionality to stable. Application logic, native transport, fencing and cleanup contracts are unchanged; only release-version metadata changes in the package. No new host/upgrade regression campaign is claimed for this promotion.
+- Native OpenSSH/libvirt live handover uses explicitly enabled administrator-equivalent peer trust and source-bound disposable keys. AES-128-GCM is the default outgoing SSH cipher, with AES-256-GCM available. Native guest resume precedes authenticated ownership bookkeeping.
+- Completed live destinations become normal VMs without reboot/manual hand-back, with captured autostart restored. New successful moves delete exact obsolete source disks/NVRAM/TPM automatically; blocked cleanup is separate, failed/unresolved data stays retained, and non-owner fences/history remain.
+- Fresh complete active-CPU validation supports compatible same-vendor newer-to-older moves. Keep all device, firmware, software, capacity, TPM and ownership checks, recovery prerequisites and documented unsupported cases.
+- Carry forward beta5 running-owner compatibility checks and the reviewed beta5-to-beta6 fencing transition, normal-owner Cold/Warm returns, activation-owned recovery behind old fences, exact absent-state cleanup and never-started seed archival fixes.
+- Promote both plugin feeds and Community Apps documentation to 0.5.2 with fixed installer ID `2026.11.14.03`. Protocol 7 is unchanged; live migration requires matching 0.5.2 peers. See [release scope, inherited qualification and physical-host performance](docs/RELEASE-0.5.2.md).
+
 ## 0.5.2-beta6 — 2026-11-14
 
 - A confirmed live-migration destination becomes a normal VM immediately without reboot, manual hand-back or an ongoing live hardware/start admission. Keep a synced, exact completion intent/receipt and the non-owning hosts' retired-copy fences/history. Restore the source's captured autostart choice on the destination; ordinary operation-specific power/TPM/device restrictions still apply.

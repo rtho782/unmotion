@@ -2,7 +2,7 @@
 
 Author: Richard Skinner
 
-Scope: disposable guests on DEV01 **Unraid 7.3.4** and DEV02 **7.4.0** only; no production access or host OS upgrade formed part of the transport replacement. The owner reviewed this qualification and authorized **stable 0.5.0 publication on 2026-11-12**. Stable/Community Apps and both feeds offer the exact artifacts below. Publication does not update running production hosts or expand the tested scope.
+Historical scope: disposable guests on DEV01 **Unraid 7.3.4** and DEV02 **7.4.0** only; no production access/OS upgrade formed part of this transport replacement. The owner approved stable 0.5.0 publication on 2026-11-12; the artifact identities below belong to that release. Current stable/Community Apps and both feeds offer **0.5.2**, with the later [native trust model](NATIVE-TRUSTED-MIGRATION.md) and [normal completion](NORMAL-LIVE-COMPLETION-BETA6.md). This document is inherited qualification, not the current transport description. Publication never updates hosts automatically.
 
 ## Architecture and security
 

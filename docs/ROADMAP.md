@@ -73,9 +73,9 @@ Defer zvol/multiple-disk live migration, HTTPS transport and recovery arming aft
 
 ## Live migration follow-up
 
-### Normal completion and automatic source cleanup — 0.5.2-beta6
+### Normal completion and automatic source cleanup — stable 0.5.2
 
-Published on the opt-in beta feed: successful live moves leave a normal destination without reboot/manual hand-back and automatically delete verified obsolete source disks/NVRAM/TPM after sessions close. Completion/history records and non-owner start fences remain. Failed/unresolved data is retained; cleanup blockers stay actionable and separate from migration success. Qualified on DEV01 7.3.4 / DEV02 7.4.0, without production operations. See [workflow and qualification results](NORMAL-LIVE-COMPLETION-BETA6.md). Stable/Community Apps remains 0.5.0.
+Published in stable 0.5.2/Community Apps and both feeds, promoting qualified beta6 behaviour. Successful live moves leave a normal destination without reboot/manual hand-back and automatically remove exact obsolete source disks/NVRAM/TPM after sessions close; non-owner fences/history remain. Failed/unresolved data and cleanup blockers stay separate from migration success. The lab scope is in [beta6 qualification](NORMAL-LIVE-COMPLETION-BETA6.md); [stable promotion notes](RELEASE-0.5.2.md) separately record later physical-host performance. No new stable host/upgrade campaign is claimed.
 
 ### Compatible running-owner upgrades — 0.5.2-beta5
 
@@ -83,7 +83,7 @@ The beta supports settled migrated owners remaining running through an update wh
 
 ### Native performance beta — 0.5.2-beta4
 
-Published on the opt-in beta feed on 2026-11-14 as **0.5.2-beta4**. Stable/Community Apps remains 0.5.0. [Native-mode qualification](NATIVE-TRUSTED-MIGRATION.md) and [host-loss/reboot results](NATIVE-HOST-LOSS-052-QUALIFICATION.md) supersede the initial optional-guard proposal below. Actual receiver-copy loss and post-resume source loss/reconciliation passed; this is not automatic HA or an exhaustive physical-failure matrix.
+Introduced as **0.5.2-beta4**, now carried forward in **stable 0.5.2**. [Native-mode qualification](NATIVE-TRUSTED-MIGRATION.md) and [host-loss/reboot results](NATIVE-HOST-LOSS-052-QUALIFICATION.md) supersede the initial optional-guard proposal below. Actual receiver-copy loss and post-resume source loss/reconciliation passed; this is not automatic HA or an exhaustive physical-failure matrix.
 
 - **Native trusted handover:** available for new jobs on matching beta peers. Explicit trust on both peers permits temporary administrator-equivalent OpenSSH/libvirt access, without Go forwarding, RPC filtering or an extra application-controlled pause. Persistent MOVING/RECEIVING start fences are prepared before handover; durable completion, source absence/retirement and authenticated ownership bookkeeping follow native resume. Ambiguous failures stay fenced. This is not a per-path security boundary against a compromised administrator. Old guarded jobs are not silently converted.
 - **Encryption dropdown:** implemented AES-128-GCM default and AES-256-GCM selection for outgoing SSH, including ordinary workers and live migration. Jobs pin/capture their cipher and fail rather than silently fall back. Both encrypt and authenticate; performance rankings are hardware dependent. ChaCha20/CTR remain deferred, not current options.

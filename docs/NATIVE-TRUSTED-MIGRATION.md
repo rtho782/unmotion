@@ -2,9 +2,9 @@
 
 Author: Richard Skinner.
 
-Design and bounded qualification for **0.5.2-beta4**, published on the opt-in beta feed on 2026-11-14; stable/Community Apps remains **0.5.0**. Production was not accessed or changed for this work. Measurements and broader guest/fault tests below used the earlier C6 core build; the final C7 package adds an early legacy-queue launch guard and version metadata, with its own verification/upgrade/native smoke checks and [real host-loss/reboot qualification](NATIVE-HOST-LOSS-052-QUALIFICATION.md).
+Design and bounded qualification for **0.5.2-beta4**, published on 2026-11-14. That development/qualification did not access production. Measurements and broader guest/fault tests below used its earlier C6 core build; C7 adds an early legacy-queue guard/version metadata, with separate verification and [host-loss/reboot qualification](NATIVE-HOST-LOSS-052-QUALIFICATION.md). These artifact identities and test boundaries remain historical.
 
-The current opt-in beta is **0.5.2-beta6**. It retains this native transport, supports the reviewed running-owner upgrade and adds [normal VM completion with automatic exact source cleanup](NORMAL-LIVE-COMPLETION-BETA6.md). Both live peers need matching beta6. Completed normal VMs need no shutdown/manual hand-back; failed/unresolved copies stay protected. The beta4 measurements/artifact identities below remain historical qualification, not newly repeated beta6 performance or host-loss tests.
+Current **stable 0.5.2**, available from Community Apps and both feeds, retains the qualified beta6 runtime apart from release metadata. It includes this native transport, reviewed running-owner upgrades and [normal completion/automatic exact source cleanup](NORMAL-LIVE-COMPLETION-BETA6.md). Both live peers need matching 0.5.2 and explicit native trust. Normal completed VMs need no shutdown/manual hand-back; failed/unresolved data remains protected. See [stable promotion and separately measured physical-host performance](RELEASE-0.5.2.md); no fresh stable fault/upgrade campaign is claimed.
 
 ## SSH encryption
 
