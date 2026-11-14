@@ -2,17 +2,20 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.11.11.02-0.5.0">
+<!ENTITY version "2026.11.14.03-0.5.2">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.5.0_stable-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.2_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
-### unMotion 0.5.0
-- Native disk/RAM forwarding over pinned SSH with short-lived per-migration keys, exact socket admission, fresh authority checks and receiver-owned session revocation. PHP supervises/control-validates but does not relay VM payload. Matching native-data capability is required on both hosts.
+### unMotion 0.5.2
+- A completed live destination becomes a normal VM without reboot or a separate hand-back. Successful moves automatically clean up the exact obsolete source disks/NVRAM/TPM after transfer sessions close; blocked cleanup is reported separately, with old-copy start fences/history retained. Failed or unresolved transfers retain their data.
+- Permit same-vendor masked guests to move to an older physical CPU generation only after fresh complete guest CPU/nested validation. Repeat validation at receiver reservation; no physical-family ranking substitutes for compatibility proof.
+- Native OpenSSH/libvirt live migration without a custom payload relay, RPC inspector or extra application-controlled pause. Both peers must enable administrator-equivalent native migration trust. Disposable source-bound keys, persistent start fences and authenticated ownership reconciliation remain; this is not a per-path sandbox.
+- Settings selects AES-128-GCM (default) or AES-256-GCM for outgoing paired-host SSH connections, including Cold/Warm Move and replication. Cipher performance depends on the hosts and workload; no plaintext or silent fallback is offered.
 - Explicitly review and reclaim proven inactive live-migration copies on the non-owner host. Exact per-object identity, fresh paired ownership callbacks, short owner leases and retryable deletion receipts protect active data; native start fences and job history remain.
-- Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No automatic or recursive cleanup is introduced.
+- Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No recursive cleanup is introduced; new successful jobs use the exact automatic cleanup described above.
 - Require a durable successful native finish receipt bound to the exact receiver boot, QEMU process and storage/XML contract before committing an uncommitted receiver. Paused state or received-byte counters alone do not prove transfer completion.
 - Experimental native software-TPM 2.0 live migration with fresh matching swtpm/libtpms checks, independent job/UUID-scoped destination state, exact native start fencing and retained source/partial state. No shared storage is required. Encrypted/custom-profile TPM backends remain excluded.
 - Live migration supports one to sixteen independent raw/qcow2 file disks or whole raw ZFS volumes, including mixed guests. Zvols remain zvols, with independent job-owned destinations and full reservations; unrelated block devices and attached ISOs remain excluded.
@@ -20,9 +23,9 @@
 - Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
-- Preserve protocol 7. Live capability 4 requires matching 0.5.0 peers; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
-- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
-- Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
+- Preserve protocol 7. Live capability 4 requires matching 0.5.2 peers and native-data capability 1; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough and automatic failover remain excluded. Recovery arming after normal completion follows the separate recovery prerequisites.
+- New successful live moves automatically remove verified obsolete source disks, NVRAM and TPM after sessions close. Failed/unresolved copies and blocked cleanup retain their data. No shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
 </CHANGES>
 <FILE Run="/usr/bin/php"><INLINE><![CDATA[<?php
@@ -202,7 +205,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-progress','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-native-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-live-finish','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -217,6 +220,36 @@ function unmProcessUpgradeInventory(): array {
     return ['workers'=>$workers,'daemons'=>$daemons];
 }
 
+/** Complete local-only native-hook dependency set, pinned from the target package. */
+function unmProcessFencePaths(): array {
+    $base='/usr/local/emhttp/plugins/unmotion/include/';
+    return array_merge(['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'],array_map(static fn($p)=>$base.$p,['native-fence.php','live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php']));
+}
+function unmProcessFenceCompatible(array $target): array {
+    $paths=unmProcessFencePaths();$keys=array_keys($target);sort($paths);sort($keys);
+    if($paths!==$keys)throw new RuntimeException('The update has no complete compatible native-fence contract; stop live-owned VMs before this fencing-code upgrade.');
+    $installed=[];foreach($target as $path=>$sha){if(!is_string($sha)||!preg_match('/\A[a-f0-9]{64}\z/D',$sha)||is_link($path)||!is_file($path))throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');$installed[$path]=(string)hash_file('sha256',$path);}
+    $same=static function(array $a,array $b):bool{ksort($a);ksort($b);return $a===$b;};
+    if($same($installed,$target))return $installed;
+    // A transition is pinned at BOTH ends. Leaving an old allowlist in a future
+    // build cannot silently bless that future build's changed native helper.
+    $transitions=function_exists('unmProcessTargetFenceTransitions')?unmProcessTargetFenceTransitions():[];
+    foreach($transitions as $t)if(is_array($t)&&is_array($t['from']??null)&&is_array($t['to']??null)&&$same($t['to'],$target)&&$same($t['from'],$installed))return $installed;
+    throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');
+}
+function unmProcessLiveOwnerUpgradeable(array $r,array $q,array $target,string $run='/run/unmotion/lifecycle'): void {
+    if(($r['state']??'')!=='OWNER'||($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Only a settled live owner can remain running during an update.');
+    $installed=unmProcessFenceCompatible($target);
+    $read=static function(string $p):array{if(is_link($p)||!is_file($p))throw new RuntimeException('Existing native VM admission/proof is missing; update refused without adopting the running VM.');$r=json_decode((string)file_get_contents($p),true);if(!is_array($r))throw new RuntimeException('Existing native VM admission/proof is corrupt.');return $r;};
+    $boot=trim((string)file_get_contents('/proc/sys/kernel/random/boot_id'));
+    $proof=$read($run.'/native-hook-proof.json');$daemon=$proof['daemon']??[];$p=unmProcessSnapshot((int)($daemon['pid']??0));
+    $base='/usr/local/emhttp/plugins/unmotion/include/';$hash='';foreach(['live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php'] as $file)$hash.=$installed[$base.$file];
+    if(!$p||!in_array($p['executable'],['/usr/sbin/libvirtd','/usr/sbin/virtqemud','/usr/bin/libvirtd','/usr/bin/virtqemud'],true)||basename((string)($p['argv'][0]??''))!==basename($p['executable'])||($daemon['bootId']??'')!==$boot||($daemon['startTicks']??'')!==$p['startTicks']||($daemon['exe']??'')!==$p['executable']||($proof['hookSha256']??'')!==$installed['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery']||($proof['helperSha256']??'')!==$installed[$base.'native-fence.php']||($proof['liveHelperSha256']??'')!==hash('sha256',$hash))throw new RuntimeException('The installed native fence is not proven active for this libvirt process; update refused.');
+    $uuid=$r['vmUuid'];$a=$read($run.'/live-admissions/'.$uuid.'.json');$at=array_search('-uuid',$q['argv'],true);$name=$r['vmName']??'';
+    $compact=['pid'=>$q['pid'],'startTicks'=>$q['startTicks'],'exe'=>$q['executable'],'bootId'=>$q['bootId'],'uuid'=>$uuid];
+    if(!is_string($name)||$name===''||str_contains($name,'/')||str_contains($name,"\0")||$at===false||strtolower((string)($q['argv'][$at+1]??''))!==$uuid||$q['bootId']!==$boot||!str_starts_with(basename($q['executable']),'qemu-system-')||trim((string)@file_get_contents('/run/libvirt/qemu/'.$name.'.pid'))!==(string)$q['pid']||($a['jobId']??'')!==$r['jobId']||($a['bootId']??'')!==$boot||($a['phase']??'')!=='RUNNING'||($a['qemu']??null)!==$compact||!unmProcessIdentityMatches($q))throw new RuntimeException('The running live owner does not match its existing native admission; update refused without adopting or restarting it.');
+}
+
 function unmProcessPreinstall(): void {
     if(!function_exists('posix_kill'))throw new RuntimeException('PHP POSIX support is required for safe unMotion service upgrades.');
     $bootRestore=unmProcessEarlyBootRestore();
@@ -225,7 +258,8 @@ function unmProcessPreinstall(): void {
     // Do not break fencing restoration at boot or prevent an already-protocol-7
     // host from installing cleanup fixes. Legacy entries still cannot mutate.
     if(!$bootRestore&&$installedProtocol!==7)unmProcessAssertPreparedCompatible('/boot/config/plugins/unmotion',7);
-    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore);
+    $fenceFiles=function_exists('unmProcessTargetFenceFiles')?unmProcessTargetFenceFiles():[];
+    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore,$fenceFiles);
     if($bootRestore)echo "unMotion: restoring plugin during verified early boot, before VM Manager or QEMU. Durable recovery authority remains fenced.\n";
     $inventory=unmProcessUpgradeInventory();
     if($inventory['workers'])throw new RuntimeException('An unMotion migration, prepared-copy, replication, recovery, incoming transfer, remote request or delayed-cleanup worker is active. Let it finish or cancel it, then retry the upgrade. Do not start new operations while upgrading. No package or pairing settings have been changed.');
@@ -238,6 +272,7 @@ function unmProcessPreinstall(): void {
     // Never terminate that worker or replace its scripts/transport underneath it.
     $remaining=unmProcessUpgradeInventory();
     if($remaining['workers']||$remaining['daemons'])throw new RuntimeException('An unMotion worker or daemon appeared while stopping scheduling. Upgrade refused; let active work finish and retry. Stopped runtime daemons restart on successful installation or host boot.');
+    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore,$fenceFiles);
     echo "unMotion upgrade guard: no active workers; verified scheduling/lifecycle daemons stopped. Do not start new operations until installation completes.\n";
 }
 
@@ -255,9 +290,8 @@ function unmProcessAssertPreparedCompatible(string $base,int $targetProtocol): v
     }
 }
 
-// No adoption of an already-running managed QEMU into a new native start fence.
-// Run before stopping lifecycle services or replacing any installed file.
-function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false): void {
+// Compatible settled owners keep their existing admission. Never adopt a QEMU.
+function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false,array $fenceFiles=[]): void {
     $liveManaged=[];
     foreach(array_unique(array_merge(glob($base.'/live-managed/*.json')?:[],glob($base.'/live-authority/*.json')?:[])) as $candidate){
         $path=$base.'/live-managed/'.basename($candidate);
@@ -267,19 +301,29 @@ function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins
         if(isset($r['workflow'])&&!in_array($r['workflow'],['ordinary','ordinary-pending'],true)||($r['workflow']??'')==='ordinary-pending'&&(($r['state']??'')!=='OWNER'||!preg_match('/\A[a-f0-9]{32}\z/D',(string)($r['handbackNonce']??''))))throw new RuntimeException('Corrupt ordinary hand-back authority prevents upgrade.');
         if(!$verifiedEarlyBoot&&($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Finish the pending ordinary hand-back before upgrading.');
         if(!in_array($r['role']??'',['source','destination'],true)||!preg_match($pattern,(string)($r['sourceHostId']??''))||!preg_match($pattern,(string)($r['destinationHostId']??''))||$r['sourceHostId']===$r['destinationHostId']||($r[$r['role'].'HostId']??'')!==$host||!preg_match($pattern,(string)($r['bootId']??''))||!is_int($r['expiresAt']??null)||!in_array($r['state'],$r['role']==='source'?['OWNER','MOVING','RETIRED']:['OWNER','RECEIVING','ABORTED'],true))throw new RuntimeException('Live authority host/role is invalid; upgrade refused.');
-        if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=true;
+        if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=$r;
     }
+    if(!$verifiedEarlyBoot)foreach(glob($base.'/live-migration/jobs/*/job.json')?:[] as $path){$j=json_decode((string)file_get_contents($path),true);if(!is_array($j)||!in_array($j['state']??'', ['COMPLETE','ABORTED','CANCELLED','FAILED','PROBE_FINISHED'],true))throw new RuntimeException('Finish or reconcile unfinished live migration '.basename(dirname($path)).' before upgrading.');}
     foreach(glob($base.'/native-managed/*.json')?:[] as $markerPath){$m=json_decode((string)@file_get_contents($markerPath),true);$id=(string)($m['replicationId']??'');$uuid=(string)($m['vmUuid']??'');$side=(string)($m['side']??'');if(!is_array($m)||($m['schemaVersion']??null)!==1||!preg_match('/^[a-f0-9-]{36}$/',$uuid)||!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!in_array($side,['source','destination'],true))throw new RuntimeException('Corrupt native managed identity prevents safe upgrade.');$paths=$side==='source'?[$base.'/replications/'.$id.'/recovery.json']:(glob($base.'/replicas/*/'.$id.'/recovery.json')?:[]);$matched=0;foreach($paths as $path){$r=json_decode((string)@file_get_contents($path),true);if(is_array($r)&&($r['replicationId']??'')===$id&&strtolower((string)($r['vmUuid']??''))===$uuid&&($r['side']??'')===$side)++$matched;}if($matched!==1)throw new RuntimeException('Exact native managed authority is missing or ambiguous; reconcile it before upgrading.');}
     $managed=$liveManaged;foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=json_decode((string)@file_get_contents($path),true);if(!is_array($r))throw new RuntimeException('Corrupt recovery authority must be reconciled before upgrade.');if(in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)&&empty($r['armed'])&&empty($r['managedAutostart'])&&empty($r['activationId'])&&empty($r['claim'])&&empty($r['activation']))continue;$uuid=strtolower((string)($r['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid managed VM identity prevents safe upgrade.');$managed[$uuid]=true;}
     if(!$managed)return;
+    // Recovery entries deliberately replace any live record with true. An
+    // overlapping recovery policy must never inherit the live-owner exception.
+    $recoveryManaged=array_filter($managed,static fn($entry)=>$entry===true);
     // At genuine rc.local boot replay libvirt is not started yet. The caller
     // proves that phase and absence of QEMU; missing libvirt alone is NEVER proof.
     // Authority/marker validation above is deliberately retained in both paths.
     if($verifiedEarlyBoot)return;
-    foreach(glob('/proc/[0-9]*/cmdline')?:[] as $file){$exe=(string)@readlink(dirname($file).'/exe');if(!str_starts_with(basename($exe),'qemu-system-'))continue;$args=explode("\0",rtrim((string)@file_get_contents($file),"\0"));$at=array_search('-uuid',$args,true);if($at!==false&&isset($liveManaged[strtolower((string)($args[$at+1]??''))]))throw new RuntimeException('A live-managed QEMU is running; upgrade refused even if libvirt cannot report it.');}
+    $hot=[];foreach(glob('/proc/[0-9]*/cmdline')?:[] as $file){$exe=(string)@readlink(dirname($file).'/exe');if(!str_starts_with(basename($exe),'qemu-system-'))continue;$args=explode("\0",rtrim((string)@file_get_contents($file),"\0"));$at=array_search('-uuid',$args,true);$uuid=$at===false?'':strtolower((string)($args[$at+1]??''));if(!isset($liveManaged[$uuid]))continue;
+        if(!$fenceFiles||isset($recoveryManaged[$uuid])||$liveManaged[$uuid]['state']!=='OWNER'||isset($hot[$uuid]))throw new RuntimeException('Running fenced/managed VM '.$uuid.' cannot use a compatible settled-owner upgrade.');
+        $q=unmProcessSnapshot((int)basename(dirname($file)));if(!$q)throw new RuntimeException('Managed QEMU lifetime changed during upgrade checks.');unmProcessLiveOwnerUpgradeable($liveManaged[$uuid],$q,$fenceFiles);$hot[$uuid]=$q;
+    }
     $run=static function(array $args):string{$p=proc_open(array_merge(['timeout','-k','2','15','virsh'],$args),[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['file','/dev/null','w']],$pipes);if(!is_resource($p))throw new RuntimeException('Cannot check managed VMs before upgrade.');$out=(string)stream_get_contents($pipes[1]);fclose($pipes[1]);if(proc_close($p)!==0)throw new RuntimeException('Libvirt state is unavailable; upgrade cannot prove managed VMs are stopped.');return trim($out);};
     $inventory=strtolower($run(['list','--all','--uuid']));$defined=$inventory===''?[]:preg_split('/\s+/',$inventory);foreach($defined as $entry)if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/',$entry))throw new RuntimeException('Libvirt returned an invalid VM inventory; upgrade refused.');
-    foreach(array_keys($managed) as $uuid)if(in_array($uuid,$defined,true)&&strtolower($run(['domstate',$uuid]))!=='shut off')throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
+    foreach(array_keys($managed) as $uuid){$state=in_array($uuid,$defined,true)?strtolower($run(['domstate',$uuid])):'undefined';
+        if(isset($hot[$uuid])){if(!in_array($state,['running','idle','paused'],true)||!unmProcessIdentityMatches($hot[$uuid]))throw new RuntimeException('Running owner/libvirt state changed during upgrade checks; retry without bypassing its admission.');continue;}
+        if(!in_array($state,['shut off','undefined'],true))throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
+    }
 }
 
 function unmProcessEarlyBootEvidence(array $ancestors,array $processes,bool $installed): bool {
@@ -309,11 +353,50 @@ function unmProcessEarlyBootRestore(): bool {
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){$process=unmProcessSnapshot((int)basename(dirname($path)));if($process!==null)$processes[]=$process;}
     return unmProcessEarlyBootEvidence($ancestors,$processes,false);
 }
-try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
+
+function unmProcessTargetFenceFiles(): array { return [
+'/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'=>'4fb76f687951e71cdffdc9caefa3f926d02f2aa4c62cda3426756d5567abd1ee',
+'/usr/local/emhttp/plugins/unmotion/include/native-fence.php'=>'45c17c4b1c25c6fe6080d00a7bcebe0ce01c9dec3260c549811a812cd58a484d',
+'/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php'=>'0e1b0477f1ba2be71d4bd7fb7dc7244d0387efb07c1a40b941205a157a7913aa',
+'/usr/local/emhttp/plugins/unmotion/include/live-firmware.php'=>'954bab34932480104653ff8b22b380839f00caf24bc707fcacdf69f396c46502',
+'/usr/local/emhttp/plugins/unmotion/include/live-storage.php'=>'db73984fb2ef16696a22997d74f35a0d98184d83878b545827743692b9020551',
+'/usr/local/emhttp/plugins/unmotion/include/live-zvol-native.php'=>'9c3a02af9819f96a2f66aabce47b5fbfa3573ed2b6ce67b0a0bf7f9075125a98',
+'/usr/local/emhttp/plugins/unmotion/include/live-tpm.php'=>'45bb6b24a7040a13a9100c8aee746f83e3187dbc607218458463bcd372bbd9b6',
+'/usr/local/emhttp/plugins/unmotion/include/xml-canonical.php'=>'9d681563bfdc86b0c151fc6e7adbe02f4bf91f5906f978f812aaf27ee409f6fa',
+]; }
+
+function unmProcessTargetFenceTransitions(): array { return array (
+  0 => 
+  array (
+    'from' => 
+    array (
+      '/etc/libvirt/hooks/qemu.d/50-unmotion-recovery' => '4fb76f687951e71cdffdc9caefa3f926d02f2aa4c62cda3426756d5567abd1ee',
+      '/usr/local/emhttp/plugins/unmotion/include/native-fence.php' => '35276f297935fec5a930822237ff459f5bcd245153b9653fb36267b1ebce299f',
+      '/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php' => '0e1b0477f1ba2be71d4bd7fb7dc7244d0387efb07c1a40b941205a157a7913aa',
+      '/usr/local/emhttp/plugins/unmotion/include/live-firmware.php' => '954bab34932480104653ff8b22b380839f00caf24bc707fcacdf69f396c46502',
+      '/usr/local/emhttp/plugins/unmotion/include/live-storage.php' => 'db73984fb2ef16696a22997d74f35a0d98184d83878b545827743692b9020551',
+      '/usr/local/emhttp/plugins/unmotion/include/live-zvol-native.php' => '9c3a02af9819f96a2f66aabce47b5fbfa3573ed2b6ce67b0a0bf7f9075125a98',
+      '/usr/local/emhttp/plugins/unmotion/include/live-tpm.php' => '45bb6b24a7040a13a9100c8aee746f83e3187dbc607218458463bcd372bbd9b6',
+      '/usr/local/emhttp/plugins/unmotion/include/xml-canonical.php' => '9d681563bfdc86b0c151fc6e7adbe02f4bf91f5906f978f812aaf27ee409f6fa',
+    ),
+    'to' => 
+    array (
+      '/etc/libvirt/hooks/qemu.d/50-unmotion-recovery' => '4fb76f687951e71cdffdc9caefa3f926d02f2aa4c62cda3426756d5567abd1ee',
+      '/usr/local/emhttp/plugins/unmotion/include/native-fence.php' => '45c17c4b1c25c6fe6080d00a7bcebe0ce01c9dec3260c549811a812cd58a484d',
+      '/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php' => '0e1b0477f1ba2be71d4bd7fb7dc7244d0387efb07c1a40b941205a157a7913aa',
+      '/usr/local/emhttp/plugins/unmotion/include/live-firmware.php' => '954bab34932480104653ff8b22b380839f00caf24bc707fcacdf69f396c46502',
+      '/usr/local/emhttp/plugins/unmotion/include/live-storage.php' => 'db73984fb2ef16696a22997d74f35a0d98184d83878b545827743692b9020551',
+      '/usr/local/emhttp/plugins/unmotion/include/live-zvol-native.php' => '9c3a02af9819f96a2f66aabce47b5fbfa3573ed2b6ce67b0a0bf7f9075125a98',
+      '/usr/local/emhttp/plugins/unmotion/include/live-tpm.php' => '45bb6b24a7040a13a9100c8aee746f83e3187dbc607218458463bcd372bbd9b6',
+      '/usr/local/emhttp/plugins/unmotion/include/xml-canonical.php' => '9d681563bfdc86b0c151fc6e7adbe02f4bf91f5906f978f812aaf27ee409f6fa',
+    ),
+  ),
+); }
+try { unmProcessPreinstall(); } catch (Throwable $error) { echo 'unMotion update blocked: '.$error->getMessage()."\n"; exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.5.0/unmotion-0.5.0_stable-noarch-1.txz</URL>
-<SHA256>98797cc5881211dd41cff715cb4aba3ca44b0cc533906bc6f15243728ae39af0</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.2/unmotion-0.5.2_stable-noarch-1.txz</URL>
+<SHA256>0c551e863df8aab501f144776bf03f325faf84c8cfbc1bfdc05f0b177ae79621</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
