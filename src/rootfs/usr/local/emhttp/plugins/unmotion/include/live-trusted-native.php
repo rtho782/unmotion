@@ -11,6 +11,7 @@ function unmLiveTrustedRollbackPossible(array $state,?array $current,array $orig
     return !$state['qemuAbsent']&&in_array($state['state'],['running','idle'],true)&&$current!==null&&$current===$original;
 }
 function unmLiveValidateJobMode(array $j): void {
+    if(array_key_exists('normalCompletionVersion',$j)&&$j['normalCompletionVersion']!==1)throw new RuntimeException('Unknown normal-completion contract; do not guess its cleanup policy.');
     $schema=$j['schemaVersion']??null;
     if($schema===1&&!array_key_exists('nativeHandoverVersion',$j))return;
     if($schema!==2||!unmLiveTrusted($j))throw new RuntimeException('Unknown or corrupt native handover job mode; do not fall back to the legacy transport.');

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.2-beta6 — 2026-11-14
+
+- A confirmed live-migration destination becomes a normal VM immediately without reboot, manual hand-back or an ongoing live hardware/start admission. Keep a synced, exact completion intent/receipt and the non-owning hosts' retired-copy fences/history. Restore the source's captured autostart choice on the destination; ordinary operation-specific power/TPM/device restrictions still apply.
+- New successful live moves automatically queue deletion of their exact obsolete source disks, NVRAM and TPM state after transfer sessions close. Reuse fresh paired ownership checks, identity-bound plans, short cleanup leases and durable per-object receipts. A deletion blocker is a separate cleanup result, not a failed handover; failed/resumable/unresolved copies are not silently discarded.
+- Support normal-owner cleanup and Cold/Warm return transfers, including a destination holding a previous retired UUID fence. Older completed owners can normalize without reboot after paired proof; older unrecorded data is not retroactively adopted for deletion.
+- Allow only a fully validated, activation-owned recovery VM through the recovery permit checks on a host with an older live-copy fence; the stale original remains blocked. A reviewed complete-graph upgrade transition pins both beta5 and beta6 native helper bytes; arbitrary fencing changes remain blocked with running managed guests.
+- Preserve the exact persisted authority, including its updated timestamp, when finishing normal Cold/Warm handover or rollback. Reconciliation also finishes normal release when ownership was saved before an interrupted reply.
+- Treat already-absent temporary TPM/NVRAM as explicit cleanup observations, never deletion authority for a replacement. Restore record-only archival for proven current-boot, never-started seeds with current worker/reservation metadata, including a failed cleanup attempt; preserve their logs without touching storage.
+- Validate recovered zvol aliases through their exact clone name and fresh ZFS/kernel identity instead of rejecting legitimate `/dev/zvol` symlinks. Regular image paths still reject symlinks.
+- Wire protocol 7 stays unchanged. Optional `liveNormalVersion: 1` is required for the new completion/normal return contract; live moves still require exact matching application versions. Lab qualification passed on DEV01 7.3.4 / DEV02 7.4.0. See `docs/NORMAL-LIVE-COMPLETION-BETA6.md`.
+
 ## 0.5.2-beta5 — 2026-11-14
 
 - Allow a settled, already-admitted live-migration owner to remain running during a compatible plugin upgrade. The installer pins the target package's complete native-fence dependency set and requires identical installed fencing code, current libvirt proof and the original same-boot QEMU admission. It does not adopt a process or rewrite ownership/admissions.

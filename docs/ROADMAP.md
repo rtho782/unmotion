@@ -73,6 +73,10 @@ Defer zvol/multiple-disk live migration, HTTPS transport and recovery arming aft
 
 ## Live migration follow-up
 
+### Normal completion and automatic source cleanup — 0.5.2-beta6
+
+Published on the opt-in beta feed: successful live moves leave a normal destination without reboot/manual hand-back and automatically delete verified obsolete source disks/NVRAM/TPM after sessions close. Completion/history records and non-owner start fences remain. Failed/unresolved data is retained; cleanup blockers stay actionable and separate from migration success. Qualified on DEV01 7.3.4 / DEV02 7.4.0, without production operations. See [workflow and qualification results](NORMAL-LIVE-COMPLETION-BETA6.md). Stable/Community Apps remains 0.5.0.
+
 ### Compatible running-owner upgrades — 0.5.2-beta5
 
 The beta supports settled migrated owners remaining running through an update when the target pins unchanged native-fence bytes and the current libvirt/QEMU admission remains exact. It retains old-copy fences and history without adopting a process. Active recovery guests, unfinished work, missing/inconsistent admission and fencing-code-changing updates remain outside this exception. See [actual running-upgrade qualification and limits](RUNNING-OWNER-UPGRADE-BETA5.md). Protocol 7 and live capabilities are unchanged; live peers still need matching application versions.

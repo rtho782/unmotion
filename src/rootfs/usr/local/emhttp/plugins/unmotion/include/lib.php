@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-const UNM_VERSION = '0.5.2-beta5';
+const UNM_VERSION = '0.5.2-beta6';
 require_once __DIR__.'/ssh-keys.php';
 require_once __DIR__.'/ssh-cipher.php';
 require_once __DIR__.'/pairing-trust.php';
@@ -29,6 +29,7 @@ require_once __DIR__.'/live-readiness.php';
 require_once __DIR__.'/live-ordinary.php';
 require_once __DIR__.'/live-cleanup.php';
 require_once __DIR__.'/live-cleanup-engine.php';
+require_once __DIR__.'/live-normal.php';
 require_once __DIR__.'/cleanup-plan.php';
 require_once __DIR__.'/replication-retirement.php';
 require_once __DIR__.'/replication-incarnation.php';
@@ -857,7 +858,7 @@ function unmCapabilities(): array {
     $toolNames=['virsh','zfs','zpool','qemu-img','rsync','tar','ssh','pv'];
     return ['protocolVersion'=>UNM_PROTOCOL,'protocolMinVersion'=>UNM_PROTOCOL_MIN,'protocolMaxVersion'=>UNM_PROTOCOL_MAX,'supportedProtocolVersions'=>range(UNM_PROTOCOL_MIN,UNM_PROTOCOL_MAX),'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'recoveryProtocolVersion'=>UNM_RECOVERY_PROTOCOL,'pluginVersion'=>UNM_VERSION,'hostId'=>unmHostId(),'hostname'=>gethostname()?:'unknown','ssh'=>unmSshStatus(),
         'storage'=>['imageDirectory'=>$cfg['image_dir'],'zvolDataset'=>$cfg['zvol_dataset'],'isoDirectory'=>$cfg['iso_dir'],'dedup'=>$cfg['dedup'],'compression'=>$cfg['compression'],'imageZfsDataset'=>$imageDataset,'imageZfsContainingDataset'=>$imageContaining,'isoZfsContainingDataset'=>$isoContaining,'zfsVersions'=>unmZfsVersions()],
-        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'nativeLiveVersion'=>1,'nativeLiveTrust'=>($cfg['trusted_native_live']??false)===true,'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
+        'resources'=>unmHostResources(),'inventoryViewVersion'=>1,'cpuCompatibilityVersion'=>2,'liveMigrationVersion'=>4,'liveDataTransportVersion'=>unmLiveNativeDataVersion(),'nativeLiveVersion'=>1,'liveNormalVersion'=>1,'nativeLiveTrust'=>($cfg['trusted_native_live']??false)===true,'liveOrdinaryVersion'=>1,'liveCleanupVersion'=>1,'retirementVersion'=>1,'seedCleanupVersion'=>1,'replicationIncarnationVersion'=>1,'zvolPathVersion'=>1,
         'features'=>['restrictedSshTransport'=>true,'verifiedHostKeyPairing'=>true,'parallelWarmCutover'=>is_executable('/usr/local/sbin/unmotion-start-destination'),'firmwareMapping'=>true,'customNvramReplication'=>true,'customNvramMigration'=>true,'zfs'=>$zfsAvailable,'zvol'=>$zvolReady,'zvolToImage'=>unmTool('qemu-img')&&unmTool('rsync'),'fileImages'=>unmTool('rsync'),'dedicatedDatasetImages'=>$zfsAvailable,'localClone'=>true,'ubuntuGuestCustomization'=>true,'warmMove'=>true,'warmZfsIncremental'=>$zfsAvailable,'warmRsyncSeed'=>unmTool('rsync'),'qemuGuestAgentQuiesce'=>true,'peerHealth'=>true,'tpm'=>unmTool('swtpm')||is_dir('/etc/libvirt/qemu/swtpm')||is_dir('/var/lib/libvirt/swtpm'),'isoCopy'=>unmTool('rsync'),'discovery'=>unmTool('avahi-browse'),'pciPassthroughMigration'=>false,'usbPassthroughPolicy'=>true,'liveUsbInventory'=>true,'jobCancellation'=>true,'resourceResize'=>true,'cpuPinningValidation'=>true,'streamingProgress'=>true,'delayedSourceCleanup'=>true,'destinationConflictHandling'=>true,'scheduledReplication'=>true,'replicationProtocolVersion'=>UNM_REPLICATION_PROTOCOL,'replicationRetention'=>true,'replicaInventory'=>true,'recoveryControlPlane'=>true,'managedAutostart'=>true,'gracefulHoldoff'=>true,'evidenceProbe'=>true,'recoveryActivation'=>true,'checkpointRetry'=>true,'activationRemoval'=>true,'coldFailbackPreflight'=>true,'witnessVote'=>false,'automaticFailover'=>false],
         'checks'=>$checks,'tools'=>array_combine($toolNames,array_map('unmTool',$toolNames)),'firmwareSettings'=>['ovmfPciMmio64'=>true]];
 }
@@ -3560,11 +3561,20 @@ function unmRecoveryCreateActivationObjects(array $objects,string $activationId)
     }catch(Throwable $e){try{unmRecoveryDestroyActivationObjects(array_reverse($created),$activationId);}catch(Throwable $cleanup){throw new RuntimeException($e->getMessage().' Exact partial activation cleanup also failed: '.$cleanup->getMessage(),0,$e);}throw $e;}
 }
 
+function unmRecoveryActivationDiskPath(array $object,string $target,?callable $inspect=null): void {
+    if(($object['kind']??'')==='zvol'){
+        $dataset=(string)($object['dataset']??'');if(!unmZfsObjectNameSafe($dataset)||$target!==unmZvolDevicePath($dataset))throw new RuntimeException('Activation volume path differs from its exact clone.');
+        // /dev/zvol names are legitimate ZFS symlinks. Validate their kernel
+        // block identity and fresh ZFS dataset, never allow an arbitrary link.
+        $v=($inspect??'unmLiveZvolInspect')($target);if(($v['dataset']??'')!==$dataset)throw new RuntimeException('Activation volume resolves to a different ZFS dataset.');return;
+    }
+    if(!file_exists($target)||is_link($target))throw new RuntimeException('Activation disk path did not appear safely after clone exposure: '.$target);
+}
 function unmRecoveryExposeActivationObjects(array $objects,string $activationId): array {
     foreach($objects as $object){if(!is_array($object))throw new RuntimeException('Activation storage journal is invalid.');unmRecoveryAssertActivationObject($object,$activationId);$dataset=(string)$object['dataset'];$kind=(string)($object['kind']??'');
         if($kind==='zvol'){$enable=unmRecoveryZfsProperty($dataset,'volmode')==='dev'?['code'=>0,'stderr'=>'']:unmRun(['zfs','set','volmode=dev',$dataset],null,30);}
         elseif($kind==='dataset'){$enable=unmRecoveryZfsProperty($dataset,'mounted')==='yes'?['code'=>0,'stderr'=>'']:unmRun(['zfs','mount',$dataset],null,30);}else throw new RuntimeException('Activation object kind is invalid.');
-        if($enable['code']!==0)throw new RuntimeException('Unable to expose activation object '.$dataset.': '.trim((string)$enable['stderr']));foreach((array)($object['mappings']??[]) as $target)if(!file_exists((string)$target)||is_link((string)$target))throw new RuntimeException('Activation disk path did not appear safely after clone exposure: '.$target);
+        if($enable['code']!==0)throw new RuntimeException('Unable to expose activation object '.$dataset.': '.trim((string)$enable['stderr']));foreach((array)($object['mappings']??[]) as $target)unmRecoveryActivationDiskPath($object,(string)$target);
     }return $objects;
 }
 

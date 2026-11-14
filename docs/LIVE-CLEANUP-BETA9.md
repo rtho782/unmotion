@@ -2,7 +2,9 @@
 
 Author: Richard Skinner
 
-Available in [stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0) through Community Apps/the stable feed. Install matching 0.5.0 on both paired hosts. The beta feed also offers this release. The filename is retained to preserve documentation links; see [qualification scope and limits](NATIVE-TRANSPORT-QUALIFICATION.md).
+Available in [stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0) through Community Apps/the stable feed. The opt-in beta feed offers [0.5.2-beta6](https://github.com/rtho782/unmotion/releases/tag/0.5.2-beta6). The filename is retained to preserve documentation links; see [qualification scope and limits](NATIVE-TRANSPORT-QUALIFICATION.md).
+
+**Beta6:** new successful live jobs automatically reclaim their exact obsolete source data after sessions close. The destination remains a normal VM, without reboot/manual hand-back. Its fresh normal-owner proof can endorse cleanup; the stable-only live-managed-owner requirement below no longer applies. Failed/cancelled/unresolved copies are not automatically discarded, and blocked cleanup needs review/retry. An already-absent temporary TPM/NVRAM is recorded as absent, never permission to delete a replacement. Small fences/history remain, and unknown legacy identities or recovery-managed authority still block deletion. See [beta6 instructions and results](NORMAL-LIVE-COMPLETION-BETA6.md). The remainder describes the stable 0.5.0 baseline unless noted.
 
 Live migration retains the original source disks and the data from failed/cancelled receivers. These are not continuously updated backups. Cleanup is a separate, explicit operation; successful migration never automatically deletes them.
 

@@ -11,6 +11,7 @@ eval('namespace OrdinaryFixture; use \\Throwable; use \\RuntimeException; use \\
 $base=sys_get_temp_dir().'/unmotion-ordinary-'.bin2hex(random_bytes(8));mkdir($base,0700);
 define(__NAMESPACE__.'\UNM_BOOT_DIR',$base);define(__NAMESPACE__.'\UNM_JOBS_DIR',$base.'/jobs');
 $checks=0;$writes=[];$lost=false;$capsVersion=1;$local='11111111-1111-4111-8111-000000000001';$remote='22222222-2222-4222-8222-222222222222';$uuid='33333333-3333-4333-8333-333333333333';$live='live-'.str_repeat('a',24);$transfer='job-20261109-ordinary';$nonce=str_repeat('b',32);
+$normalCert=null;$normalCapability=1;$normalProof=false;
 $xml='<domain><name>Squid Proxy</name><uuid>'.$uuid.'</uuid><devices><disk type="file" device="disk"><source file="/mnt/cache/domains/Squid Proxy/disk.qcow2"/></disk></devices></domain>';
 $record=['vmUuid'=>$uuid,'vmName'=>'Squid Proxy','state'=>'OWNER','role'=>'destination','diskPath'=>'/mnt/cache/domains/Squid Proxy/disk.qcow2','jobId'=>$live,'sourceHostId'=>$remote,'destinationHostId'=>$local];
 $job=['id'=>$live,'vmUuid'=>$uuid,'vmName'=>'Squid Proxy','state'=>'COMPLETE','role'=>'destination'];$ordinary=['id'=>$transfer,'vmUuid'=>$uuid,'vmName'=>'Squid Proxy','peerId'=>'peer-lab'];
@@ -19,7 +20,7 @@ function ok(bool $value,string $why):void{global $checks;$checks++;if(!$value)th
 function deny(callable $f,string $why):void{try{$f();}catch(\Throwable){ok(true,$why);return;}throw new \RuntimeException('Expected denial: '.$why);}
 function unmLiveJob($id){global $job;return $job;}
 function unmLiveNativeRecord($base,$uuid){global $record;return $record;}
-function unmLiveRecordReplace($next,$expected){global $record,$writes;ok($record===$expected,'Atomic authority compare-and-replace');$record=$next;$writes[]=$next;}
+function unmLiveRecordReplace($next,$expected){global $record,$writes;ok($record===$expected,'Atomic authority compare-and-replace');$next['updatedAt']='persisted-'.count($writes);$record=$next;$writes[]=$next;return $next;}
 function unmLivePeerForJob($j){global $peer;return $peer;}
 function unmPeer($id){global $peer;return $peer;}
 function unmLiveFenceProof(){}
@@ -45,13 +46,16 @@ function unmTransportReservationPath($peer,$id){return UNM_BOOT_DIR.'/reservatio
 function unmTransportValidateDomainXml($xml,$uuid,$peer){ok(\unmXmlValue($xml,'uuid')===$uuid,'Receiver validates exact reserved XML identity');}
 function unmXmlValue($xml,$tag){return \unmXmlValue($xml,$tag);}
 function unmRun($args,$stdin,$seconds){global $run;$run[]=[$args,$stdin];return ['code'=>0,'stdout'=>'defined','stderr'=>''];}
-function unmRemote($peer,$command,$seconds){global $capsVersion;return ['code'=>0,'stdout'=>json_encode(['hostId'=>$peer['hostId'],'liveOrdinaryVersion'=>$capsVersion]),'stderr'=>''];}
+function unmRemote($peer,$command,$seconds){global $capsVersion,$normalCapability;return ['code'=>0,'stdout'=>json_encode(['hostId'=>$peer['hostId'],'liveOrdinaryVersion'=>$capsVersion,'liveNormalVersion'=>$normalCapability]),'stderr'=>''];}
+function unmLiveNormalCurrent($uuid){global $normalCert;return $normalCert;}
+function unmLiveNormalRequirePeer($peer){global $normalCapability;if($normalCapability!==1)throw new \RuntimeException('Old peer');}
+function unmLiveNormalRelease($a,$kind,$id,$peer,$proof){global $record,$normalCert;ok($record===$a&&$a['state']==='OWNER','Release only exact committed owner');$normalCert=['kind'=>$kind,'jobId'=>$id,'peerHostId'=>$peer,'authority'=>$a];$record=null;return $normalCert;}
 function unmLiveRpc($peer,$action,$args,$seconds=30){
- global $remoteVm,$record,$lost,$rpc,$xml;$rpc[]=$action;
+ global $remoteVm,$record,$lost,$rpc,$xml,$normalProof;$rpc[]=$action;
  if($action==='status')return $remoteVm;
  if($action==='handback-ack'){ok(($record['workflow']??'')==='ordinary-pending','Owner fenced before callback');if($lost)throw new \RuntimeException('Lost reply');return ['retired'=>true,'nonce'=>$args['nonce']];}
  if(in_array($action,['ordinary-accept','ordinary-commit'],true)){ok($record['state']==='RETIRED','Source retired before destination authority request');return ['success'=>true,'nonce'=>$args['nonce']];}
- if($action==='ordinary-proof')return ['retired'=>true,'nonce'=>$args['nonce'],'xmlHash'=>\unmLiveXmlHash($xml)];
+ if($action==='ordinary-proof')return ['retired'=>true,'nonce'=>$args['nonce'],'xmlHash'=>\unmLiveXmlHash($xml),'normalReturn'=>$normalProof];
  throw new \RuntimeException('Unexpected RPC '.$action);
 }
 try{
@@ -78,6 +82,19 @@ try{
  $old=$xml;$xml=str_replace('Squid Proxy','Tampered VM',$xml);deny(fn()=>unmLiveOrdinaryRemote($peer,array_replace($a,['action'=>'ordinary-commit'])),'Changed definition cannot receive authority');$xml=$old;
  unmLiveOrdinaryRemote($peer,array_replace($a,['action'=>'ordinary-commit']));ok(unmLiveOrdinaryOwner($record),'Only defined unchanged receiver gets ownership');
  $xml=str_replace('Squid Proxy','Changed after commit',$xml);deny(fn()=>unmLiveOrdinaryRemote($peer,$a),'Retry cannot overwrite a changed committed owner');$xml=$old;
+ $normalCert=['authority'=>$record];$record=null;$normalCapability=0;deny(fn()=>unmLiveOrdinaryWorker($transfer,'check'),'Normal return fails preflight with an older peer');$normalCapability=1;
+ unmLiveOrdinaryWorker($transfer,'check');ok($record===null,'Normal owner checks do not install an enduring fence');
+ unmLiveOrdinaryWorker($transfer,'prepare');ok($record['state']==='MOVING'&&$record['normalReturn']===1,'Normal cutover creates only a temporary source handover');
+ unmLiveOrdinaryWorker($transfer,'rollback');ok($record===null&&$normalCert['kind']==='ordinary','Pre-retirement rollback restores a normal source without hand-back');
+ unmLiveOrdinaryWorker($transfer,'prepare');unmLiveOrdinaryWorker($transfer,'accept');$normalRetired=$record;ok($record['state']==='RETIRED','Normal source retired before receiver authority');
+ $nonce=$record['transferNonce'];$normalCert=null;$record=$normalRetired;unset($record['workflow']);$normalProof=true;$vm=['state'=>'undefined','qemuAbsent'=>true];$a=['action'=>'ordinary-accept','jobId'=>$transfer,'vmUuid'=>$uuid,'nonce'=>$nonce];
+ unmLiveOrdinaryRemote($peer,$a);ok($record['state']==='RECEIVING'&&$record['normalReturn']===1,'Fresh normal transfer can return to a previously fenced host');
+ unmLiveOrdinaryDefine($peer,$reservation,$xml);$vm=['state'=>'shut off','qemuAbsent'=>true];unmLiveOrdinaryRemote($peer,array_replace($a,['action'=>'ordinary-commit']));
+ ok($record===null&&$normalCert['kind']==='ordinary','Ordinary receiver is normal immediately at commit');
+ $vm=['state'=>'running','qemuAbsent'=>false];$xml=str_replace('Squid Proxy','Renamed normal VM',$xml);ok(unmLiveOrdinaryRemote($peer,$a)['committed']===true,'Lost acknowledgement retry does not overwrite or stop an edited/running normal owner');
+ $resume=substr($code,strpos($code,'function unmLiveOrdinaryResume'));
+ ok(strpos($resume,"unmLiveOrdinaryWorker(\$id,'commit');")>strpos($resume,"if(empty(\$reply['committed']))"),'Interrupted persisted OWNER still passes idempotent commit to finish normal release');
+ ok(str_contains($resume,"}\n    // OWNER")&&str_contains($resume,"\n    unmLiveOrdinaryWorker(\$id,'commit');"),'Reconciliation commit is outside optional definition branch');
  echo "Ordinary hand-back, stale reviews, lost replies, source fencing, mixed peers, nonce/peer binding and immutable receiver tests passed ($checks).\n";
 }finally{
  foreach([$dir.'/job.json',$dir.'/destination.xml',$stage.'/destination.xml'] as $p)if(is_file($p))unlink($p);

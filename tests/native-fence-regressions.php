@@ -35,6 +35,21 @@ try{
  denied(fn()=>$call('prepare',$dx),'destination manual start without permit denied');unmNativeIssueDestinationPermit($dest,$run);$call('prepare',$dx);$call('start',$dx);check(!file_exists($run.'/destination-permits/'.$uuid.'.json'),'destination one-shot consumed');$call('release',$dx);
  unmNativeIssueDestinationPermit($dest,$run);denied(fn()=>$call('prepare',str_replace($disk,'/etc/shadow',$dx)),'destination changed disk denied');
  $dest['activation']['phase']='DEFINED_STOPPED';unmNativeWrite($destPath,$dest);denied(fn()=>$call('prepare',$dx),'destination direct restart requires managed STARTING journal');
+ // A normal live-migrated VM may now use ordinary recovery on a former host.
+ // The old disk copy remains fenced; only the exact new activation reaches the
+ // recovery permit checks, and it still needs its normal one-shot grant.
+ $liveId='live-'.str_repeat('f',24);$oldLive=['schemaVersion'=>1,'vmUuid'=>$uuid,'vmName'=>'Squid Proxy','jobId'=>$liveId,'state'=>'RETIRED','role'=>'source','diskPath'=>'','sourceHostId'=>$peer,'destinationHostId'=>$host,'bootId'=>$boot,'expiresAt'=>time()+1000,'workflow'=>'ordinary'];
+ unmNativeWrite($base.'/live-authority/'.$uuid.'.json',$oldLive);unmNativeWrite($base.'/live-managed/'.$uuid.'.json',['schemaVersion'=>1,'vmUuid'=>$uuid,'jobId'=>$liveId]);$liveHash=hash_file('sha256',$base.'/live-authority/'.$uuid.'.json');
+ $dest['activation']['phase']='STARTING';unmNativeWrite($destPath,$dest);$call('release',$dx);
+ denied(fn()=>$call('prepare',$xml),'retired original UUID remains fenced with recovery configured');
+ denied(fn()=>$call('prepare',$dx),'activation still needs one-shot permit behind old live fence');
+ unmNativeIssueDestinationPermit($dest,$run);
+ denied(fn()=>$call('prepare',str_replace($act,'act-'.str_repeat('e',24),$dx)),'wrong activation cannot bypass old live fence');
+ denied(fn()=>$call('prepare',str_replace($disk,'/old/disk',$dx)),'old disk cannot borrow activation metadata');
+ $call('prepare',$dx);$call('start',$dx);check(!file_exists($run.'/destination-permits/'.$uuid.'.json'),'recovery on former live source consumes exact permit');
+ denied(fn()=>$call('start',$dx),'recovery permit replay still rejected');$call('release',$dx);
+ check(hash_file('sha256',$base.'/live-authority/'.$uuid.'.json')===$liveHash,'recovery never removes or rewrites old-copy fence');
+ denied(fn()=>$call('prepare',$xml),'original old copy remains fenced after activation stops');
  check(unmNativeProofStatus($run)['ready']===false,'missing native callback proof is not ready');
  denied(fn()=>unmNativeDaemon(getmypid()),'manual hook caller is not libvirt proof');
  echo 'Native pre-start fencing regressions passed: '.$checks." checks.\n";

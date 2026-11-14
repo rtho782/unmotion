@@ -16,6 +16,7 @@ trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/scripts" "$TMP/src"
 cp "$ROOT/scripts/build.sh" "$ROOT/scripts/build-native.sh" "$ROOT/scripts/release-version.sh" "$TMP/scripts/"
 cp -a "$ROOT/native" "$TMP/"
+cp -a "$ROOT/compatibility" "$TMP/"
 cp "$ROOT/LICENSE" "$TMP/"
 cp -a "$ROOT/src/rootfs" "$TMP/src/"
 bash -n "$TMP/scripts/build.sh"

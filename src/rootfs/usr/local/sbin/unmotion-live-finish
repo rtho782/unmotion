@@ -1,0 +1,16 @@
+#!/usr/bin/php
+<?php
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2026 Richard Skinner
+declare(strict_types=1);
+require '/usr/local/emhttp/plugins/unmotion/include/lib.php';
+try{
+    if(posix_geteuid()!==0||count($argv)!==2)throw new RuntimeException('Root and one completion job/scan are required.');umask(0077);putenv('LC_ALL=C');putenv('LANG=C');
+    $mode=$argv[1];$id=$mode==='--scan'?null:unmLiveId($mode);$lock=fopen('/var/lock/unmotion-live-finish-'.($id??'scan').'.lock','ce');if(!$lock||!flock($lock,LOCK_EX|LOCK_NB))exit(0);
+    if($id===null){unmLiveNormalScan();exit;}
+    $identity=unmProcessSnapshot(getmypid());if(!$identity||!unmProcessCommandMatches($identity,__FILE__,[$id]))throw new RuntimeException('Completion worker lifetime is not provable.');unmAtomicJson(dirname(unmLiveJobPath($id)).'/finish-process.json',$identity);
+    unmLiveNormalFinish($id);
+}catch(Throwable $e){
+    if(isset($id)&&$id!==null)try{$j=unmLiveJob($id);$r=unmLiveNormalRead($j['vmUuid']);$a=$r!==null&&$r['phase']==='RELEASING'?$r['authority']:unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);$field=($a['state']??'')==='OWNER'&&($a['jobId']??'')===$id?'normalCompletionError':'automaticCleanupError';$j[$field]=$e->getMessage();if($field==='normalCompletionError')$j['normalRetryAt']=time()+120;unmLiveStoreJob($j);unmLiveLog($id,'Handover result preserved; '.$field.': '.$e->getMessage());}catch(Throwable){}
+    fwrite(STDERR,$e->getMessage()."\n");exit(1);
+}

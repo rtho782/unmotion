@@ -7,7 +7,7 @@ function unmProcessUpgradeInventory(): array {
         // Incoming receivers have no local migration job. The forced-command
         // gate remains alive while its rsync/ZFS child streams; agents and the
         // destination-start helper also cover legacy/in-flight remote calls.
-        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-progress','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-native-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
+        'unmotion-ssh-gate','unmotion-agent','unmotion-start-destination','unmotion-inventory','unmotion-live-worker','unmotion-live-progress','unmotion-live-io','unmotion-live-stream','unmotion-live-key-gate','unmotion-live-native-gate','unmotion-live-client','unmotion-live-ordinary','unmotion-live-cleanup-worker','unmotion-live-finish','unmotion-cpu-editor','unmotion-retire-worker','unmotion-seed-cleanup'];
     foreach(glob('/proc/[0-9]*/stat')?:[] as $path){
         $identity=unmProcessSnapshot((int)basename(dirname($path)));if($identity===null)continue;
         foreach($scripts as $name){
@@ -27,19 +27,26 @@ function unmProcessFencePaths(): array {
     $base='/usr/local/emhttp/plugins/unmotion/include/';
     return array_merge(['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'],array_map(static fn($p)=>$base.$p,['native-fence.php','live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php']));
 }
-function unmProcessFenceCompatible(array $target): void {
+function unmProcessFenceCompatible(array $target): array {
     $paths=unmProcessFencePaths();$keys=array_keys($target);sort($paths);sort($keys);
     if($paths!==$keys)throw new RuntimeException('The update has no complete compatible native-fence contract; stop live-owned VMs before this fencing-code upgrade.');
-    foreach($target as $path=>$sha)if(!is_string($sha)||!preg_match('/\A[a-f0-9]{64}\z/D',$sha)||is_link($path)||!is_file($path)||!hash_equals($sha,(string)hash_file('sha256',$path)))throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');
+    $installed=[];foreach($target as $path=>$sha){if(!is_string($sha)||!preg_match('/\A[a-f0-9]{64}\z/D',$sha)||is_link($path)||!is_file($path))throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');$installed[$path]=(string)hash_file('sha256',$path);}
+    $same=static function(array $a,array $b):bool{ksort($a);ksort($b);return $a===$b;};
+    if($same($installed,$target))return $installed;
+    // A transition is pinned at BOTH ends. Leaving an old allowlist in a future
+    // build cannot silently bless that future build's changed native helper.
+    $transitions=function_exists('unmProcessTargetFenceTransitions')?unmProcessTargetFenceTransitions():[];
+    foreach($transitions as $t)if(is_array($t)&&is_array($t['from']??null)&&is_array($t['to']??null)&&$same($t['to'],$target)&&$same($t['from'],$installed))return $installed;
+    throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');
 }
 function unmProcessLiveOwnerUpgradeable(array $r,array $q,array $target,string $run='/run/unmotion/lifecycle'): void {
     if(($r['state']??'')!=='OWNER'||($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Only a settled live owner can remain running during an update.');
-    unmProcessFenceCompatible($target);
+    $installed=unmProcessFenceCompatible($target);
     $read=static function(string $p):array{if(is_link($p)||!is_file($p))throw new RuntimeException('Existing native VM admission/proof is missing; update refused without adopting the running VM.');$r=json_decode((string)file_get_contents($p),true);if(!is_array($r))throw new RuntimeException('Existing native VM admission/proof is corrupt.');return $r;};
     $boot=trim((string)file_get_contents('/proc/sys/kernel/random/boot_id'));
     $proof=$read($run.'/native-hook-proof.json');$daemon=$proof['daemon']??[];$p=unmProcessSnapshot((int)($daemon['pid']??0));
-    $base='/usr/local/emhttp/plugins/unmotion/include/';$hash='';foreach(['live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php'] as $file)$hash.=$target[$base.$file];
-    if(!$p||!in_array($p['executable'],['/usr/sbin/libvirtd','/usr/sbin/virtqemud','/usr/bin/libvirtd','/usr/bin/virtqemud'],true)||basename((string)($p['argv'][0]??''))!==basename($p['executable'])||($daemon['bootId']??'')!==$boot||($daemon['startTicks']??'')!==$p['startTicks']||($daemon['exe']??'')!==$p['executable']||($proof['hookSha256']??'')!==$target['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery']||($proof['helperSha256']??'')!==$target[$base.'native-fence.php']||($proof['liveHelperSha256']??'')!==hash('sha256',$hash))throw new RuntimeException('The unchanged native fence is not proven active for this libvirt process; update refused.');
+    $base='/usr/local/emhttp/plugins/unmotion/include/';$hash='';foreach(['live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php'] as $file)$hash.=$installed[$base.$file];
+    if(!$p||!in_array($p['executable'],['/usr/sbin/libvirtd','/usr/sbin/virtqemud','/usr/bin/libvirtd','/usr/bin/virtqemud'],true)||basename((string)($p['argv'][0]??''))!==basename($p['executable'])||($daemon['bootId']??'')!==$boot||($daemon['startTicks']??'')!==$p['startTicks']||($daemon['exe']??'')!==$p['executable']||($proof['hookSha256']??'')!==$installed['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery']||($proof['helperSha256']??'')!==$installed[$base.'native-fence.php']||($proof['liveHelperSha256']??'')!==hash('sha256',$hash))throw new RuntimeException('The installed native fence is not proven active for this libvirt process; update refused.');
     $uuid=$r['vmUuid'];$a=$read($run.'/live-admissions/'.$uuid.'.json');$at=array_search('-uuid',$q['argv'],true);$name=$r['vmName']??'';
     $compact=['pid'=>$q['pid'],'startTicks'=>$q['startTicks'],'exe'=>$q['executable'],'bootId'=>$q['bootId'],'uuid'=>$uuid];
     if(!is_string($name)||$name===''||str_contains($name,'/')||str_contains($name,"\0")||$at===false||strtolower((string)($q['argv'][$at+1]??''))!==$uuid||$q['bootId']!==$boot||!str_starts_with(basename($q['executable']),'qemu-system-')||trim((string)@file_get_contents('/run/libvirt/qemu/'.$name.'.pid'))!==(string)$q['pid']||($a['jobId']??'')!==$r['jobId']||($a['bootId']??'')!==$boot||($a['phase']??'')!=='RUNNING'||($a['qemu']??null)!==$compact||!unmProcessIdentityMatches($q))throw new RuntimeException('The running live owner does not match its existing native admission; update refused without adopting or restarting it.');

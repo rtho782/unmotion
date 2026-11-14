@@ -59,11 +59,12 @@ cat <<EOF
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="$PLUGIN_URL" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
 ### unMotion $VERSION
+- A completed live destination becomes a normal VM without reboot or a separate hand-back. Successful moves automatically clean up the exact obsolete source disks/NVRAM/TPM after transfer sessions close; blocked cleanup is reported separately, with old-copy start fences/history retained. Failed or unresolved transfers retain their data.
 - Permit same-vendor masked guests to move to an older physical CPU generation only after fresh complete guest CPU/nested validation. Repeat validation at receiver reservation; no physical-family ranking substitutes for compatibility proof.
 - Native OpenSSH/libvirt live migration without a custom payload relay, RPC inspector or extra application-controlled pause. Both peers must enable administrator-equivalent native migration trust. Disposable source-bound keys, persistent start fences and authenticated ownership reconciliation remain; this is not a per-path sandbox.
 - Settings selects AES-128-GCM (default) or AES-256-GCM for outgoing paired-host SSH connections, including Cold/Warm Move and replication. Cipher performance depends on the hosts and workload; no plaintext or silent fallback is offered.
 - Explicitly review and reclaim proven inactive live-migration copies on the non-owner host. Exact per-object identity, fresh paired ownership callbacks, short owner leases and retryable deletion receipts protect active data; native start fences and job history remain.
-- Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No automatic or recursive cleanup is introduced.
+- Older zvol GUID records can prove individual volumes. Unrecorded legacy file/TPM/NVRAM identities remain protected instead of being adopted by filename. No recursive cleanup is introduced; new successful jobs use the exact automatic cleanup described above.
 - Require a durable successful native finish receipt bound to the exact receiver boot, QEMU process and storage/XML contract before committing an uncommitted receiver. Paused state or received-byte counters alone do not prove transfer completion.
 - Experimental native software-TPM 2.0 live migration with fresh matching swtpm/libtpms checks, independent job/UUID-scoped destination state, exact native start fencing and retained source/partial state. No shared storage is required. Encrypted/custom-profile TPM backends remain excluded.
 - Live migration supports one to sixteen independent raw/qcow2 file disks or whole raw ZFS volumes, including mixed guests. Zvols remain zvols, with independent job-owned destinations and full reservations; unrelated block devices and attached ISOs remain excluded.
@@ -72,8 +73,8 @@ cat <<EOF
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
 - Preserve protocol 7. Live capability 4 requires matching $VERSION peers and native-data capability 1; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
-- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough, automatic failover and recovery arming after live hand-back remain excluded.
-- Source/partial live disks, NVRAM and TPM state are retained. No automatic source-disk reclamation or shared-storage service is introduced.
+- Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough and automatic failover remain excluded. Recovery arming after normal completion follows the separate recovery prerequisites.
+- New successful live moves automatically remove verified obsolete source disks, NVRAM and TPM after sessions close. Failed/unresolved copies and blocked cleanup retain their data. No shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
 </CHANGES>
 EOF
@@ -88,6 +89,9 @@ for file in etc/libvirt/hooks/qemu.d/50-unmotion-recovery usr/local/emhttp/plugi
   printf "'/%s'=>'%s',\n" "$file" "$(sha256sum "$STAGE/$file" | awk '{print $1}')"
 done
 printf ']; }\n'
+printf '\nfunction unmProcessTargetFenceTransitions(): array { return '
+php -r '$v=json_decode(file_get_contents($argv[1]),true,32,JSON_THROW_ON_ERROR);if(!is_array($v))exit(1);var_export($v);' "$ROOT/compatibility/native-fence-transitions.json"
+printf '; }\n'
 cat <<'EOF'
 try { unmProcessPreinstall(); } catch (Throwable $error) { echo 'unMotion update blocked: '.$error->getMessage()."\n"; exit(1); }
 ]]></INLINE></FILE>

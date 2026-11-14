@@ -108,13 +108,22 @@ function unmNativeIssueDestinationPermit(array $record,string $run='/run/unmotio
     $uuid=strtolower((string)($record['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid destination permit UUID.');
     unmNativeWrite($run.'/destination-permits/'.$uuid.'.json',['schemaVersion'=>1,'replicationId'=>(string)$record['replicationId'],'vmUuid'=>$uuid,'side'=>'destination','bootId'=>unmNativeBoot(),'term'=>(int)$record['term'],'activationId'=>(string)$record['activationId'],'grantSha256'=>hash('sha256',json_encode((array)$record['startGrant'],JSON_UNESCAPED_SLASHES|JSON_THROW_ON_ERROR)),'nonce'=>bin2hex(random_bytes(24)),'expiresAt'=>time()+30]);
 }
+/** A newly activation-owned recovery domain is not the retired disk copy.
+ * This only selects the recovery fence; all exact disk/grant/one-shot/lifetime
+ * validation below remains mandatory. A plain old UUID never gets this route.
+ */
+function unmNativeLiveRecoveryBridge(?array $live,?array $context,array $domain): bool {
+    $r=$context['record']??[];
+    return $live!==null&&in_array($live['state'],['RETIRED','ABORTED'],true)&&($context['side']??'')==='destination'&&($domain['activationCount']??0)===1&&($domain['replicationId']??'')===($context['id']??null)&&($domain['activationId']??'')!==''&&($domain['activationId']??'')===($r['activationId']??null)&&($r['authority']??'')==='DESTINATION'&&in_array($r['state']??'',['ACTIVATING','RECOVERED_STOPPED','RECOVERY_BOOT_FAILED','RECOVERED_RUNNING'],true);
+}
 function unmNativeFence(string $operation,string $phase,string $xml,string $base='/boot/config/plugins/unmotion',string $run='/run/unmotion/lifecycle',string $locks='/var/lock',?string $testBoot=null): void {
     if(!in_array($operation,['prepare','start','started','restore','migrate','attach','reconnect','release'],true))return;
     $domain=unmNativeDomain($xml);$uuid=$domain['uuid'];$boot=$testBoot??unmNativeBoot();$admission=$run.'/native-admissions/'.$uuid.'.json';
-    unmLiveNativeFence($domain,$operation,$phase,$base,$run,$locks,$boot);
-    $context=unmNativeRecordForVm($base,$uuid);if($context===null){if($domain['activationCount']>0)throw new RuntimeException('Activation ownership exists without recovery authority.');return;}
+    $context=unmNativeRecordForVm($base,$uuid);$live=unmLiveNativeRecord($base,$uuid);$bridge=unmNativeLiveRecoveryBridge($live,$context,$domain);
+    if(!$bridge)unmLiveNativeFence($domain,$operation,$phase,$base,$run,$locks,$boot);
+    if($context===null){if($domain['activationCount']>0)throw new RuntimeException('Activation ownership exists without recovery authority.');return;}
     $id=$context['id'];$lock=unmNativeLock($id,$locks);
-    try{$context=unmNativeRecordForVm($base,$uuid);if($context===null)throw new RuntimeException('Recovery authority changed during native admission.');$r=$context['record'];$marker=$run.'/state/'.$id.'.running-authorized';
+    try{$context=unmNativeRecordForVm($base,$uuid);if($context===null||$context['id']!==$id||$bridge&&!unmNativeLiveRecoveryBridge(unmLiveNativeRecord($base,$uuid),$context,$domain))throw new RuntimeException('Recovery authority changed during native admission.');$r=$context['record'];$marker=$run.'/state/'.$id.'.running-authorized';
         if($operation==='release'){@unlink($admission);@unlink($run.'/start-permits/'.$id.'.json');@unlink($run.'/destination-permits/'.$uuid.'.json');@unlink($marker);return;}
         if(is_file(dirname($run).'/shutdown-fence'))throw new RuntimeException('The host shutdown fence is active.');
         if($domain['name']===''||str_contains($domain['name'],'/'))throw new RuntimeException('Managed VM has an unsafe libvirt name.');

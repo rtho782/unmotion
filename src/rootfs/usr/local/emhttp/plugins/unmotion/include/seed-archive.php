@@ -10,7 +10,8 @@ function unmSeedExecutionBootId(): string {
 /** Absence of a manifest alone is NOT evidence of a never-started transfer. */
 function unmSeedNeverStarted(string $dir,array $seed): bool {
     clearstatcache();
-    if(($seed['state']??'')!=='FAILED'||!preg_match('/^seed-[a-f0-9]{24}$/D',(string)($seed['id']??'')))return false;
+    $failed=($seed['state']??'')==='FAILED'||($seed['state']??'')==='CLEANUP_BLOCKED'&&($seed['preparationState']??'')==='FAILED'&&($seed['lastOperation']??'')==='cleanup';
+    if(!$failed||!preg_match('/^seed-[a-f0-9]{24}$/D',(string)($seed['id']??'')))return false;
     foreach(['storage','generation','baseSnapshot','pendingGeneration','pendingSnapshot','lastSyncAt','storageStarted'] as $key)if(!empty($seed[$key]))return false;
     $explicit=($seed['executionSchema']??null)===1&&($seed['storageStarted']??null)===false;
     // Do not use an unflushed pre-storage marker as proof after a host restart.
@@ -18,7 +19,7 @@ function unmSeedNeverStarted(string $dir,array $seed): bool {
     // Legacy workers open remote-capabilities.json before any snapshot or copy.
     // Failed removal attempts add only the two empty-scan bookkeeping files.
     $allowed=['seed.json','request.cfg','seed.log','launcher.log','storage.tsv','remove-source-candidates.txt'];
-    if($explicit)$allowed=array_merge($allowed,['remote-capabilities.json','vm.json','storage-new.tsv','held-snapshots.tsv']);
+    if($explicit)$allowed=array_merge($allowed,['remote-capabilities.json','vm.json','storage-new.tsv','held-snapshots.tsv','process.json','transport-reservation.json','cleanup.json']);
     $entries=@scandir($dir);if($entries===false||is_link($dir)||realpath($dir)!==$dir)return false;
     foreach($entries as $name){
         if($name==='.'||$name==='..')continue;
@@ -26,6 +27,9 @@ function unmSeedNeverStarted(string $dir,array $seed): bool {
         $st=@lstat($dir.'/'.$name);
         if(!$st||($st['mode']&0170000)!==0100000||$st['nlink']!==1)return false;
         if(in_array($name,['storage.tsv','storage-new.tsv','held-snapshots.tsv'],true)&&$st['size']!==0)return false;
+        // A failed deletion attempt must not hide actual source bases or an
+        // acknowledged remote deletion. Archive is local history only.
+        if($name==='cleanup.json'){$r=unmLoadJson($dir.'/'.$name);if(!$r||!isset($r['sourceSnapshots'])||$r['sourceSnapshots']!==[]||!empty($r['destinationAck']))return false;}
     }
     return is_file($dir.'/seed.json')&&is_file($dir.'/request.cfg');
 }

@@ -1,0 +1,24 @@
+[
+  {
+    "from": {
+      "/etc/libvirt/hooks/qemu.d/50-unmotion-recovery": "4fb76f687951e71cdffdc9caefa3f926d02f2aa4c62cda3426756d5567abd1ee",
+      "/usr/local/emhttp/plugins/unmotion/include/native-fence.php": "35276f297935fec5a930822237ff459f5bcd245153b9653fb36267b1ebce299f",
+      "/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php": "0e1b0477f1ba2be71d4bd7fb7dc7244d0387efb07c1a40b941205a157a7913aa",
+      "/usr/local/emhttp/plugins/unmotion/include/live-firmware.php": "954bab34932480104653ff8b22b380839f00caf24bc707fcacdf69f396c46502",
+      "/usr/local/emhttp/plugins/unmotion/include/live-storage.php": "db73984fb2ef16696a22997d74f35a0d98184d83878b545827743692b9020551",
+      "/usr/local/emhttp/plugins/unmotion/include/live-zvol-native.php": "9c3a02af9819f96a2f66aabce47b5fbfa3573ed2b6ce67b0a0bf7f9075125a98",
+      "/usr/local/emhttp/plugins/unmotion/include/live-tpm.php": "45bb6b24a7040a13a9100c8aee746f83e3187dbc607218458463bcd372bbd9b6",
+      "/usr/local/emhttp/plugins/unmotion/include/xml-canonical.php": "9d681563bfdc86b0c151fc6e7adbe02f4bf91f5906f978f812aaf27ee409f6fa"
+    },
+    "to": {
+      "/etc/libvirt/hooks/qemu.d/50-unmotion-recovery": "4fb76f687951e71cdffdc9caefa3f926d02f2aa4c62cda3426756d5567abd1ee",
+      "/usr/local/emhttp/plugins/unmotion/include/native-fence.php": "45c17c4b1c25c6fe6080d00a7bcebe0ce01c9dec3260c549811a812cd58a484d",
+      "/usr/local/emhttp/plugins/unmotion/include/live-native-fence.php": "0e1b0477f1ba2be71d4bd7fb7dc7244d0387efb07c1a40b941205a157a7913aa",
+      "/usr/local/emhttp/plugins/unmotion/include/live-firmware.php": "954bab34932480104653ff8b22b380839f00caf24bc707fcacdf69f396c46502",
+      "/usr/local/emhttp/plugins/unmotion/include/live-storage.php": "db73984fb2ef16696a22997d74f35a0d98184d83878b545827743692b9020551",
+      "/usr/local/emhttp/plugins/unmotion/include/live-zvol-native.php": "9c3a02af9819f96a2f66aabce47b5fbfa3573ed2b6ce67b0a0bf7f9075125a98",
+      "/usr/local/emhttp/plugins/unmotion/include/live-tpm.php": "45bb6b24a7040a13a9100c8aee746f83e3187dbc607218458463bcd372bbd9b6",
+      "/usr/local/emhttp/plugins/unmotion/include/xml-canonical.php": "9d681563bfdc86b0c151fc6e7adbe02f4bf91f5906f978f812aaf27ee409f6fa"
+    }
+  }
+]

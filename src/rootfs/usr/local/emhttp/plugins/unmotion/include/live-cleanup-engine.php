@@ -60,7 +60,9 @@ function unmLiveCleanupPlanCheck(array $j,array $objects,array $items,array $don
     if(unmLiveCleanupItems($objects)!==$items)throw new RuntimeException('Pinned deletion entries differ from the exact reviewed objects.');
     $refs=unmLiveCleanupReferences();$known=[];$pendingObjects=[];foreach($items as $item){$known[$item['id']]=true;if(isset($done[$item['id']])&&unmLiveCleanupItemPresent($item))throw new RuntimeException('Previously deleted storage has reappeared; cleanup will not delete its replacement.');}
     if(array_diff(array_keys($done),array_keys($known)))throw new RuntimeException('Unknown cleanup receipt entries.');
-    foreach($objects as $o){unmLiveCleanupObjectPath($o['kind'],$o['path'],$j['vmUuid']);unmLiveCleanupReferenceGuard($o,$refs);$remaining=array_values(array_filter($items,fn($i)=>$i['objectId']===$o['id']&&!isset($done[$i['id']])));if(!$remaining)continue;$pendingObjects[]=$o;
+    foreach($objects as $o){unmLiveCleanupObjectPath($o['kind'],$o['path'],$j['vmUuid']);unmLiveCleanupReferenceGuard($o,$refs);
+        if(($o['observed']['alreadyAbsent']??false)===true){if(!isset($done[$o['id']])||!unmLiveCleanupAbsentState($o))throw new RuntimeException('Previously absent host state reappeared; its replacement is not cleanup-authorized.');continue;}
+        $remaining=array_values(array_filter($items,fn($i)=>$i['objectId']===$o['id']&&!isset($done[$i['id']])));if(!$remaining)continue;$pendingObjects[]=$o;
         if($o['kind']==='zvol'){unmLiveCleanupZvolGuard($o);continue;}
         if(unmLiveCleanupFileIdentity($o['path'],$o['kind']==='tpm')!==$o['identity'])throw new RuntimeException('Retained object was replaced.');unmHostStateNoNestedMounts($o['path']);
         if($o['kind']==='image'){if(unmLiveCleanupInspect($j,$o)!==$o['observed'])throw new RuntimeException('Retained image changed after review.');continue;}
@@ -73,7 +75,7 @@ function unmLiveCleanupPreview(string $id): array {
     $j=unmLiveJob($id);$lock=unmLiveVmLock($j['vmUuid']);$old=unmLiveCleanupRecord($id);if(($old['state']??'')==='COMPLETE')return ['success'=>true,'complete'=>true,'id'=>$id,'vmName'=>$j['vmName'],'cleanup'=>unmLiveCleanupPublic($old),'objects'=>$old['objects'],'retained'=>$old['retained']??[]];
     $local=unmLiveCleanupLocalGuard($j);$peer=unmLiveCleanupPeer($j);$owner=unmLiveRpc($peer,'cleanup-owner',['jobId'=>$id])['owner']??null;if(!is_array($owner)||($owner['hostId']??'')!==$peer['hostId']||($owner['vmUuid']??'')!==$j['vmUuid'])throw new RuntimeException('The paired host did not prove current ownership.');
     if($old!==null){$objects=$old['objects'];$items=$old['items'];$done=unmLiveCleanupDerivedDone($old);$retained=$old['retained']??[];}
-    else{$objects=unmLiveCleanupManifest($j,$retained);$refs=unmLiveCleanupReferences();foreach($objects as &$o){unmLiveCleanupReferenceGuard($o,$refs);$o['observed']=unmLiveCleanupInspect($j,$o);}unset($o);unmLiveCleanupOpenGuard($objects);$items=unmLiveCleanupItems($objects);$done=[];}
+    else{$objects=unmLiveCleanupManifest($j,$retained);$refs=unmLiveCleanupReferences();$done=[];foreach($objects as &$o){unmLiveCleanupReferenceGuard($o,$refs);$o['observed']=unmLiveCleanupInspect($j,$o);if(($o['observed']['alreadyAbsent']??false)===true)$done[$o['id']]=['alreadyAbsent'=>true];}unset($o);unmLiveCleanupOpenGuard($objects);$items=unmLiveCleanupItems($objects);}
     unmLiveCleanupPlanCheck($j,$objects,$items,$done);$planHash=unmLiveCleanupHash([$objects,$items]);
     $review=unmLiveCleanupHash([$id,unmNativeBoot(),$local,$owner,$planHash,$done]);
     return ['success'=>true,'complete'=>false,'id'=>$id,'vmName'=>$j['vmName'],'owner'=>$owner,'review'=>$review,'planHash'=>$planHash,'objects'=>$objects,'items'=>$items,'done'=>$done,'retained'=>$retained,'allocatedBytes'=>array_sum(array_column(array_column($objects,'observed'),'allocatedBytes')),'cleanup'=>unmLiveCleanupPublic($old)];

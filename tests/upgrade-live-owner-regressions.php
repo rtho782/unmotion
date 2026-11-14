@@ -7,6 +7,9 @@ namespace LiveUpgradeFixture;
 $src=\file_get_contents(__DIR__.'/../src/rootfs/usr/local/emhttp/plugins/unmotion/include/process-upgrade.php');
 eval('namespace LiveUpgradeFixture; use \\RuntimeException;'.substr($src,strpos($src,'function unmProcessUpgradeInventory(')));
 $files=[];$links=[];$processes=[];$state='running';$listed=true;$checks=0;$commands=[];$codes=[];
+$transitions=[];
+function function_exists(string $name):bool {return $name==='unmProcessTargetFenceTransitions'||\function_exists($name);}
+function unmProcessTargetFenceTransitions():array {global $transitions;return $transitions;}
 function file_get_contents(string $p):string|false {global $files;return $files[$p]??false;}
 function is_file(string $p):bool {global $files;return isset($files[$p]);}
 function is_link(string $p):bool {global $links;return isset($links[$p]);}
@@ -47,5 +50,9 @@ $listed=false;rejects($call,'Running QEMU hidden from libvirt');$listed=true;$st
 put($base.'/replications/repl-'.str_repeat('b',24).'/recovery.json',['vmUuid'=>$uuid,'state'=>'STANDBY','armed'=>true]);rejects($call,'Recovery-managed overlap cannot inherit live exception');$files=$good;
 $r['workflow']='ordinary';put($base.'/live-authority/'.$uuid.'.json',$r);$call();check(true,'Settled ordinary owner retains compatible UUID fence');$files=$good;
 rejects(fn()=>unmProcessAssertManagedGuestsStopped($base,false,[]),'Unspecified target never adopts a running VM');
+$new=$target;$new[$inc.'native-fence.php']=hash('sha256','reviewed new recovery bridge');$transitions=[['from'=>$target,'to'=>$new]];
+unmProcessAssertManagedGuestsStopped($base,false,$new);check(true,'Reviewed complete graph transition preserves the original running admission');
+$unknown=$new;$unknown[$inc.'native-fence.php']=hash('sha256','later unreviewed code');rejects(fn()=>unmProcessAssertManagedGuestsStopped($base,false,$unknown),'An old allowlist cannot bless later unknown target code');
+$transitions[0]['from'][$inc.'native-fence.php']=hash('sha256','uninstalled old code');rejects(fn()=>unmProcessAssertManagedGuestsStopped($base,false,$new),'Installed graph must match the reviewed source exactly');$transitions=[];
 check($files===$good,'Rejected checks never rewrote authority/admission');check(!$codes,'No command handles leaked');
 echo 'Running-owner upgrade compatibility, lifetime, retained-fence and rejection regressions passed ('.$checks.").\n";

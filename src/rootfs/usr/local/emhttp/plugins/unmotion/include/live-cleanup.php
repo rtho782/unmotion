@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 // Copyright (C) 2026 Richard Skinner
 declare(strict_types=1);
+require_once __DIR__.'/live-normal.php';
 
 // Explicit inactive-copy reclamation. Never loaded by the synchronous hook.
 const UNM_LIVE_CLEANUP_VERSION=1;
@@ -89,6 +90,7 @@ function unmLiveCleanupInterlock(string $uuid): void {
 }
 /** Only current, exact, live-ledger ownership can endorse deleting another copy. */
 function unmLiveCleanupOwnerProof(array $j): array {
+    $normal=unmLiveNormalCleanupProof($j);if($normal!==null)return $normal;
     unmLiveFenceProof();$r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);
     if(!$r||$r['state']!=='OWNER'||isset($r['workflow'])||unmNativeRecordForVm(UNM_BOOT_DIR,$j['vmUuid'])!==null)throw new RuntimeException('The paired host must prove current live ownership, not recovery, hand-back or an unresolved transfer.');
     $s=unmLiveVmState($j['vmUuid']);if(!in_array($s['state'],['running','idle','shut off'],true))throw new RuntimeException('The current owning VM is missing or uncertain.');
@@ -152,8 +154,20 @@ function unmLiveCleanupZvolGuard(array $o,?callable $command=null,?callable $ins
     if(trim($command(['zfs','get','-Hp','-o','value','receive_resume_token',$ds]))!=='-')throw new RuntimeException('A resumable receive is retained; live-copy cleanup cannot discard it.');
 }
 /** Small host state is content-bound; large images are inode-bound, never followed. */
+function unmLiveCleanupAbsentState(array $o): bool {
+    if(!in_array($o['kind'],['tpm','nvram'],true))return false;
+    // Libvirt may remove an aborted incoming TPM. Absence is an observation,
+    // never permission to unlink a later replacement or adopt a new identity.
+    clearstatcache();for($p=$o['path'];$p!==dirname($p);$p=dirname($p))if(is_link($p))throw new RuntimeException('Absent host-state path was redirected.');
+    if(@lstat($o['path'])!==false)return false;
+    $missing=$o['path'];for($p=dirname($missing);!file_exists($p);$p=dirname($p)){$missing=$p;if($p===dirname($p))throw new RuntimeException('Cannot prove host-state parent.');}
+    if(!is_dir($p)||realpath($p)!==$p||!is_readable($p))throw new RuntimeException('Cannot prove absent host-state inventory.');
+    $entries=scandir($p);if($entries===false||in_array(basename($missing),$entries,true))throw new RuntimeException('Host-state absence could not be confirmed from its parent inventory.');
+    return true;
+}
 function unmLiveCleanupInspect(array $j,array $o): array {
     if($o['kind']==='zvol'){unmLiveCleanupZvolGuard($o);$used=trim(unmLiveCommand(['zfs','get','-Hp','-o','value','used',$o['identity']['dataset']]));if(!ctype_digit($used))throw new RuntimeException('Retained zvol allocation unavailable.');return ['identity'=>$o['identity'],'allocatedBytes'=>(int)$used,'logicalBytes'=>$o['identity']['volsize']];}
+    if(unmLiveCleanupAbsentState($o))return ['identity'=>$o['identity'],'alreadyAbsent'=>true,'allocatedBytes'=>0,'logicalBytes'=>0];
     if(unmLiveCleanupFileIdentity($o['path'],$o['kind']==='tpm')!==$o['identity'])throw new RuntimeException('Retained file/directory identity changed.');unmLiveFileSystem($o['path']);unmHostStateNoNestedMounts($o['path']);
     if($o['kind']==='tpm'||$o['kind']==='nvram'){$e=unmHostStateEvidence($o['path'],$o['kind'],$j['vmUuid']);if(empty($e['cleanupAllowed']))throw new RuntimeException('Host-state path is not cleanup-safe.');$bytes=0;foreach($e['entries'] as $relative=>$entry){$p=$o['path'].($relative!==''?'/'.$relative:'');$s=lstat($p);$bytes+=$s['blocks']*512;}return ['identity'=>$o['identity'],'evidence'=>$e,'allocatedBytes'=>$bytes,'logicalBytes'=>$bytes];}
     $s=lstat($o['path']);$info=json_decode(unmLiveCommand(['qemu-img','info','--force-share','--output=json',$o['path']]),true,32,JSON_THROW_ON_ERROR);

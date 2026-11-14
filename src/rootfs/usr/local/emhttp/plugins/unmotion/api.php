@@ -36,6 +36,7 @@ try {
         case 'liveStart':
             requirePostMutation();reply(['success'=>true,'job'=>unmLiveCreate((string)($_POST['vm_id']??''),(string)($_POST['peer_id']??''))]);
         case 'liveJobs': reply(['success'=>true,'jobs'=>unmLivePublicJobs()]);
+        case 'liveFinish': requirePostMutation();unmLiveNormalQueue(unmLiveId((string)($_POST['id']??'')));reply(['success'=>true,'message'=>'Completion retry queued; no VM restart is required.']);
         case 'liveCleanupPreview': requirePostMutation();reply(unmLiveCleanupPreview(unmLiveId((string)($_POST['id']??''))));
         case 'liveCleanupStart':
             requirePostMutation();if(($_POST['confirmation']??'')!=='delete-inactive-copy')throw new RuntimeException('Confirm deletion of the reviewed inactive copy.');

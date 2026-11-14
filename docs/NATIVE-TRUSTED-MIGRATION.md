@@ -4,7 +4,7 @@ Author: Richard Skinner.
 
 Design and bounded qualification for **0.5.2-beta4**, published on the opt-in beta feed on 2026-11-14; stable/Community Apps remains **0.5.0**. Production was not accessed or changed for this work. Measurements and broader guest/fault tests below used the earlier C6 core build; the final C7 package adds an early legacy-queue launch guard and version metadata, with its own verification/upgrade/native smoke checks and [real host-loss/reboot qualification](NATIVE-HOST-LOSS-052-QUALIFICATION.md).
 
-The current opt-in beta is **0.5.2-beta5**. It retains this native transport and adds [compatible upgrades with settled owners running](RUNNING-OWNER-UPGRADE-BETA5.md). Both live peers need matching beta5. The beta4 measurements/artifact identities below remain historical qualification, not newly repeated beta5 performance or host-loss tests.
+The current opt-in beta is **0.5.2-beta6**. It retains this native transport, supports the reviewed running-owner upgrade and adds [normal VM completion with automatic exact source cleanup](NORMAL-LIVE-COMPLETION-BETA6.md). Both live peers need matching beta6. Completed normal VMs need no shutdown/manual hand-back; failed/unresolved copies stay protected. The beta4 measurements/artifact identities below remain historical qualification, not newly repeated beta6 performance or host-loss tests.
 
 ## SSH encryption
 

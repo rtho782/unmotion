@@ -12,7 +12,7 @@ function unmLiveOrdinaryResolutionCheck(string $uuid,string $id): bool {
     if(($r['workflow']??'')!=='ordinary'||$r['state']!=='RETIRED'||($r['transferId']??'')!==$id||$j['vmUuid']!==$uuid||($r['transferPeer']??'')!==unmPeer($j['peerId'])['hostId'])throw new RuntimeException('Only the exact retired ordinary handover can finish its source policy.');
     return true;
 }
-function unmLiveRecordReplace(array $r,?array $expected): void {
+function unmLiveRecordReplace(array $r,?array $expected): array {
     $lock=unmNativeLock('live-'.$r['vmUuid']);
     try{
         $old=unmLiveNativeRecord(UNM_BOOT_DIR,$r['vmUuid']);
@@ -22,6 +22,7 @@ function unmLiveRecordReplace(array $r,?array $expected): void {
         $r['updatedAt']=gmdate('c');unmNativeWrite(UNM_BOOT_DIR.'/live-authority/'.$r['vmUuid'].'.json',$r);
         unmNativeWrite(UNM_BOOT_DIR.'/live-managed/'.$r['vmUuid'].'.json',['schemaVersion'=>1,'vmUuid'=>$r['vmUuid'],'jobId'=>$r['jobId']]);
         unmLiveCommand(['sync','-f',UNM_BOOT_DIR.'/live-authority/'.$r['vmUuid'].'.json']);unmLiveCommand(['sync','-f',UNM_BOOT_DIR.'/live-managed/'.$r['vmUuid'].'.json']);
+        return $r;
     }finally{flock($lock,LOCK_UN);fclose($lock);}
 }
 function unmLiveHandbackReview(string $id): array {
@@ -75,17 +76,21 @@ function unmLiveOrdinaryJob(string $id): array {
     $j['vmUuid']=$uuid;return $j;
 }
 function unmLiveOrdinaryCheck(array $j): ?array {
-    $r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);if($r===null)return null;
+    unmLiveCleanupInterlock($j['vmUuid']);
+    $r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);
+    if($r===null){$normal=unmLiveNormalCurrent($j['vmUuid']);if($normal===null)return null;$r=$normal['authority'];$r['workflow']='ordinary';$r['normalReturn']=1;}
     if(!unmLiveOrdinaryOwner($r)&&!(($r['workflow']??'')==='ordinary'&&($r['transferId']??'')===$j['id']&&in_array($r['state'],['MOVING','RETIRED'],true)))throw new RuntimeException('Ordinary migration has no owning live hand-back.');
     $peer=unmPeer($j['peerId']);$caps=unmRemote($peer,'/usr/local/sbin/unmotion-agent capabilities',20);$c=$caps['code']===0?json_decode($caps['stdout'],true):null;
     if(($c['hostId']??'')!==$peer['hostId']||($c['liveOrdinaryVersion']??null)!==1)throw new RuntimeException('A previously live-migrated VM needs Beta5 or later on both peers for Cold/Warm Move.');
+    if(($r['normalReturn']??null)===1&&($c['liveNormalVersion']??null)!==1)throw new RuntimeException('Normal-owner return transfers need beta6 or later on both hosts.');
     return $r;
 }
 /** Called under the ordinary worker's lifetime VM lock. No automatic ownership rollback after retirement. */
 function unmLiveOrdinaryWorker(string $id,string $operation): bool {
-    $j=unmLiveOrdinaryJob($id);$r=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);if($r===null)return false;
+    $j=unmLiveOrdinaryJob($id);$stored=unmLiveNativeRecord(UNM_BOOT_DIR,$j['vmUuid']);$r=$stored;
+    if($r===null){$normal=unmLiveNormalCurrent($j['vmUuid']);if($normal===null)return false;$r=$normal['authority'];$r['workflow']='ordinary';$r['normalReturn']=1;}
     if($operation==='rollback'){
-        if(($r['workflow']??'')==='ordinary'&&($r['transferId']??'')===$id&&$r['state']==='MOVING'){$next=$r;$next['state']='OWNER';unmLiveRecordReplace($next,$r);}
+        if(($r['workflow']??'')==='ordinary'&&($r['transferId']??'')===$id&&$r['state']==='MOVING'){$next=$r;$next['state']='OWNER';$next=unmLiveRecordReplace($next,$r);if(($next['normalReturn']??null)===1)unmLiveNormalRelease($next,'ordinary',$id,(string)$next['transferPeer'],['unretiredOrdinaryRollback'=>true]);}
         return true;
     }
     unmLiveOrdinaryCheck($j);if($operation==='check')return true;
@@ -94,7 +99,7 @@ function unmLiveOrdinaryWorker(string $id,string $operation): bool {
     if($operation==='prepare'){
         if(!unmLiveOrdinaryOwner($r))throw new RuntimeException('Ordinary source is already fenced by an unfinished transfer.');
         $next=$r;$next['state']='MOVING';$next['role']='source';$next['sourceHostId']=unmHostId();$next['destinationHostId']=$peer['hostId'];$next['bootId']=unmNativeBoot();$next['expiresAt']=time()+21600;$next['transferId']=$id;$next['transferPeer']=$peer['hostId'];$next['transferNonce']=bin2hex(random_bytes(16));
-        $j['ordinaryHandover']=true;unmAtomicJson(UNM_JOBS_DIR.'/'.$id.'/job.json',$j);unmLiveRecordReplace($next,$r);return true;
+        $j['ordinaryHandover']=true;unmAtomicJson(UNM_JOBS_DIR.'/'.$id.'/job.json',$j);unmLiveRecordReplace($next,$stored);return true;
     }
     if($operation==='accept'){
         if(($r['transferId']??'')!==$id||!in_array($r['state'],['MOVING','RETIRED'],true))throw new RuntimeException('No exact ordinary source handover.');
@@ -111,13 +116,17 @@ function unmLiveOrdinaryRemote(array $peer,array $a): array {
     if($a['action']==='ordinary-proof'){
         $j=unmLiveOrdinaryJob($id);
         if($j['vmUuid']!==$uuid||unmPeer($j['peerId'])['hostId']!==$peer['hostId']||($r['workflow']??'')!=='ordinary'||$r['state']!=='RETIRED'||($r['transferId']??'')!==$id||($r['transferPeer']??'')!==$peer['hostId']||($r['transferNonce']??'')!==$a['nonce']||!unmLiveVmState($uuid)['qemuAbsent'])throw new RuntimeException('No exact, durably retired ordinary source proof.');
-        return ['success'=>true,'nonce'=>$a['nonce'],'retired'=>true,'xmlHash'=>$r['transferHash']];
+        return ['success'=>true,'nonce'=>$a['nonce'],'retired'=>true,'xmlHash'=>$r['transferHash'],'normalReturn'=>($r['normalReturn']??null)===1];
     }
     if(!in_array($a['action'],['ordinary-accept','ordinary-commit'],true))throw new RuntimeException('Invalid ordinary handover action.');
     $lock=unmLiveVmLock($uuid);$reservation=unmLoadJson(unmTransportReservationPath($peer,$id));
     if(($reservation['vmUuid']??'')!==$uuid||($reservation['sourceHostId']??'')!==$peer['hostId'])throw new RuntimeException('Ordinary handover has no exact peer-owned transfer reservation.');
     $proof=unmLiveRpc($peer,'ordinary-proof',['jobId'=>$id,'vmUuid'=>$uuid,'nonce'=>$a['nonce']]);
     if(empty($proof['retired'])||($proof['nonce']??'')!==$a['nonce'])throw new RuntimeException('Ordinary source callback failed.');
+    if(($proof['normalReturn']??false)===true){
+        unmLiveNormalRequirePeer($peer);$normal=unmLiveNormalCurrent($uuid);
+        if($r===null&&$normal!==null&&$normal['kind']==='ordinary'&&$normal['jobId']===$id&&$normal['peerHostId']===$peer['hostId']&&unmLiveVmState($uuid)['state']!=='undefined')return ['success'=>true,'nonce'=>$a['nonce'],'committed'=>true];
+    }
     $state=unmLiveVmState($uuid);if(!$state['qemuAbsent'])throw new RuntimeException('Destination is not verifiably powered off.');
     if($a['action']==='ordinary-accept'){
         $xmlPath=UNM_BOOT_DIR.'/incoming/'.$id.'/destination.xml';if(is_link($xmlPath)||!is_file($xmlPath))throw new RuntimeException('Missing reserved destination XML.');$xml=(string)file_get_contents($xmlPath);
@@ -127,14 +136,17 @@ function unmLiveOrdinaryRemote(array $peer,array $a): array {
             if($r['state']==='OWNER'&&($state['state']!=='shut off'||($r['definedHash']??'')!==unmCpuConfigHash(unmLiveCommand(['virsh','dumpxml',$uuid,'--inactive','--security-info']))))throw new RuntimeException('The committed owner changed; it must not be overwritten by a stale retry.');
             return ['success'=>true,'nonce'=>$a['nonce'],'committed'=>$r['state']==='OWNER'];
         }
-        if($state['state']!=='undefined'||$r&&!(($r['workflow']??'')==='ordinary'&&in_array($r['state'],['RETIRED','ABORTED'],true)))throw new RuntimeException('Destination must be absent with no conflicting ownership.');
+        if($state['state']!=='undefined'||$r&&!(in_array($r['state'],['RETIRED','ABORTED'],true)&&(($r['workflow']??'')==='ordinary'||($proof['normalReturn']??false)===true)))throw new RuntimeException('Destination must be absent with no conflicting ownership.');
         $next=['schemaVersion'=>1,'vmUuid'=>$uuid,'vmName'=>unmXmlValue($xml,'name'),'jobId'=>$r['jobId']??'live-'.substr(hash('sha256',$peer['hostId'].'|'.$id),0,24),'role'=>'destination','state'=>'RECEIVING','diskPath'=>'','sourceHostId'=>$peer['hostId'],'destinationHostId'=>unmHostId(),'bootId'=>unmNativeBoot(),'expiresAt'=>time()+21600,'workflow'=>'ordinary','transferId'=>$id,'transferNonce'=>$a['nonce'],'transferHash'=>$proof['xmlHash']];
+        if(($proof['normalReturn']??false)===true)$next['normalReturn']=1;
         // Missing records are admissible only for a UUID with no native live marker.
         if($r===null){unmLivePrivateDir(UNM_BOOT_DIR.'/live-authority');unmLivePrivateDir(UNM_BOOT_DIR.'/live-managed');}
         unmLiveRecordReplace($next,$r);return ['success'=>true,'nonce'=>$a['nonce']];
     }
     if(($r['workflow']??'')!=='ordinary'||($r['transferId']??'')!==$id||($r['transferNonce']??'')!==$a['nonce']||!in_array($r['state'],['RECEIVING','OWNER'],true)||$state['state']!=='shut off'||($r['definedHash']??'')!==unmCpuConfigHash(unmLiveCommand(['virsh','dumpxml',$uuid,'--inactive','--security-info'])))throw new RuntimeException('Ordinary destination definition changed or was never admitted.');
-    $next=$r;$next['state']='OWNER';unmLiveRecordReplace($next,$r);return ['success'=>true,'nonce'=>$a['nonce']];
+    $next=$r;$next['state']='OWNER';$next=unmLiveRecordReplace($next,$r);
+    if(($next['normalReturn']??null)===1)unmLiveNormalRelease($next,'ordinary',$id,$peer['hostId'],['retired'=>true,'nonce'=>$a['nonce'],'xmlHash'=>$proof['xmlHash']]);
+    return ['success'=>true,'nonce'=>$a['nonce']];
 }
 /** Definition bytes are supplied on stdin, never reread by virsh after validation. */
 function unmLiveOrdinaryDefine(array $peer,array $reservation,string $xml): ?array {
@@ -153,7 +165,9 @@ function unmLiveOrdinaryResume(string $id): array {
     $peer=unmPeer($j['peerId']);$reply=unmLiveRpc($peer,'ordinary-accept',['jobId'=>$id,'vmUuid'=>$j['vmUuid'],'nonce'=>$r['transferNonce']]);
     if(empty($reply['committed'])){
         $path=UNM_BOOT_DIR.'/incoming/'.$id.'/destination.xml';$defined=unmRemote($peer,'virsh define '.escapeshellarg($path),45);if($defined['code']!==0)throw new RuntimeException('Destination remains fenced: '.trim($defined['stderr']));
-        unmLiveOrdinaryWorker($id,'commit');
     }
+    // OWNER may have been persisted just before a lost reply/crash interrupted
+    // normal release. Commit is idempotent and must finish that release too.
+    unmLiveOrdinaryWorker($id,'commit');
     return ['success'=>true,'message'=>'Destination ownership committed. It remains stopped. Start it on the destination when ready, then resolve the original migration to finish its selected source policy.'];
 }

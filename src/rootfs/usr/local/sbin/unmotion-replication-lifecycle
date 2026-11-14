@@ -464,6 +464,12 @@ fi
 while :; do
   /usr/local/sbin/unmotion-live-key-gate --sweep || true
   /usr/local/sbin/unmotion-live-storage-refresh || true
+  if ((${SECONDS}>=${NORMAL_SCAN_AT:-0})); then
+    NORMAL_SCAN_AT=$((SECONDS+30))
+    # Separate worker: no remote calls or completion work in synchronous hooks
+    # or the lifecycle monitor's critical reconciliation path/lock descriptors.
+    nohup /usr/local/sbin/unmotion-live-finish --scan </dev/null >/dev/null 2>&1 7>&- 9>&- &
+  fi
   /usr/local/sbin/unmotion-native-fence ensure || true
   native_now="$(date +%s)"
   if ((native_now>=${NATIVE_PROBE_RETRY_AT:-0})); then

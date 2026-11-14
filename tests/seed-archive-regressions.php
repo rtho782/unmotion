@@ -20,6 +20,13 @@ try {
     file_put_contents($dir.'/remote-capabilities.json','{}');archiveCheck(!unmSeedNeverStarted($dir,$seed),'Legacy preflight evidence ignored');
     $explicit=$seed+['executionSchema'=>1,'storageStarted'=>false,'executionBootId'=>unmSeedExecutionBootId()];archiveCheck(unmSeedNeverStarted($dir,$explicit),'Explicit pre-storage failure rejected');
     $rebooted=$explicit;$rebooted['executionBootId']='different-boot';archiveCheck(!unmSeedNeverStarted($dir,$rebooted),'Pre-storage proof crossed a reboot');unlink($dir.'/remote-capabilities.json');
+    foreach(['process.json','transport-reservation.json'] as $file)file_put_contents($dir.'/'.$file,'{}');
+    archiveCheck(unmSeedNeverStarted($dir,$explicit),'Current worker/reservation metadata before durable storage boundary blocks record-only archive');
+    archiveCheck(!unmSeedNeverStarted($dir,$seed),'Legacy records may not borrow current execution metadata');
+    file_put_contents($dir.'/cleanup.json',json_encode(['sourceSnapshots'=>[]]));$blocked=$explicit;$blocked['state']='CLEANUP_BLOCKED';$blocked['preparationState']='FAILED';$blocked['lastOperation']='cleanup';
+    archiveCheck(unmSeedNeverStarted($dir,$blocked),'Failed never-started cleanup can still archive exact history');
+    foreach([['sourceSnapshots'=>['pool/vm@snap'=>['guid'=>'1']]],['sourceSnapshots'=>[],'destinationAck'=>['success'=>true]]] as $bad){file_put_contents($dir.'/cleanup.json',json_encode($bad));archiveCheck(!unmSeedNeverStarted($dir,$blocked),'Storage/acknowledgement history cannot be discarded as never-started');}
+    foreach(['process.json','transport-reservation.json','cleanup.json'] as $file)unlink($dir.'/'.$file);
     symlink($dir.'/request.cfg',$dir.'/unexpected');archiveCheck(!unmSeedNeverStarted($dir,$seed),'Accepted unexpected symlink');unlink($dir.'/unexpected');
     unlink($dir.'/storage.tsv');symlink($dir.'/request.cfg',$dir.'/storage.tsv');archiveCheck(!unmSeedNeverStarted($dir,$seed),'Accepted allowlisted symlink');unlink($dir.'/storage.tsv');file_put_contents($dir.'/storage.tsv','');
     unmSeedMarkStorageStarted($id);archiveCheck(unmArchiveUnstartedSeed($id)===null&&is_dir($dir),'Started transfer record was archived');
