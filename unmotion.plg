@@ -2,14 +2,14 @@
 <!DOCTYPE PLUGIN [
 <!ENTITY name "unmotion">
 <!ENTITY author "Richard Skinner">
-<!ENTITY version "2026.11.14.02-0.5.2-beta6">
+<!ENTITY version "2026.11.14.03-0.5.2">
 <!ENTITY launch "UnMotion">
 <!ENTITY plgdir "/boot/config/plugins/&name;">
-<!ENTITY package "&plgdir;/packages/unmotion-0.5.2_beta6-noarch-1.txz">
+<!ENTITY package "&plgdir;/packages/unmotion-0.5.2_stable-noarch-1.txz">
 ]>
 <PLUGIN name="&name;" author="&author;" version="&version;" pluginURL="https://raw.githubusercontent.com/rtho782/unmotion/plugin-beta/unmotion.plg" launch="&launch;" min="7.3.2" icon="exchange" support="https://github.com/rtho782/unmotion/issues">
 <CHANGES>
-### unMotion 0.5.2-beta6
+### unMotion 0.5.2
 - A completed live destination becomes a normal VM without reboot or a separate hand-back. Successful moves automatically clean up the exact obsolete source disks/NVRAM/TPM after transfer sessions close; blocked cleanup is reported separately, with old-copy start fences/history retained. Failed or unresolved transfers retain their data.
 - Permit same-vendor masked guests to move to an older physical CPU generation only after fresh complete guest CPU/nested validation. Repeat validation at receiver reservation; no physical-family ranking substitutes for compatibility proof.
 - Native OpenSSH/libvirt live migration without a custom payload relay, RPC inspector or extra application-controlled pause. Both peers must enable administrator-equivalent native migration trust. Disposable source-bound keys, persistent start fences and authenticated ownership reconciliation remain; this is not a per-path sandbox.
@@ -23,7 +23,7 @@
 - Display disk-copy and RAM pre-copy/convergence statistics separately; retransmitted bytes are not an overall completion percentage or a promised ETA.
 - Review live readiness even when a VM is ineligible. Show independent CPU, TPM, storage, device and network blockers; submission stays disabled until fresh preflight passes, and Start rechecks both hosts.
 - Record source-side replica point counts from acknowledged destination inventory, including retention pruning, without treating display evidence as recovery authority.
-- Preserve protocol 7. Live capability 4 requires matching 0.5.2-beta6 peers and native-data capability 1; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
+- Preserve protocol 7. Live capability 4 requires matching 0.5.2 peers and native-data capability 1; retained-copy cleanup separately requires liveCleanupVersion 1. Ordinary supported Cold/Warm Move, clone, replication and retirement workflows retain their capability gates.
 - Preserve CPU defaults, reviewed BIOS/UEFI firmware, nested Intel validation, paused receivers, durable ownership and explicit reconciliation. AMD nested live migration, passthrough and automatic failover remain excluded. Recovery arming after normal completion follows the separate recovery prerequisites.
 - New successful live moves automatically remove verified obsolete source disks, NVRAM and TPM after sessions close. Failed/unresolved copies and blocked cleanup retain their data. No shared-storage service is introduced.
 - Requires Unraid 7.3.2 or later. Package downloads are SHA-256 pinned; the verified current TXZ is retained for offline boots. Author: Richard Skinner.
@@ -395,8 +395,8 @@ function unmProcessTargetFenceTransitions(): array { return array (
 try { unmProcessPreinstall(); } catch (Throwable $error) { echo 'unMotion update blocked: '.$error->getMessage()."\n"; exit(1); }
 ]]></INLINE></FILE>
 <FILE Name="&package;" Run="/sbin/upgradepkg --install-new" Mode="0600">
-<URL>https://github.com/rtho782/unmotion/releases/download/0.5.2-beta6/unmotion-0.5.2_beta6-noarch-1.txz</URL>
-<SHA256>67a5c114233134d4ef33ad78bc6f0c9e1a8c89e7728b3504949fd2d4b3b96119</SHA256>
+<URL>https://github.com/rtho782/unmotion/releases/download/0.5.2/unmotion-0.5.2_stable-noarch-1.txz</URL>
+<SHA256>0c551e863df8aab501f144776bf03f325faf84c8cfbc1bfdc05f0b177ae79621</SHA256>
 </FILE>
 <FILE Run="/bin/bash"><INLINE>
 /etc/rc.d/rc.unmotion restart || exit 1
