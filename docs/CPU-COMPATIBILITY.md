@@ -4,7 +4,7 @@
 
 Author: Richard Skinner
 
-**Beta 0.5.2-beta4** removes the additional physical-generation veto for an already compatible active mask. Fresh VM-specific destination CPU and nested-feature checks remain mandatory; cached suggestions are not authorization. See the [earlier CPU-fix qualification](CPU-MASK-051-QUALIFICATION.md). Stable 0.5.0 retains the same/newer-generation restriction.
+**Beta 0.5.2-beta4 and later** remove the additional physical-generation veto for an already compatible active mask. Fresh VM-specific destination CPU and nested-feature checks remain mandatory; cached suggestions are not authorization. See the [earlier CPU-fix qualification](CPU-MASK-051-QUALIFICATION.md). Stable 0.5.0 retains the same/newer-generation restriction.
 
 Available in **[stable 0.5.0](https://github.com/rtho782/unmotion/releases/tag/0.5.0)** through [Community Apps/the stable installer](https://raw.githubusercontent.com/rtho782/unmotion/plugin-stable/unmotion.plg). The beta feed also offers this release until another prerelease is available. Update both paired hosts for live migration; older protocol-7 peers retain their existing workflows but may lack the optional CPU report or live-migration capability.
 

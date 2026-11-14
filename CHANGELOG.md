@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.2-beta5 — 2026-11-14
+
+- Allow a settled, already-admitted live-migration owner to remain running during a compatible plugin upgrade. The installer pins the target package's complete native-fence dependency set and requires identical installed fencing code, current libvirt proof and the original same-boot QEMU admission. It does not adopt a process or rewrite ownership/admissions.
+- Preserve retired/aborted old-copy fences, current VM power state and history. Unfinished live work, pending hand-back, inconsistent state, missing/corrupt admission and active recovery-managed guests remain upgrade blockers. A fencing-code-changing update still requires stopped managed guests unless a separately qualified transition is provided.
+- Print the specific upgrade refusal in the Plugins console instead of hiding it on stderr behind a generic PHP error. Wire protocol 7 and live capabilities are unchanged; live moves require matching beta5 peers.
+- Both full verification suites passed on DEV01 7.3.4 / DEV02 7.4.0. Actual beta4-to-beta5 upgrades kept migrated Linux file/zvol and Windows TPM/BitLocker owners running with original QEMU/guest continuity. All three retained source starts were fenced before QEMU both before and after upgrading. Incompatible-fence installer rejection, mixed-version preflight rejection, a native file round trip and a protected Windows cold boot also passed. See `docs/RUNNING-OWNER-UPGRADE-BETA5.md` for bounded evidence and inherited tests.
+
 ## 0.5.2-beta4 — 2026-11-14
 
 - Add AES-128-GCM as the default outgoing SSH cipher, with AES-256-GCM selectable in Settings across paired operations, Cold/Warm Move, replication and live migration. Validate the exact option without fallback; live jobs pin it and ordinary workers capture it at launch. Performance depends on the host and path, not simply key length.

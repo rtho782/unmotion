@@ -73,6 +73,10 @@ Defer zvol/multiple-disk live migration, HTTPS transport and recovery arming aft
 
 ## Live migration follow-up
 
+### Compatible running-owner upgrades — 0.5.2-beta5
+
+The beta supports settled migrated owners remaining running through an update when the target pins unchanged native-fence bytes and the current libvirt/QEMU admission remains exact. It retains old-copy fences and history without adopting a process. Active recovery guests, unfinished work, missing/inconsistent admission and fencing-code-changing updates remain outside this exception. See [actual running-upgrade qualification and limits](RUNNING-OWNER-UPGRADE-BETA5.md). Protocol 7 and live capabilities are unchanged; live peers still need matching application versions.
+
 ### Native performance beta — 0.5.2-beta4
 
 Published on the opt-in beta feed on 2026-11-14 as **0.5.2-beta4**. Stable/Community Apps remains 0.5.0. [Native-mode qualification](NATIVE-TRUSTED-MIGRATION.md) and [host-loss/reboot results](NATIVE-HOST-LOSS-052-QUALIFICATION.md) supersede the initial optional-guard proposal below. Actual receiver-copy loss and post-resume source loss/reconciliation passed; this is not automatic HA or an exhaustive physical-failure matrix.

@@ -22,6 +22,29 @@ function unmProcessUpgradeInventory(): array {
     return ['workers'=>$workers,'daemons'=>$daemons];
 }
 
+/** Complete local-only native-hook dependency set, pinned from the target package. */
+function unmProcessFencePaths(): array {
+    $base='/usr/local/emhttp/plugins/unmotion/include/';
+    return array_merge(['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'],array_map(static fn($p)=>$base.$p,['native-fence.php','live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php']));
+}
+function unmProcessFenceCompatible(array $target): void {
+    $paths=unmProcessFencePaths();$keys=array_keys($target);sort($paths);sort($keys);
+    if($paths!==$keys)throw new RuntimeException('The update has no complete compatible native-fence contract; stop live-owned VMs before this fencing-code upgrade.');
+    foreach($target as $path=>$sha)if(!is_string($sha)||!preg_match('/\A[a-f0-9]{64}\z/D',$sha)||is_link($path)||!is_file($path)||!hash_equals($sha,(string)hash_file('sha256',$path)))throw new RuntimeException('Native fencing code changes or differs locally; stop live-owned VMs before upgrading. No running VM was adopted.');
+}
+function unmProcessLiveOwnerUpgradeable(array $r,array $q,array $target,string $run='/run/unmotion/lifecycle'): void {
+    if(($r['state']??'')!=='OWNER'||($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Only a settled live owner can remain running during an update.');
+    unmProcessFenceCompatible($target);
+    $read=static function(string $p):array{if(is_link($p)||!is_file($p))throw new RuntimeException('Existing native VM admission/proof is missing; update refused without adopting the running VM.');$r=json_decode((string)file_get_contents($p),true);if(!is_array($r))throw new RuntimeException('Existing native VM admission/proof is corrupt.');return $r;};
+    $boot=trim((string)file_get_contents('/proc/sys/kernel/random/boot_id'));
+    $proof=$read($run.'/native-hook-proof.json');$daemon=$proof['daemon']??[];$p=unmProcessSnapshot((int)($daemon['pid']??0));
+    $base='/usr/local/emhttp/plugins/unmotion/include/';$hash='';foreach(['live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php'] as $file)$hash.=$target[$base.$file];
+    if(!$p||!in_array($p['executable'],['/usr/sbin/libvirtd','/usr/sbin/virtqemud','/usr/bin/libvirtd','/usr/bin/virtqemud'],true)||basename((string)($p['argv'][0]??''))!==basename($p['executable'])||($daemon['bootId']??'')!==$boot||($daemon['startTicks']??'')!==$p['startTicks']||($daemon['exe']??'')!==$p['executable']||($proof['hookSha256']??'')!==$target['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery']||($proof['helperSha256']??'')!==$target[$base.'native-fence.php']||($proof['liveHelperSha256']??'')!==hash('sha256',$hash))throw new RuntimeException('The unchanged native fence is not proven active for this libvirt process; update refused.');
+    $uuid=$r['vmUuid'];$a=$read($run.'/live-admissions/'.$uuid.'.json');$at=array_search('-uuid',$q['argv'],true);$name=$r['vmName']??'';
+    $compact=['pid'=>$q['pid'],'startTicks'=>$q['startTicks'],'exe'=>$q['executable'],'bootId'=>$q['bootId'],'uuid'=>$uuid];
+    if(!is_string($name)||$name===''||str_contains($name,'/')||str_contains($name,"\0")||$at===false||strtolower((string)($q['argv'][$at+1]??''))!==$uuid||$q['bootId']!==$boot||!str_starts_with(basename($q['executable']),'qemu-system-')||trim((string)@file_get_contents('/run/libvirt/qemu/'.$name.'.pid'))!==(string)$q['pid']||($a['jobId']??'')!==$r['jobId']||($a['bootId']??'')!==$boot||($a['phase']??'')!=='RUNNING'||($a['qemu']??null)!==$compact||!unmProcessIdentityMatches($q))throw new RuntimeException('The running live owner does not match its existing native admission; update refused without adopting or restarting it.');
+}
+
 function unmProcessPreinstall(): void {
     if(!function_exists('posix_kill'))throw new RuntimeException('PHP POSIX support is required for safe unMotion service upgrades.');
     $bootRestore=unmProcessEarlyBootRestore();
@@ -30,7 +53,8 @@ function unmProcessPreinstall(): void {
     // Do not break fencing restoration at boot or prevent an already-protocol-7
     // host from installing cleanup fixes. Legacy entries still cannot mutate.
     if(!$bootRestore&&$installedProtocol!==7)unmProcessAssertPreparedCompatible('/boot/config/plugins/unmotion',7);
-    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore);
+    $fenceFiles=function_exists('unmProcessTargetFenceFiles')?unmProcessTargetFenceFiles():[];
+    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore,$fenceFiles);
     if($bootRestore)echo "unMotion: restoring plugin during verified early boot, before VM Manager or QEMU. Durable recovery authority remains fenced.\n";
     $inventory=unmProcessUpgradeInventory();
     if($inventory['workers'])throw new RuntimeException('An unMotion migration, prepared-copy, replication, recovery, incoming transfer, remote request or delayed-cleanup worker is active. Let it finish or cancel it, then retry the upgrade. Do not start new operations while upgrading. No package or pairing settings have been changed.');
@@ -43,6 +67,7 @@ function unmProcessPreinstall(): void {
     // Never terminate that worker or replace its scripts/transport underneath it.
     $remaining=unmProcessUpgradeInventory();
     if($remaining['workers']||$remaining['daemons'])throw new RuntimeException('An unMotion worker or daemon appeared while stopping scheduling. Upgrade refused; let active work finish and retry. Stopped runtime daemons restart on successful installation or host boot.');
+    unmProcessAssertManagedGuestsStopped('/boot/config/plugins/unmotion',$bootRestore,$fenceFiles);
     echo "unMotion upgrade guard: no active workers; verified scheduling/lifecycle daemons stopped. Do not start new operations until installation completes.\n";
 }
 
@@ -60,9 +85,8 @@ function unmProcessAssertPreparedCompatible(string $base,int $targetProtocol): v
     }
 }
 
-// No adoption of an already-running managed QEMU into a new native start fence.
-// Run before stopping lifecycle services or replacing any installed file.
-function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false): void {
+// Compatible settled owners keep their existing admission. Never adopt a QEMU.
+function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins/unmotion',bool $verifiedEarlyBoot=false,array $fenceFiles=[]): void {
     $liveManaged=[];
     foreach(array_unique(array_merge(glob($base.'/live-managed/*.json')?:[],glob($base.'/live-authority/*.json')?:[])) as $candidate){
         $path=$base.'/live-managed/'.basename($candidate);
@@ -72,19 +96,29 @@ function unmProcessAssertManagedGuestsStopped(string $base='/boot/config/plugins
         if(isset($r['workflow'])&&!in_array($r['workflow'],['ordinary','ordinary-pending'],true)||($r['workflow']??'')==='ordinary-pending'&&(($r['state']??'')!=='OWNER'||!preg_match('/\A[a-f0-9]{32}\z/D',(string)($r['handbackNonce']??''))))throw new RuntimeException('Corrupt ordinary hand-back authority prevents upgrade.');
         if(!$verifiedEarlyBoot&&($r['workflow']??'')==='ordinary-pending')throw new RuntimeException('Finish the pending ordinary hand-back before upgrading.');
         if(!in_array($r['role']??'',['source','destination'],true)||!preg_match($pattern,(string)($r['sourceHostId']??''))||!preg_match($pattern,(string)($r['destinationHostId']??''))||$r['sourceHostId']===$r['destinationHostId']||($r[$r['role'].'HostId']??'')!==$host||!preg_match($pattern,(string)($r['bootId']??''))||!is_int($r['expiresAt']??null)||!in_array($r['state'],$r['role']==='source'?['OWNER','MOVING','RETIRED']:['OWNER','RECEIVING','ABORTED'],true))throw new RuntimeException('Live authority host/role is invalid; upgrade refused.');
-        if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=true;
+        if(!$verifiedEarlyBoot&&in_array($r['state'],['MOVING','RECEIVING'],true))throw new RuntimeException('Reconcile unfinished live migration '.$m['jobId'].' before upgrading.');$liveManaged[$uuid]=$r;
     }
+    if(!$verifiedEarlyBoot)foreach(glob($base.'/live-migration/jobs/*/job.json')?:[] as $path){$j=json_decode((string)file_get_contents($path),true);if(!is_array($j)||!in_array($j['state']??'', ['COMPLETE','ABORTED','CANCELLED','FAILED','PROBE_FINISHED'],true))throw new RuntimeException('Finish or reconcile unfinished live migration '.basename(dirname($path)).' before upgrading.');}
     foreach(glob($base.'/native-managed/*.json')?:[] as $markerPath){$m=json_decode((string)@file_get_contents($markerPath),true);$id=(string)($m['replicationId']??'');$uuid=(string)($m['vmUuid']??'');$side=(string)($m['side']??'');if(!is_array($m)||($m['schemaVersion']??null)!==1||!preg_match('/^[a-f0-9-]{36}$/',$uuid)||!preg_match('/^repl-[a-f0-9]{24}$/',$id)||!in_array($side,['source','destination'],true))throw new RuntimeException('Corrupt native managed identity prevents safe upgrade.');$paths=$side==='source'?[$base.'/replications/'.$id.'/recovery.json']:(glob($base.'/replicas/*/'.$id.'/recovery.json')?:[]);$matched=0;foreach($paths as $path){$r=json_decode((string)@file_get_contents($path),true);if(is_array($r)&&($r['replicationId']??'')===$id&&strtolower((string)($r['vmUuid']??''))===$uuid&&($r['side']??'')===$side)++$matched;}if($matched!==1)throw new RuntimeException('Exact native managed authority is missing or ambiguous; reconcile it before upgrading.');}
     $managed=$liveManaged;foreach(array_merge(glob($base.'/replications/*/recovery.json')?:[],glob($base.'/replicas/*/*/recovery.json')?:[]) as $path){$r=json_decode((string)@file_get_contents($path),true);if(!is_array($r))throw new RuntimeException('Corrupt recovery authority must be reconciled before upgrade.');if(in_array((string)($r['state']??''),['REPLICATION_ONLY','DISARMED','REMOVED'],true)&&empty($r['armed'])&&empty($r['managedAutostart'])&&empty($r['activationId'])&&empty($r['claim'])&&empty($r['activation']))continue;$uuid=strtolower((string)($r['vmUuid']??''));if(!preg_match('/^[a-f0-9-]{36}$/',$uuid))throw new RuntimeException('Invalid managed VM identity prevents safe upgrade.');$managed[$uuid]=true;}
     if(!$managed)return;
+    // Recovery entries deliberately replace any live record with true. An
+    // overlapping recovery policy must never inherit the live-owner exception.
+    $recoveryManaged=array_filter($managed,static fn($entry)=>$entry===true);
     // At genuine rc.local boot replay libvirt is not started yet. The caller
     // proves that phase and absence of QEMU; missing libvirt alone is NEVER proof.
     // Authority/marker validation above is deliberately retained in both paths.
     if($verifiedEarlyBoot)return;
-    foreach(glob('/proc/[0-9]*/cmdline')?:[] as $file){$exe=(string)@readlink(dirname($file).'/exe');if(!str_starts_with(basename($exe),'qemu-system-'))continue;$args=explode("\0",rtrim((string)@file_get_contents($file),"\0"));$at=array_search('-uuid',$args,true);if($at!==false&&isset($liveManaged[strtolower((string)($args[$at+1]??''))]))throw new RuntimeException('A live-managed QEMU is running; upgrade refused even if libvirt cannot report it.');}
+    $hot=[];foreach(glob('/proc/[0-9]*/cmdline')?:[] as $file){$exe=(string)@readlink(dirname($file).'/exe');if(!str_starts_with(basename($exe),'qemu-system-'))continue;$args=explode("\0",rtrim((string)@file_get_contents($file),"\0"));$at=array_search('-uuid',$args,true);$uuid=$at===false?'':strtolower((string)($args[$at+1]??''));if(!isset($liveManaged[$uuid]))continue;
+        if(!$fenceFiles||isset($recoveryManaged[$uuid])||$liveManaged[$uuid]['state']!=='OWNER'||isset($hot[$uuid]))throw new RuntimeException('Running fenced/managed VM '.$uuid.' cannot use a compatible settled-owner upgrade.');
+        $q=unmProcessSnapshot((int)basename(dirname($file)));if(!$q)throw new RuntimeException('Managed QEMU lifetime changed during upgrade checks.');unmProcessLiveOwnerUpgradeable($liveManaged[$uuid],$q,$fenceFiles);$hot[$uuid]=$q;
+    }
     $run=static function(array $args):string{$p=proc_open(array_merge(['timeout','-k','2','15','virsh'],$args),[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['file','/dev/null','w']],$pipes);if(!is_resource($p))throw new RuntimeException('Cannot check managed VMs before upgrade.');$out=(string)stream_get_contents($pipes[1]);fclose($pipes[1]);if(proc_close($p)!==0)throw new RuntimeException('Libvirt state is unavailable; upgrade cannot prove managed VMs are stopped.');return trim($out);};
     $inventory=strtolower($run(['list','--all','--uuid']));$defined=$inventory===''?[]:preg_split('/\s+/',$inventory);foreach($defined as $entry)if(!preg_match('/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/',$entry))throw new RuntimeException('Libvirt returned an invalid VM inventory; upgrade refused.');
-    foreach(array_keys($managed) as $uuid)if(in_array($uuid,$defined,true)&&strtolower($run(['domstate',$uuid]))!=='shut off')throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
+    foreach(array_keys($managed) as $uuid){$state=in_array($uuid,$defined,true)?strtolower($run(['domstate',$uuid])):'undefined';
+        if(isset($hot[$uuid])){if(!in_array($state,['running','idle','paused'],true)||!unmProcessIdentityMatches($hot[$uuid]))throw new RuntimeException('Running owner/libvirt state changed during upgrade checks; retry without bypassing its admission.');continue;}
+        if(!in_array($state,['shut off','undefined'],true))throw new RuntimeException('Power off recovery-managed VM '.$uuid.' before upgrading unMotion. Existing VM authority and services were left unchanged.');
+    }
 }
 
 function unmProcessEarlyBootEvidence(array $ancestors,array $processes,bool $installed): bool {

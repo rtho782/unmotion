@@ -24,6 +24,13 @@ $guard=$xml->FILE[0];
 packageCheck((string)$guard['Run']==='/usr/bin/php','Upgrade guard uses PHP before upgradepkg');
 $guardSource=(string)$guard->INLINE;
 packageCheck(str_contains($guardSource,'unmProcessPreinstall();')&&str_contains($guardSource,'function unmProcessSnapshot('),'Readable self-contained upgrade guard');
+packageCheck(str_contains($guardSource,"echo 'unMotion update blocked: '"),'Upgrade refusal is visible in the Plugins console, not stderr only');
+packageCheck(preg_match('/function unmProcessTargetFenceFiles\(\): array \{ return \[(.*?)\]; \}/s',$guardSource,$manifestMatch)===1,'Target package declares its compatible native fence');
+preg_match_all("~'(/[^']+)'=>'([a-f0-9]{64})'~",$manifestMatch[1],$manifestEntries,PREG_SET_ORDER);
+$fenceManifest=[];foreach($manifestEntries as $entry){packageCheck(!isset($fenceManifest[$entry[1]]),'No duplicate fence dependency');$fenceManifest[$entry[1]]=$entry[2];}
+$fencePaths=['/etc/libvirt/hooks/qemu.d/50-unmotion-recovery'];foreach(['native-fence.php','live-native-fence.php','live-firmware.php','live-storage.php','live-zvol-native.php','live-tpm.php','xml-canonical.php'] as $name)$fencePaths[]='/usr/local/emhttp/plugins/unmotion/include/'.$name;
+packageCheck(array_keys($fenceManifest)===$fencePaths,'Complete exact target fence dependency set');
+foreach($fenceManifest as $path=>$sha){$p=proc_open(['tar','-xOf',$package,'.'.$path],[0=>['file','/dev/null','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes);$bytes=stream_get_contents($pipes[1]);$err=stream_get_contents($pipes[2]);fclose($pipes[1]);fclose($pipes[2]);packageCheck(proc_close($p)===0&&hash('sha256',$bytes)===$sha,'Fence manifest pins exact package bytes: '.$path.' '.$err);}
 $guardProcess=proc_open([PHP_BINARY,'-l'],[['pipe','r'],['pipe','w'],['pipe','w']],$guardPipes);
 fwrite($guardPipes[0],$guardSource);fclose($guardPipes[0]);
 $guardOutput=stream_get_contents($guardPipes[1]).stream_get_contents($guardPipes[2]);fclose($guardPipes[1]);fclose($guardPipes[2]);

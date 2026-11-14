@@ -82,8 +82,14 @@ printf '%s' '<FILE Run="/usr/bin/php"><INLINE><![CDATA['
 # upgradepkg replaces running scripts or the security upgrade revokes old keys.
 cat "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/process-identity.php"
 sed '1,2d' "$ROOT/src/rootfs/usr/local/emhttp/plugins/unmotion/include/process-upgrade.php"
+# Pin the target's complete hook graph, not hashes chosen by installed code.
+printf '\nfunction unmProcessTargetFenceFiles(): array { return [\n'
+for file in etc/libvirt/hooks/qemu.d/50-unmotion-recovery usr/local/emhttp/plugins/unmotion/include/{native-fence,live-native-fence,live-firmware,live-storage,live-zvol-native,live-tpm,xml-canonical}.php; do
+  printf "'/%s'=>'%s',\n" "$file" "$(sha256sum "$STAGE/$file" | awk '{print $1}')"
+done
+printf ']; }\n'
 cat <<'EOF'
-try { unmProcessPreinstall(); } catch (Throwable $error) { fwrite(STDERR, $error->getMessage()."\n"); exit(1); }
+try { unmProcessPreinstall(); } catch (Throwable $error) { echo 'unMotion update blocked: '.$error->getMessage()."\n"; exit(1); }
 ]]></INLINE></FILE>
 EOF
 cat <<EOF

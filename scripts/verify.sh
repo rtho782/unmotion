@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REL="$ROOT/release/0.3.0-beta7"
-EXPECTED_VERSION="${1:-0.5.2-beta4}"
+EXPECTED_VERSION="${1:-0.5.2-beta5}"
 GO="${UNM_GO:-go}"
 command -v "$GO" >/dev/null || { echo 'Go is required for native transport verification.' >&2; exit 1; }
 (cd "$ROOT/native/live-stream" && GOTOOLCHAIN=local CGO_ENABLED=0 "$GO" test ./...)
@@ -74,6 +74,7 @@ if command -v php >/dev/null; then
   php "$ROOT/tests/live-ordinary-regressions.php"
   php "$ROOT/tests/native-fence-controller-test.php"
   php "$ROOT/tests/upgrade-managed-guard-regressions.php"
+  php "$ROOT/tests/upgrade-live-owner-regressions.php"
   php "$ROOT/tests/inventory-cache-regressions.php"
   php "$ROOT/tests/inventory-collector-regressions.php"
   php "$ROOT/tests/cpu-compatibility-regressions.php"
